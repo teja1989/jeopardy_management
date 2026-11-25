@@ -142,6 +142,50 @@ class TrackerServiceTest {
         assertThat(timeline.rawEventsWarning()).contains("ClickHouse");
     }
 
+    @Test
+    void getCustomerOrdersGroupsLineItemsByOrderIdAndCountsLinkedCompanions() {
+        Instant now = Instant.now();
+        EntitySummaryDto root = entity(
+                "ORD-88412", "ORDER", "UPGRADES_TRADEIN", "SALES_UPGRADE",
+                "ACC-88412", "JRN-88412", "IN_PROGRESS", "NONE", false, 0.10, now);
+        EntitySummaryDto item1 = entity(
+                "ORD-88412:ITM-1", "ORDER_ITEM", "UPGRADES_TRADEIN", "SALES_UPGRADE",
+                "ACC-88412", "JRN-88412", "IN_PROGRESS", "NONE", false, 0.15, now);
+        EntitySummaryDto tradeIn = entity(
+                "TRD-55091", "ORDER", "UPGRADES_TRADEIN", "DEVICE_TRADE_IN",
+                "ACC-88412", "JRN-88412", "IN_FALLOUT", "JEOPARDY", true, 0.90, now);
+        EntitySummaryDto otherOrder = entity(
+                "CHG-10001", "ORDER", "CHANGE_CANCEL", "CHANGE",
+                "ACC-88412", "JRN-10001", "COMPLETED", "NONE", false, 0.0, now.minusSeconds(3600));
+
+        EntityRelationshipDto rel = new EntityRelationshipDto(
+                "TRD-55091", "ORD-88412", "BUNDLED_FEATURE", "INDEPENDENT", "JRN-88412", now);
+
+        when(repository.findEntitiesByCustomerId("ACC-88412"))
+                .thenReturn(List.of(root, item1, tradeIn, otherOrder));
+        when(repository.findRelationshipsByEntityKeys(anyCollection())).thenReturn(List.of(rel));
+
+        CustomerOrdersResponse res = service.getCustomerOrders("ACC-88412");
+
+        assertThat(res.accountId()).isEqualTo("ACC-88412");
+        assertThat(res.totalOrders()).isEqualTo(3);
+        assertThat(res.activeOrders()).isEqualTo(2);
+        assertThat(res.activeFallouts()).isEqualTo(1);
+
+        CustomerOrdersResponse.OrderCard salesOrder = res.orders().stream()
+                .filter(o -> "ORD-88412".equals(o.orderId()))
+                .findFirst().orElseThrow();
+        assertThat(salesOrder.lineItemCount()).isEqualTo(1);
+        assertThat(salesOrder.linkedCompanionCount()).isEqualTo(1);
+        assertThat(salesOrder.isCompanionOrder()).isFalse();
+
+        CustomerOrdersResponse.OrderCard tradeInOrder = res.orders().stream()
+                .filter(o -> "TRD-55091".equals(o.orderId()))
+                .findFirst().orElseThrow();
+        assertThat(tradeInOrder.isCompanionOrder()).isTrue();
+        assertThat(tradeInOrder.hasActiveFallout()).isTrue();
+    }
+
     private EntitySummaryDto entity(
             String key,
             String level,

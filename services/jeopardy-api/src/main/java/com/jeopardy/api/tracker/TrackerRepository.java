@@ -83,11 +83,34 @@ public class TrackerRepository {
                 hasActiveFallout, null, null, Map.of(), from, to, sortBy, limit, offset);
     }
 
+    public QueueSearchResponse searchQueue(
+            String q,
+            String status,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            Boolean hasActiveFallout,
+            String errorCode,
+            String assignedQueue,
+            Map<String, String> dimensions,
+            Instant from,
+            Instant to,
+            String sortBy,
+            int limit,
+            int offset) {
+        return searchQueue(
+                q, status, orderFamily, orderType, itemType, accountType, channel, region,
+                hasActiveFallout, errorCode, assignedQueue, null, dimensions, from, to, sortBy, limit, offset);
+    }
+
     /**
      * High-performance partition-pruned order search supporting calendar time range
-     * ({@code from}..{@code to}), multi-facet filters (itemType, channel, region, errorCode,
-     * assignedQueue, dynamic {@code dim.*} JSONB attributes), B-tree prefix fast-path for Order IDs,
-     * and query latency telemetry.
+     * ({@code from}..{@code to}), exact Account/Customer filter ({@code customerId}),
+     * multi-facet filters (itemType, channel, region, errorCode, assignedQueue, dynamic {@code dim.*}),
+     * B-tree prefix fast-path for Order IDs, and query latency telemetry.
      */
     public QueueSearchResponse searchQueue(
             String q,
@@ -101,6 +124,7 @@ public class TrackerRepository {
             Boolean hasActiveFallout,
             String errorCode,
             String assignedQueue,
+            String customerId,
             Map<String, String> dimensions,
             Instant from,
             Instant to,
@@ -192,6 +216,10 @@ public class TrackerRepository {
         if (assignedQueue != null && !assignedQueue.isBlank()) {
             where.append(" AND EXISTS (SELECT 1 FROM entity_fallouts ef WHERE ef.entity_key = tracked_entities.entity_key AND ef.assigned_group = :assignedQueue)");
             params.addValue("assignedQueue", assignedQueue.trim());
+        }
+        if (customerId != null && !customerId.isBlank()) {
+            where.append(" AND customer_id = :exactCustomerId");
+            params.addValue("exactCustomerId", customerId.trim());
         }
         if (dimensions != null && !dimensions.isEmpty()) {
             int dimIdx = 0;
@@ -346,6 +374,30 @@ public class TrackerRepository {
                 new MapSqlParameterSource("entityKey", entityKey),
                 (rs, rowNum) -> mapEntity(rs));
         return rows.stream().findFirst();
+    }
+
+    public List<EntitySummaryDto> findEntitiesByKeys(Collection<String> entityKeys) {
+        if (entityKeys == null || entityKeys.isEmpty()) {
+            return List.of();
+        }
+        String sql = """
+                SELECT * FROM (
+                    SELECT DISTINCT ON (entity_key)
+                           entity_key, created_at, entity_level, order_family, order_type, item_type,
+                           parent_entity_key, customer_id, subscriber_id, account_type, channel, region,
+                           journey_id, blueprint_id, blueprint_version, status, jeopardy_severity,
+                           has_active_fallout, predicted_p50_at, predicted_p90_at, breach_probability,
+                           attributes_jsonb, last_event_time, updated_at, closed_at
+                    FROM tracked_entities
+                    WHERE entity_key IN (:entityKeys)
+                    ORDER BY entity_key, last_event_time DESC, created_at DESC
+                ) latest
+                ORDER BY entity_key ASC
+                """;
+        return postgresJdbc.query(
+                sql,
+                new MapSqlParameterSource("entityKeys", entityKeys),
+                (rs, rowNum) -> mapEntity(rs));
     }
 
     /**

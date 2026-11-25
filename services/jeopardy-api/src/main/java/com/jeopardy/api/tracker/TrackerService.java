@@ -81,7 +81,31 @@ public class TrackerService {
             int offset) {
         return repository.searchQueue(
                 q, status, orderFamily, orderType, itemType, accountType, channel, region,
-                hasActiveFallout, errorCode, assignedQueue, dimensions, from, to, sortBy, limit, offset);
+                hasActiveFallout, errorCode, assignedQueue, null, dimensions, from, to, sortBy, limit, offset);
+    }
+
+    public QueueSearchResponse searchQueue(
+            String q,
+            String status,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            Boolean hasActiveFallout,
+            String errorCode,
+            String assignedQueue,
+            String customerId,
+            Map<String, String> dimensions,
+            java.time.Instant from,
+            java.time.Instant to,
+            String sortBy,
+            int limit,
+            int offset) {
+        return repository.searchQueue(
+                q, status, orderFamily, orderType, itemType, accountType, channel, region,
+                hasActiveFallout, errorCode, assignedQueue, customerId, dimensions, from, to, sortBy, limit, offset);
     }
 
     public TimelineHistogramResponse getTimelineHistogram(
@@ -175,6 +199,41 @@ public class TrackerService {
         List<JeopardyCaseDto> jeopardyCases = repository.findJeopardyCasesByEntityKey(entityKey);
         List<EntityRelationshipDto> relationships = repository.findRelationshipsByEntityKey(entityKey);
 
+        // Fetch strictly ORDER-SCOPED entities (root order + sibling line items + directly linked companion BPMNs)
+        String rootOrderId = extractRootOrderId(entityKey);
+        Map<String, EntitySummaryDto> orderScopedMap = new LinkedHashMap<>();
+        orderScopedMap.put(entity.entityKey(), entity);
+        List<EntitySummaryDto> sameOrderRows = repository.findEntitiesByOrderId(rootOrderId);
+        if (sameOrderRows != null) {
+            for (EntitySummaryDto row : sameOrderRows) {
+                if (row != null && row.entityKey() != null) {
+                    orderScopedMap.putIfAbsent(row.entityKey(), row);
+                }
+            }
+        }
+        Set<String> relatedKeys = new LinkedHashSet<>();
+        if (relationships != null) {
+            for (EntityRelationshipDto rel : relationships) {
+                if (rel.sourceEntityKey() != null && !orderScopedMap.containsKey(rel.sourceEntityKey())) {
+                    relatedKeys.add(rel.sourceEntityKey());
+                }
+                if (rel.targetEntityKey() != null && !orderScopedMap.containsKey(rel.targetEntityKey())) {
+                    relatedKeys.add(rel.targetEntityKey());
+                }
+            }
+        }
+        if (!relatedKeys.isEmpty()) {
+            List<EntitySummaryDto> relRows = repository.findEntitiesByKeys(relatedKeys);
+            if (relRows != null) {
+                for (EntitySummaryDto row : relRows) {
+                    if (row != null && row.entityKey() != null) {
+                        orderScopedMap.putIfAbsent(row.entityKey(), row);
+                    }
+                }
+            }
+        }
+        List<EntitySummaryDto> orderEntities = new ArrayList<>(orderScopedMap.values());
+
         List<RawEventDto> rawEvents = List.of();
         boolean rawEventsAvailable = true;
         String rawEventsWarning = null;
@@ -197,8 +256,185 @@ public class TrackerService {
                 rawEvents,
                 includeNoise,
                 rawEventsAvailable,
-                rawEventsWarning
+                rawEventsWarning,
+                orderEntities
         );
+    }
+
+    /**
+     * Returns a clean Order-grouped directory for an Account / Customer Number
+     * so users can view all Orders placed by a customer and jump into any specific Order.
+     */
+    public CustomerOrdersResponse getCustomerOrders(String customerId) {
+        List<EntitySummaryDto> entities = repository.findEntitiesByCustomerId(customerId);
+        if (entities == null || entities.isEmpty()) {
+            return new CustomerOrdersResponse(customerId, null, 0, 0, 0, 0, List.of());
+        }
+
+        List<String> allKeys = entities.stream().map(EntitySummaryDto::entityKey).distinct().toList();
+        List<EntityRelationshipDto> rels = repository.findRelationshipsByEntityKeys(allKeys);
+        if (rels == null) {
+            rels = List.of();
+        }
+
+        // Group entities strictly by root Order ID (ORD-88412 + ORD-88412:ITM-1 + ORD-88412:ITM-2 -> ORD-88412)
+        Map<String, List<EntitySummaryDto>> byOrderId = new LinkedHashMap<>();
+        for (EntitySummaryDto e : entities) {
+            String oid = extractRootOrderId(e.entityKey());
+            byOrderId.computeIfAbsent(oid, k -> new ArrayList<>()).add(e);
+        }
+
+        // Count linked companion BPMNs per parent orderId
+        Map<String, Set<String>> companionIdsByParentOrder = new LinkedHashMap<>();
+        Set<String> companionOrderIds = new LinkedHashSet<>();
+        for (EntityRelationshipDto r : rels) {
+            String rt = r.relationType() != null ? r.relationType().toUpperCase() : "";
+            if ("TRIGGERED_BY_ORDER".equals(rt)
+                    || "TRIGGERED_BY_ITEM".equals(rt)
+                    || "BUNDLED_FEATURE".equals(rt)
+                    || "BUNDLED_LINE_ITEM".equals(rt)
+                    || "CHANGE_ORDER_OF".equals(rt)
+                    || "CHILD_WORK_ORDER".equals(rt)) {
+                String srcOrder = extractRootOrderId(r.sourceEntityKey());
+                String tgtOrder = extractRootOrderId(r.targetEntityKey());
+                if (!srcOrder.equals(tgtOrder)) {
+                    companionIdsByParentOrder.computeIfAbsent(tgtOrder, k -> new LinkedHashSet<>()).add(srcOrder);
+                    companionOrderIds.add(srcOrder);
+                }
+            }
+        }
+
+        String accountType = entities.stream()
+                .map(EntitySummaryDto::accountType)
+                .filter(v -> v != null && !v.isBlank())
+                .findFirst()
+                .orElse(null);
+
+        List<CustomerOrdersResponse.OrderCard> cards = new ArrayList<>();
+        int activeOrders = 0;
+        int attentionOrders = 0;
+        int activeFallouts = 0;
+
+        for (Map.Entry<String, List<EntitySummaryDto>> entry : byOrderId.entrySet()) {
+            String orderId = entry.getKey();
+            List<EntitySummaryDto> members = entry.getValue();
+
+            EntitySummaryDto root = members.stream()
+                    .filter(m -> orderId.equals(m.entityKey()))
+                    .findFirst()
+                    .orElse(members.get(0));
+            List<EntitySummaryDto> lineItems = members.stream()
+                    .filter(m -> m.entityKey().contains(":"))
+                    .toList();
+
+            EntitySummaryDto primary = members.stream()
+                    .filter(EntitySummaryDto::hasActiveFallout)
+                    .findFirst()
+                    .orElseGet(() -> !lineItems.isEmpty() ? lineItems.get(0) : root);
+
+            boolean hasFallout = members.stream().anyMatch(EntitySummaryDto::hasActiveFallout);
+            String worstStatus = members.stream()
+                    .map(EntitySummaryDto::status)
+                    .filter(s -> s != null && !s.isBlank())
+                    .max((a, b) -> Integer.compare(orderStatusRank(a), orderStatusRank(b)))
+                    .orElse("IN_PROGRESS");
+
+            if (!TERMINAL_STATUSES.contains(worstStatus.toUpperCase())) {
+                activeOrders++;
+            }
+            if (hasFallout || AT_RISK_ENTITY_STATUSES.contains(worstStatus.toUpperCase())
+                    || "WARNING".equalsIgnoreCase(worstStatus)) {
+                attentionOrders++;
+            }
+            if (hasFallout) {
+                activeFallouts++;
+            }
+
+            java.time.Instant createdAt = members.stream()
+                    .map(EntitySummaryDto::createdAt)
+                    .filter(t -> t != null)
+                    .min(java.time.Instant::compareTo)
+                    .orElse(null);
+            java.time.Instant lastEvent = members.stream()
+                    .map(EntitySummaryDto::lastEventTime)
+                    .filter(t -> t != null)
+                    .max(java.time.Instant::compareTo)
+                    .orElse(null);
+            java.time.Instant eta = members.stream()
+                    .map(EntitySummaryDto::predictedP50At)
+                    .filter(t -> t != null)
+                    .max(java.time.Instant::compareTo)
+                    .orElse(null);
+
+            List<String> itemTypes = members.stream()
+                    .map(EntitySummaryDto::itemType)
+                    .filter(it -> it != null && !it.isBlank() && !"ROOT_ORDER".equalsIgnoreCase(it))
+                    .distinct()
+                    .toList();
+
+            String ot = root.orderType() != null ? root.orderType() : primary.orderType();
+            boolean isCompanion = companionOrderIds.contains(orderId)
+                    || (ot != null && (ot.toUpperCase().startsWith("INTERNAL_")
+                        || "DEVICE_TRADE_IN".equalsIgnoreCase(ot)
+                        || ot.toUpperCase().startsWith("SUPP_")));
+
+            int companionCount = companionIdsByParentOrder.getOrDefault(orderId, Set.of()).size();
+
+            cards.add(new CustomerOrdersResponse.OrderCard(
+                    orderId,
+                    primary.entityKey(),
+                    ot,
+                    root.orderFamily(),
+                    worstStatus,
+                    hasFallout,
+                    lineItems.size(),
+                    companionCount,
+                    root.channel(),
+                    createdAt,
+                    lastEvent,
+                    eta,
+                    itemTypes,
+                    isCompanion));
+        }
+
+        cards.sort((a, b) -> {
+            int cmpFallout = Boolean.compare(b.hasActiveFallout(), a.hasActiveFallout());
+            if (cmpFallout != 0) return cmpFallout;
+            java.time.Instant ta = a.createdAt() != null ? a.createdAt() : java.time.Instant.EPOCH;
+            java.time.Instant tb = b.createdAt() != null ? b.createdAt() : java.time.Instant.EPOCH;
+            return tb.compareTo(ta);
+        });
+
+        return new CustomerOrdersResponse(
+                customerId,
+                accountType,
+                cards.size(),
+                activeOrders,
+                attentionOrders,
+                activeFallouts,
+                cards);
+    }
+
+    private static String extractRootOrderId(String entityKey) {
+        if (entityKey == null) {
+            return "";
+        }
+        int colon = entityKey.indexOf(':');
+        return colon > 0 ? entityKey.substring(0, colon) : entityKey;
+    }
+
+    private static int orderStatusRank(String status) {
+        if (status == null) return 0;
+        return switch (status.toUpperCase()) {
+            case "IN_FALLOUT" -> 7;
+            case "BREACHED" -> 6;
+            case "JEOPARDY" -> 5;
+            case "WARNING" -> 4;
+            case "PAUSED" -> 3;
+            case "IN_PROGRESS" -> 2;
+            case "COMPLETED" -> 1;
+            default -> 0;
+        };
     }
 
     /**

@@ -276,6 +276,33 @@ export interface CustomerJourneyResponse {
   journeys: JourneyGroup[];
 }
 
+export interface CustomerOrderCard {
+  orderId: string;
+  primaryEntityKey: string;
+  orderType: string | null;
+  orderFamily: string | null;
+  status: string;
+  hasActiveFallout: boolean;
+  lineItemCount: number;
+  linkedCompanionCount: number;
+  channel: string | null;
+  createdAt: string | null;
+  lastEventTime: string | null;
+  predictedP50At: string | null;
+  itemTypes: string[];
+  isCompanionOrder: boolean;
+}
+
+export interface CustomerOrdersResponse {
+  accountId: string;
+  accountType: string | null;
+  totalOrders: number;
+  activeOrders: number;
+  ordersNeedingAttention: number;
+  activeFallouts: number;
+  orders: CustomerOrderCard[];
+}
+
 export interface MilestoneDto {
   entityKey: string;
   milestoneId: string;
@@ -343,6 +370,7 @@ export interface EntityTimelineResponse {
   includeNoise: boolean;
   rawEventsAvailable: boolean;
   rawEventsWarning: string | null;
+  orderEntities?: EntitySummaryDto[];
 }
 
 // ---------------------------------------------------------------------------

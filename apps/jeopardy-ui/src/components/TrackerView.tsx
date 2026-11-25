@@ -27,6 +27,7 @@ import {
 import {
   getAnalyticsFacets,
   getCustomerJourneys,
+  getCustomerOrders,
   getEntityTimeline,
   getTimelineHistogram,
   listPublicTrackerBlueprints,
@@ -37,6 +38,7 @@ import type {
   AnalyticsFacetsResponse,
   BlueprintStepDefinition,
   CustomerJourneyResponse,
+  CustomerOrdersResponse,
   EntitySummaryDto,
   EntityTimelineResponse,
   FalloutDto,
@@ -212,6 +214,9 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   const [assignedQueueFilter, setAssignedQueueFilter] = useState<string | undefined>(
     initialFilter?.assignedQueue,
   );
+  const [accountIdFilter, setAccountIdFilter] = useState<string | undefined>(
+    initialFilter?.customerId && !initialFilter?.entityKey ? initialFilter.customerId : undefined,
+  );
   const [dimKeyFilter, setDimKeyFilter] = useState<string | undefined>(initialFilter?.dimKey);
   const [dimValFilter, setDimValFilter] = useState<string | undefined>(initialFilter?.dimVal);
   const [sortBy, setSortBy] = useState<'attention' | 'newest' | 'oldest'>('attention');
@@ -232,16 +237,20 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     new Map(),
   );
 
-  // Selected entity & customer
+  // Selected entity & synced customer/account
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(
-    initialFilter?.customerId || 'ACC-88412',
+    initialFilter?.customerId || '',
   );
   const [selectedEntityKey, setSelectedEntityKey] = useState<string | null>(
     initialFilter?.entityKey || null,
   );
 
-  // Journey & Timeline state
+  // Journey, Account Orders Directory & Timeline state
   const [journeyData, setJourneyData] = useState<CustomerJourneyResponse | null>(null);
+  const [customerOrders, setCustomerOrders] = useState<CustomerOrdersResponse | null>(null);
+  const [accountOrdersFilter, setAccountOrdersFilter] = useState<'ALL' | 'ACTIVE' | 'ATTENTION' | 'COMPLETED'>('ALL');
+  const [accountPanelOpen, setAccountPanelOpen] = useState(false);
+  const accountOrdersRef = useRef<HTMLDivElement | null>(null);
   const [timelineData, setTimelineData] = useState<EntityTimelineResponse | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineError, setTimelineError] = useState<string | null>(null);
@@ -340,6 +349,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
         accountType: accountTypeFilter,
         errorCode: errorCodeFilter,
         assignedQueue: assignedQueueFilter,
+        customerId: accountIdFilter,
         dimKey: dimKeyFilter,
         dimVal: dimValFilter,
         from: timeRange.from,
@@ -385,6 +395,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     accountTypeFilter,
     errorCodeFilter,
     assignedQueueFilter,
+    accountIdFilter,
     dimKeyFilter,
     dimValFilter,
     timeRange.from,
@@ -429,12 +440,21 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   ]);
 
   const loadCustomerJourneys = useCallback(async (cid: string) => {
-    if (!cid) return;
+    if (!cid) {
+      setJourneyData(null);
+      setCustomerOrders(null);
+      return;
+    }
     try {
-      const res = await getCustomerJourneys(cid);
-      setJourneyData(res);
+      const [jRes, oRes] = await Promise.all([
+        getCustomerJourneys(cid).catch(() => null),
+        getCustomerOrders(cid).catch(() => null),
+      ]);
+      setJourneyData(jRes);
+      setCustomerOrders(oRes);
     } catch {
       setJourneyData(null);
+      setCustomerOrders(null);
     }
   }, []);
 
@@ -449,6 +469,10 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
       if (reqSeq !== timelineReqSeqRef.current) return; // Ignore stale response on rapid clicks
       setTimelineData(res);
       setSelectedStageIndex(null);
+      // Always keep selectedCustomerId strictly synced with the currently tracked Order's account!
+      if (res.entity?.customerId) {
+        setSelectedCustomerId(res.entity.customerId);
+      }
     } catch (err) {
       if (reqSeq !== timelineReqSeqRef.current) return;
       setTimelineError(err instanceof Error ? err.message : 'Failed to load order timeline');
@@ -946,7 +970,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                   type="text"
                   value={searchText}
                   onChange={(e) => setSearchText(e.target.value)}
-                  placeholder="Order ID, Customer, CHANGE_ESIM..."
+                  placeholder="Order # or Account # (ORD-..., ACC-...)..."
                   className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/30"
                 />
               </div>
@@ -959,6 +983,29 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                 <RefreshCw className={`w-3.5 h-3.5 ${queueLoading ? 'animate-spin' : ''}`} />
               </button>
             </div>
+
+            {/^((ACC|CUST)-[A-Z0-9_-]+)$/i.test(searchText.trim()) && (
+              <button
+                type="button"
+                onClick={() => {
+                  const acct = searchText.trim().toUpperCase();
+                  setAccountIdFilter(acct);
+                  setSelectedCustomerId(acct);
+                  setSearchText('');
+                  setAccountPanelOpen(true);
+                  window.setTimeout(() => {
+                    accountOrdersRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }, 120);
+                }}
+                className="w-full flex items-center justify-between gap-2 rounded-xl border border-[#C2E7FF] dark:border-[#004A77] bg-[#E8F0FE]/70 dark:bg-[#004A77]/40 px-3 py-1.5 text-[11px] font-semibold text-[#041E49] dark:text-[#C2E7FF] hover:bg-[#D3E3FD] transition"
+              >
+                <span className="inline-flex items-center gap-1.5 truncate">
+                  <User className="w-3.5 h-3.5 text-[#1A73E8] shrink-0" />
+                  View all orders for Account #{searchText.trim().toUpperCase()}
+                </span>
+                <span className="shrink-0">→</span>
+              </button>
+            )}
 
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1 flex-1">
@@ -1082,10 +1129,12 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
               accountTypeFilter ||
               errorCodeFilter ||
               assignedQueueFilter ||
+              accountIdFilter ||
               (dimKeyFilter && dimValFilter)) && (
               <div className="flex items-center justify-between rounded-lg bg-[#E8F0FE] dark:bg-[#004A77]/50 border border-[#C2E7FF] dark:border-[#004A77] px-2.5 py-1 text-[11px] text-[#041E49] dark:text-[#C2E7FF]">
                 <span className="truncate">
                   {[
+                    accountIdFilter ? `Account: ${accountIdFilter}` : null,
                     orderTypeFilter,
                     itemTypeFilter,
                     channelFilter,
@@ -1110,6 +1159,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                     setAccountTypeFilter(undefined);
                     setErrorCodeFilter(undefined);
                     setAssignedQueueFilter(undefined);
+                    setAccountIdFilter(undefined);
                     setDimKeyFilter(undefined);
                     setDimValFilter(undefined);
                     onClearInitialFilter();
@@ -1294,59 +1344,101 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
             </div>
           ) : (
             <>
-              {/* HERO TRACKER CARD (Google M3 Expressive Journey Sheet) */}
+              {/* HERO TRACKER CARD (Unmistakably Order-First + Clickable Account Directory Pill) */}
               <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_3px_rgba(16,24,40,0.05)] overflow-hidden">
                 {/* 1. Plain-English Status Hero Banner */}
                 <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-start justify-between gap-4">
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {heroStatus && (
-                        <span
-                          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${heroStatus.badgeClass}`}
-                        >
-                          <span className={`w-2 h-2 rounded-full ${heroStatus.dotClass}`} />
-                          {heroStatus.label}
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => copyWithFeedback('id', entity.entityKey)}
-                        className="inline-flex items-center gap-1 text-xs font-mono text-slate-500 hover:text-slate-900 dark:hover:text-white transition"
-                        title="Copy Order/Item ID"
-                      >
-                        {entity.entityKey}
-                        {copiedAction === 'id' ? (
-                          <Check className="w-3 h-3 text-emerald-500" />
-                        ) : (
-                          <Copy className="w-3 h-3 opacity-60" />
-                        )}
-                      </button>
-                      {entity.customerId && (
-                        <span className="inline-flex items-center gap-1 text-xs text-slate-500">
-                          <User className="w-3.5 h-3.5" />
-                          {entity.customerId}
-                        </span>
-                      )}
-                    </div>
+                  <div className="space-y-2 flex-1 min-w-0">
+                    {/* Clear Order # vs Line Item vs Account # Identity Bar */}
+                    {(() => {
+                      const hasLine = entity.entityKey.includes(':');
+                      const rootOrderNum = hasLine
+                        ? entity.entityKey.split(':')[0]
+                        : entity.entityKey;
+                      const lineItemId = hasLine ? entity.entityKey.split(':')[1] : null;
+                      const acctOrderCount = customerOrders?.totalOrders ?? 0;
 
-                    <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+                      return (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {heroStatus && (
+                            <span
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${heroStatus.badgeClass}`}
+                            >
+                              <span className={`w-2 h-2 rounded-full ${heroStatus.dotClass}`} />
+                              {heroStatus.label}
+                            </span>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => copyWithFeedback('id', rootOrderNum)}
+                            className="inline-flex items-center gap-1.5 rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] hover:bg-[#E2E9F4] dark:hover:bg-[#333639] px-3 py-0.5 text-xs font-mono font-semibold text-[#1F1F1F] dark:text-white transition"
+                            title="Copy Order Number"
+                          >
+                            <span className="font-sans text-[10px] font-medium uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
+                              Order #
+                            </span>
+                            {rootOrderNum}
+                            {copiedAction === 'id' ? (
+                              <Check className="w-3 h-3 text-[#1E8E3E]" />
+                            ) : (
+                              <Copy className="w-3 h-3 opacity-60" />
+                            )}
+                          </button>
+
+                          {lineItemId && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-[#F3E8FD] dark:bg-[#2D1B3E] px-2.5 py-0.5 text-[11px] font-mono font-semibold text-[#7627BB] dark:text-[#D7AEFB]">
+                              Line {lineItemId}
+                            </span>
+                          )}
+
+                          {entity.customerId && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAccountPanelOpen(true);
+                                window.setTimeout(() => {
+                                  accountOrdersRef.current?.scrollIntoView({
+                                    behavior: 'smooth',
+                                    block: 'start',
+                                  });
+                                }, 50);
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-full border border-[#C2E7FF] dark:border-[#004A77] bg-[#E8F0FE]/70 dark:bg-[#004A77]/40 hover:bg-[#D3E3FD] dark:hover:bg-[#004A77]/70 px-3 py-0.5 text-xs font-medium text-[#041E49] dark:text-[#C2E7FF] transition"
+                              title="View all orders placed by this Customer Account"
+                            >
+                              <User className="w-3.5 h-3.5 text-[#1A73E8] dark:text-[#8AB4F8]" />
+                              <span>Account:</span>
+                              <span className="font-mono font-semibold">{entity.customerId}</span>
+                              {acctOrderCount > 0 && (
+                                <span className="rounded-full bg-white/90 dark:bg-[#1E1F20] px-1.5 py-0 text-[10px] font-semibold text-[#1967D2] dark:text-[#8AB4F8]">
+                                  {acctOrderCount} {acctOrderCount === 1 ? 'order' : 'orders'}
+                                </span>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    <h2 className="font-display text-xl font-bold tracking-tight text-[#1F1F1F] dark:text-white">
                       {friendlyEntityTitle(entity)}
                     </h2>
 
-                    <p className="text-xs text-slate-600 dark:text-slate-300">
+                    <p className="text-xs text-[#444746] dark:text-[#C4C7C5]">
                       {entity.status === 'COMPLETED' ? (
-                        <>All {stages.length} steps completed.</>
+                        <>All {stages.length} milestones completed for this order.</>
                       ) : currentStageIndex >= 0 && stages[currentStageIndex] ? (
                         <>
                           <strong>
                             Step {currentStageIndex + 1} of {stages.length}:
                           </strong>{' '}
                           Currently on{' '}
-                          <span className="font-semibold text-slate-900 dark:text-white">
+                          <span className="font-semibold text-[#1F1F1F] dark:text-white">
                             {stages[currentStageIndex].title}
                           </span>
                           {activeFallouts.length > 0 && activeFallouts[0].assignedGroup && (
-                            <span className="text-rose-600 dark:text-rose-400">
+                            <span className="text-[#C5221F] dark:text-[#F28B82]">
                               {' '}
                               · With {prettifyName(activeFallouts[0].assignedGroup)}
                             </span>
@@ -1357,20 +1449,64 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                       )}
                     </p>
 
-                    {/* 1-Click Care Agent & Integrator Utilities */}
+                    {/* Clean Order Facts Bar (Only shows fields that exist!) */}
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                      {entity.orderType && (
+                        <span>
+                          Order Type: <strong className="text-[#1F1F1F] dark:text-[#E3E3E3] font-mono">{entity.orderType}</strong>
+                        </span>
+                      )}
+                      {entity.createdAt && (
+                        <span>
+                          Placed: <strong className="text-[#1F1F1F] dark:text-[#E3E3E3]">{formatShortTime(entity.createdAt)}</strong>
+                        </span>
+                      )}
+                      {entity.channel && (
+                        <span>
+                          Channel: <strong className="text-[#1F1F1F] dark:text-[#E3E3E3]">{prettifyName(entity.channel)}</strong>
+                        </span>
+                      )}
+                      {entity.accountType && (
+                        <span>
+                          Tier: <strong className="text-[#1F1F1F] dark:text-[#E3E3E3]">{entity.accountType}</strong>
+                        </span>
+                      )}
+                      {entity.subscriberId && (
+                        <span>
+                          Subscriber: <strong className="text-[#1F1F1F] dark:text-[#E3E3E3] font-mono">{entity.subscriberId}</strong>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* 1-Click Care Agent, Account Lookup & Integrator Utilities */}
                     <div className="pt-1.5 flex flex-wrap items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => copyWithFeedback('summary', buildSupportSummary())}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 px-2.5 py-1 text-[11px] font-medium text-slate-700 dark:text-slate-300 transition"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-3 py-1 text-[11px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3] transition"
                       >
                         {copiedAction === 'summary' ? (
-                          <ClipboardCheck className="w-3.5 h-3.5 text-emerald-500" />
+                          <ClipboardCheck className="w-3.5 h-3.5 text-[#1E8E3E]" />
                         ) : (
                           <Copy className="w-3.5 h-3.5 text-slate-400" />
                         )}
                         {copiedAction === 'summary' ? 'Copied Summary!' : 'Copy Support Summary'}
                       </button>
+
+                      {entity.customerId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAccountIdFilter(entity.customerId || undefined);
+                            setQueueOpen(true);
+                          }}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] hover:bg-[#E8F0FE] dark:hover:bg-[#004A77]/40 px-3 py-1 text-[11px] font-medium text-[#1967D2] dark:text-[#8AB4F8] transition"
+                          title="Filter left order queue strictly to this Customer Account"
+                        >
+                          <User className="w-3.5 h-3.5" />
+                          Filter Queue to Account {entity.customerId}
+                        </button>
+                      )}
 
                       <button
                         type="button"
@@ -1383,11 +1519,11 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                             `${window.location.origin}/api/v1/orders/${encodeURIComponent(rootOrderId)}/status`,
                           );
                         }}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 px-2.5 py-1 text-[11px] font-medium text-slate-600 dark:text-slate-400 transition"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-3 py-1 text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6] transition"
                         title="Copy lightweight Consumer Order Status API URL"
                       >
                         {copiedAction === 'api' ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-500" />
+                          <Check className="w-3.5 h-3.5 text-[#1E8E3E]" />
                         ) : (
                           <Code2 className="w-3.5 h-3.5 text-slate-400" />
                         )}
@@ -1397,22 +1533,23 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                   </div>
 
                   {/* Right Summary Box: ETA & Last Activity */}
-                  <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 px-4 py-3 min-w-[200px]">
-                    <div className="text-[11px] font-medium text-slate-500">
+                  <div className="rounded-2xl bg-[#F8FAFD] dark:bg-[#131314] border border-[#E0E6F0] dark:border-[#333639] px-4 py-3.5 min-w-[210px]">
+                    <div className="text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6]">
                       {entity.status === 'COMPLETED' ? 'Completed At' : 'Estimated Completion'}
                     </div>
-                    <div className="text-sm font-semibold text-slate-900 dark:text-white mt-0.5 flex items-center gap-1.5">
-                      <Clock className="w-4 h-4 text-blue-500" />
+                    <div className="text-sm font-semibold text-[#1F1F1F] dark:text-white mt-0.5 flex items-center gap-1.5">
+                      <Clock className="w-4 h-4 text-[#1A73E8] dark:text-[#8AB4F8]" />
                       {entity.closedAt
                         ? formatShortTime(entity.closedAt)
                         : entity.predictedP50At
                           ? formatShortTime(entity.predictedP50At)
                           : 'Calculating...'}
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-0.5">
-                      {entity.channel ? `${prettifyName(entity.channel)} · ` : ''}
-                      {entity.accountType || 'Standard'}
-                    </div>
+                    {entity.lastEventTime && (
+                      <div className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] mt-1">
+                        Updated {formatShortTime(entity.lastEventTime)}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1713,8 +1850,23 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                 )}
               </div>
 
-              {/* CONNECTED ORDER JOURNEY & LINKED INTERNAL / COMPANION BPMN ORDERS */}
-              {(customerEntities.length > 1 || (timelineData?.relationships ?? []).length > 0) && (() => {
+              {/* CARD A: STRICTLY ORDER-SCOPED LINE ITEMS & LINKED COMPANION BPMNs */}
+              {(() => {
+                const currentRootOrderId = entity.entityKey.includes(':')
+                  ? entity.entityKey.split(':')[0]
+                  : entity.entityKey;
+                const scopedOrderList =
+                  (timelineData?.orderEntities ?? []).length > 0
+                    ? timelineData!.orderEntities!
+                    : customerEntities.filter(
+                        (e) =>
+                          e.entityKey === currentRootOrderId ||
+                          e.entityKey.startsWith(`${currentRootOrderId}:`),
+                      );
+                if (scopedOrderList.length <= 1 && (timelineData?.relationships ?? []).length === 0) {
+                  return null;
+                }
+
                 const relByOtherKey = new Map<string, { label: string; rawType: string; isCompanion: boolean }>();
                 for (const rel of timelineData?.relationships ?? []) {
                   const otherKey =
@@ -1751,6 +1903,12 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                 const isInternalCompanion = (sib: EntitySummaryDto): boolean => {
                   const ot = (sib.orderType || '').toUpperCase();
                   const el = (sib.entityLevel || '').toUpperCase();
+                  const sameOrder =
+                    sib.entityKey === currentRootOrderId ||
+                    sib.entityKey.startsWith(`${currentRootOrderId}:`);
+                  if (sameOrder && !ot.startsWith('INTERNAL_') && ot !== 'DEVICE_TRADE_IN' && !ot.startsWith('SUPP_')) {
+                    return false;
+                  }
                   return (
                     ot.startsWith('INTERNAL_') ||
                     ot === 'DEVICE_TRADE_IN' ||
@@ -1767,14 +1925,14 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                   return vis === 'INTERNAL_ONLY';
                 };
 
-                const visibleEntities = customerEntities.filter((sib) => {
+                const visibleEntities = scopedOrderList.filter((sib) => {
                   if (linkedAudience === 'CUSTOMER') return !isInternalOnly(sib);
                   if (linkedAudience === 'INTERNAL') return isInternalCompanion(sib) || sib.entityKey === entity.entityKey;
                   return true;
                 });
 
                 const companionItems = visibleEntities.filter((sib) => isInternalCompanion(sib));
-                const primaryItems = visibleEntities.filter((sib) => !isInternalCompanion(sib));
+                const orderItems = visibleEntities.filter((sib) => !isInternalCompanion(sib));
 
                 const renderLinkedCard = (sib: EntitySummaryDto) => {
                   const active = sib.entityKey === entity.entityKey;
@@ -1809,7 +1967,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                       </div>
                       <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-mono text-[#5F6368] dark:text-[#9AA0A6]">
                         <span className="truncate">{sib.entityKey}</span>
-                        {sib.blueprintId && (
+                        {sib.orderType && (
                           <span className="text-[10px] opacity-75 truncate">{sib.orderType}</span>
                         )}
                       </div>
@@ -1849,17 +2007,16 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                       <div>
                         <h3 className="font-display text-sm font-bold text-[#1F1F1F] dark:text-white flex items-center gap-2">
                           <Link2 className="w-4 h-4 text-[#1A73E8] dark:text-[#8AB4F8]" />
-                          Connected Order Journey · Customer {selectedCustomerId}
+                          Inside Order #{currentRootOrderId} &amp; Linked Companion Workflows
                         </h3>
                         <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] mt-0.5">
-                          Track customer-facing order items alongside separately spawned internal BPMN workflows (Insurance, Trade-In, Installs, Perks).
+                          Line items inside this specific order plus any separate internal BPMNs linked directly to it (Insurance, Trade-In, Installs, Change Orders).
                         </p>
                       </div>
 
-                      {/* Audience Switcher for Care Agents vs Internal Ops */}
                       <div className="inline-flex items-center rounded-full bg-[#F0F4F9] dark:bg-[#131314] border border-[#E0E6F0] dark:border-[#333639] p-0.5 text-[11px]">
                         {[
-                          { id: 'ALL' as const, label: `All (${customerEntities.length})` },
+                          { id: 'ALL' as const, label: `All (${scopedOrderList.length})` },
                           { id: 'CUSTOMER' as const, label: 'Customer View' },
                           { id: 'INTERNAL' as const, label: 'Internal / Companion' },
                         ].map((tab) => (
@@ -1879,27 +2036,196 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                       </div>
                     </div>
 
+                    {orderItems.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
+                          Order &amp; Line Items ({orderItems.length})
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                          {orderItems.map(renderLinkedCard)}
+                        </div>
+                      </div>
+                    )}
+
                     {companionItems.length > 0 && (
                       <div className="space-y-2">
                         <div className="text-[11px] font-semibold uppercase tracking-wider text-[#1967D2] dark:text-[#8AB4F8]">
-                          Linked Internal &amp; Companion Workflows ({companionItems.length})
+                          Linked Companion &amp; Internal BPMNs ({companionItems.length})
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
                           {companionItems.map(renderLinkedCard)}
                         </div>
                       </div>
                     )}
+                  </div>
+                );
+              })()}
 
-                    {primaryItems.length > 0 && (
-                      <div className="space-y-2">
-                        <div className="text-[11px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
-                          Customer Order &amp; Line Items ({primaryItems.length})
+              {/* CARD B: DEDICATED ACCOUNT / CUSTOMER ORDER DIRECTORY ("All Orders for Account #...") */}
+              {entity.customerId && customerOrders && customerOrders.orders.length > 0 && (() => {
+                const currentRootOrderId = entity.entityKey.includes(':')
+                  ? entity.entityKey.split(':')[0]
+                  : entity.entityKey;
+                const filteredAcctOrders = customerOrders.orders.filter((o) => {
+                  const st = (o.status || '').toUpperCase();
+                  if (accountOrdersFilter === 'ACTIVE') {
+                    return st !== 'COMPLETED' && st !== 'CANCELLED';
+                  }
+                  if (accountOrdersFilter === 'ATTENTION') {
+                    return o.hasActiveFallout || ['WARNING', 'JEOPARDY', 'IN_FALLOUT', 'BREACHED'].includes(st);
+                  }
+                  if (accountOrdersFilter === 'COMPLETED') {
+                    return st === 'COMPLETED' || st === 'CANCELLED';
+                  }
+                  return true;
+                });
+
+                return (
+                  <div
+                    ref={accountOrdersRef}
+                    className={`rounded-[24px] border bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] overflow-hidden transition ${
+                      accountPanelOpen
+                        ? 'border-[#1A73E8] ring-2 ring-[#1A73E8]/15'
+                        : 'border-[#E0E6F0] dark:border-[#333639]'
+                    }`}
+                  >
+                    <div className="px-5 py-4 border-b border-[#E0E6F0] dark:border-[#333639] flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-display text-sm font-bold text-[#1F1F1F] dark:text-white flex items-center gap-2">
+                            <User className="w-4 h-4 text-[#1A73E8] dark:text-[#8AB4F8]" />
+                            All Orders for Account #{customerOrders.accountId}
+                          </h3>
+                          {customerOrders.accountType && (
+                            <span className="rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2.5 py-0.5 text-[10px] font-semibold text-[#444746] dark:text-[#C4C7C5]">
+                              {customerOrders.accountType}
+                            </span>
+                          )}
+                          <span className="rounded-full bg-[#E8F0FE] dark:bg-[#004A77] px-2.5 py-0.5 text-[10px] font-semibold text-[#1967D2] dark:text-[#C2E7FF]">
+                            {customerOrders.totalOrders} total · {customerOrders.activeOrders} active
+                          </span>
+                          {customerOrders.activeFallouts > 0 && (
+                            <span className="rounded-full bg-[#FCE8E6] dark:bg-[#3C1919] px-2.5 py-0.5 text-[10px] font-semibold text-[#C5221F] dark:text-[#F28B82]">
+                              {customerOrders.activeFallouts} fallout
+                            </span>
+                          )}
                         </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                          {primaryItems.map(renderLinkedCard)}
-                        </div>
+                        <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] mt-0.5">
+                          Complete order history for this customer account — click any order to inspect its milestones.
+                        </p>
                       </div>
-                    )}
+
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {(['ALL', 'ACTIVE', 'ATTENTION', 'COMPLETED'] as const).map((f) => (
+                          <button
+                            key={f}
+                            type="button"
+                            onClick={() => setAccountOrdersFilter(f)}
+                            className={`m3-chip ${
+                              accountOrdersFilter === f ? 'm3-chip-active' : 'm3-chip-idle'
+                            }`}
+                          >
+                            {f === 'ALL'
+                              ? `All (${customerOrders.orders.length})`
+                              : f === 'ACTIVE'
+                                ? 'Active'
+                                : f === 'ATTENTION'
+                                  ? 'Needs Attention'
+                                  : 'Completed'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-[#E0E6F0] dark:border-[#333639] text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6] uppercase tracking-wider">
+                            <th className="py-2.5 px-5">Order #</th>
+                            <th className="py-2.5 px-3">Type &amp; Items</th>
+                            <th className="py-2.5 px-3">Status</th>
+                            <th className="py-2.5 px-3">Placed</th>
+                            <th className="py-2.5 px-5 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E0E6F0]/70 dark:divide-[#333639]/70 text-xs">
+                          {filteredAcctOrders.length === 0 ? (
+                            <tr>
+                              <td colSpan={5} className="py-8 text-center text-[#5F6368]">
+                                No orders match this filter for Account #{customerOrders.accountId}.
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredAcctOrders.map((ord) => {
+                              const isCurrent = ord.orderId === currentRootOrderId;
+                              const st = humanStatusLabel(ord.status, ord.hasActiveFallout);
+                              return (
+                                <tr
+                                  key={ord.orderId}
+                                  onClick={() => setSelectedEntityKey(ord.primaryEntityKey)}
+                                  className={`cursor-pointer transition ${
+                                    isCurrent
+                                      ? 'bg-[#E8F0FE]/60 dark:bg-[#004A77]/30'
+                                      : 'hover:bg-[#F8FAFD] dark:hover:bg-[#282A2C]/60'
+                                  }`}
+                                >
+                                  <td className="py-3 px-5">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-mono font-semibold text-[#1F1F1F] dark:text-white">
+                                        {ord.orderId}
+                                      </span>
+                                      {isCurrent && (
+                                        <span className="rounded-full bg-[#1A73E8] text-white px-2 py-0 text-[10px] font-semibold">
+                                          Viewing
+                                        </span>
+                                      )}
+                                      {ord.isCompanionOrder && (
+                                        <span className="rounded-full bg-[#F3E8FD] dark:bg-[#2D1B3E] text-[#7627BB] dark:text-[#D7AEFB] px-2 py-0 text-[10px] font-medium">
+                                          Linked BPMN
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[10px] text-[#5F6368] dark:text-[#9AA0A6] mt-0.5">
+                                      {ord.lineItemCount > 0
+                                        ? `${ord.lineItemCount} line ${ord.lineItemCount === 1 ? 'item' : 'items'}`
+                                        : 'Single order'}
+                                      {ord.linkedCompanionCount > 0 &&
+                                        ` · +${ord.linkedCompanionCount} companion`}
+                                    </div>
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <div className="font-medium text-[#1F1F1F] dark:text-[#E3E3E3]">
+                                      {ord.orderType || 'Order'}
+                                    </div>
+                                    {ord.itemTypes.length > 0 && (
+                                      <div className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] truncate max-w-[260px]">
+                                        {ord.itemTypes.map((it) => prettifyName(it)).join(', ')}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <span
+                                      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${st.badgeClass}`}
+                                    >
+                                      <span className={`w-1.5 h-1.5 rounded-full ${st.dotClass}`} />
+                                      {st.label}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-3 font-mono text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                                    {ord.createdAt ? formatShortTime(ord.createdAt) : '—'}
+                                  </td>
+                                  <td className="py-3 px-5 text-right">
+                                    <span className="text-xs font-semibold text-[#1A73E8] dark:text-[#8AB4F8]">
+                                      {isCurrent ? 'Current' : 'Track Order →'}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 );
               })()}

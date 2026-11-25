@@ -11,6 +11,7 @@ import type {
   AuthStatusResponse,
   ClusterScanSummary,
   CustomerJourneyResponse,
+  CustomerOrdersResponse,
   DevOpsBottlenecksResponse,
   DryRunRequest,
   DryRunResponse,
@@ -74,6 +75,7 @@ export interface TrackerQueueQuery {
   hasActiveFallout?: boolean;
   errorCode?: string;
   assignedQueue?: string;
+  customerId?: string;
   dimKey?: string;
   dimVal?: string;
   from?: string;
@@ -293,6 +295,7 @@ export function searchTrackerQueue(query: TrackerQueueQuery = {}): Promise<Queue
     hasActiveFallout: query.hasActiveFallout,
     errorCode: query.errorCode?.trim() || undefined,
     assignedQueue: query.assignedQueue?.trim() || undefined,
+    customerId: query.customerId?.trim() || undefined,
     from: query.from,
     to: query.to,
     sortBy: query.sortBy,
@@ -352,6 +355,12 @@ export function getSliceBreakdown(query: SliceBreakdownQuery): Promise<SliceBrea
 export function getCustomerJourneys(customerId: string): Promise<CustomerJourneyResponse> {
   return fetchJson<CustomerJourneyResponse>(
     `${API_BASE}/customers/${encodeURIComponent(customerId)}/journeys`,
+  );
+}
+
+export function getCustomerOrders(customerId: string): Promise<CustomerOrdersResponse> {
+  return fetchJson<CustomerOrdersResponse>(
+    `${API_BASE}/customers/${encodeURIComponent(customerId)}/orders`,
   );
 }
 

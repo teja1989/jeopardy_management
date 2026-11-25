@@ -11,5 +11,21 @@ public record EntityTimelineResponse(
         List<RawEventDto> rawEvents,
         boolean includeNoise,
         boolean rawEventsAvailable,
-        String rawEventsWarning
-) {}
+        String rawEventsWarning,
+        List<EntitySummaryDto> orderEntities
+) {
+    public EntityTimelineResponse(
+            EntitySummaryDto entity,
+            List<MilestoneDto> milestones,
+            List<FalloutDto> fallouts,
+            List<JeopardyCaseDto> jeopardyCases,
+            List<EntityRelationshipDto> relationships,
+            List<RawEventDto> rawEvents,
+            boolean includeNoise,
+            boolean rawEventsAvailable,
+            String rawEventsWarning) {
+        this(
+                entity, milestones, fallouts, jeopardyCases, relationships,
+                rawEvents, includeNoise, rawEventsAvailable, rawEventsWarning, List.of());
+    }
+}

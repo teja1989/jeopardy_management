@@ -50,6 +50,7 @@ public class TrackerController {
             @RequestParam(required = false) Boolean hasActiveFallout,
             @RequestParam(required = false) String errorCode,
             @RequestParam(required = false) String assignedQueue,
+            @RequestParam(required = false) String customerId,
             @RequestParam(required = false) String from,
             @RequestParam(required = false) String to,
             @RequestParam(defaultValue = "attention") String sortBy,
@@ -59,7 +60,7 @@ public class TrackerController {
         Map<String, String> dims = analyticsQueryBuilder.extractAndValidateDimensions(allQueryParams);
         return trackerService.searchQueue(
                 q, status, orderFamily, orderType, itemType, accountType, channel, region,
-                hasActiveFallout, errorCode, assignedQueue, dims, parseInstant(from), parseInstant(to),
+                hasActiveFallout, errorCode, assignedQueue, customerId, dims, parseInstant(from), parseInstant(to),
                 sortBy, limit, offset);
     }
 
@@ -92,6 +93,15 @@ public class TrackerController {
     @GetMapping("/customers/{customerId}/journeys")
     public CustomerJourneyResponse getCustomerJourneys(@PathVariable String customerId) {
         return trackerService.getCustomerJourneys(customerId);
+    }
+
+    /**
+     * Clean Account / Customer Order Directory: returns all distinct Orders placed by this
+     * account with rolled-up status, line-item counts, and linked companion BPMN counts.
+     */
+    @GetMapping("/customers/{customerId}/orders")
+    public CustomerOrdersResponse getCustomerOrders(@PathVariable String customerId) {
+        return trackerService.getCustomerOrders(customerId);
     }
 
     @GetMapping("/entities/{entityKey}/timeline")
