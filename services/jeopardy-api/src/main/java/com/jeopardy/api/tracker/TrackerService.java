@@ -41,6 +41,39 @@ public class TrackerService {
                 q, status, orderFamily, orderType, accountType, hasActiveFallout, limit, offset);
     }
 
+    public QueueSearchResponse searchQueue(
+            String q,
+            String status,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            Boolean hasActiveFallout,
+            java.time.Instant from,
+            java.time.Instant to,
+            String sortBy,
+            int limit,
+            int offset) {
+        return repository.searchQueue(
+                q, status, orderFamily, orderType, itemType, accountType, channel, region,
+                hasActiveFallout, from, to, sortBy, limit, offset);
+    }
+
+    public TimelineHistogramResponse getTimelineHistogram(
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            java.time.Instant from,
+            java.time.Instant to) {
+        return repository.queryTimelineHistogram(
+                orderFamily, orderType, itemType, accountType, channel, region, from, to);
+    }
+
     public CustomerJourneyResponse getCustomerJourneys(String customerId) {
         List<EntitySummaryDto> entities = repository.findEntitiesByCustomerId(customerId);
         if (entities.isEmpty()) {

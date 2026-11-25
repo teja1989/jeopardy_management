@@ -58,25 +58,79 @@ public class TrackerRepository {
             Boolean hasActiveFallout,
             int limit,
             int offset) {
+        return searchQueue(
+                q, status, orderFamily, orderType, null, accountType, null, null,
+                hasActiveFallout, null, null, "attention", limit, offset);
+    }
 
+    /**
+     * High-performance partition-pruned order search supporting calendar time range
+     * ({@code from}..{@code to}), multi-facet filters (itemType, channel, region),
+     * B-tree prefix fast-path for Order IDs, and query latency telemetry.
+     */
+    public QueueSearchResponse searchQueue(
+            String q,
+            String status,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            Boolean hasActiveFallout,
+            Instant from,
+            Instant to,
+            String sortBy,
+            int limit,
+            int offset) {
+
+        long startNs = System.nanoTime();
         int safeLimit = Math.max(1, Math.min(limit, 500));
         int safeOffset = Math.max(0, offset);
 
         StringBuilder where = new StringBuilder(" WHERE 1=1");
         MapSqlParameterSource params = new MapSqlParameterSource();
 
+        // Partition-pruning time range predicates FIRST so Postgres prunes untouched monthly partitions!
+        if (from != null) {
+            where.append(" AND created_at >= :fromTs");
+            params.addValue("fromTs", Timestamp.from(from));
+        }
+        if (to != null) {
+            where.append(" AND created_at <= :toTs");
+            params.addValue("toTs", Timestamp.from(to));
+        }
+
         if (q != null && !q.isBlank()) {
-            where.append(" AND (entity_key ILIKE :qPattern"
-                    + " OR customer_id ILIKE :qPattern"
-                    + " OR subscriber_id ILIKE :qPattern"
-                    + " OR journey_id ILIKE :qPattern"
-                    + " OR order_type ILIKE :qPattern"
-                    + " OR item_type ILIKE :qPattern)");
-            params.addValue("qPattern", "%" + q.trim() + "%");
+            String trimmed = q.trim();
+            // Fast B-tree prefix scan (uses varchar_pattern_ops index) when input looks like an Order/Entity ID
+            boolean looksLikeIdPrefix = !trimmed.contains(" ")
+                    && (trimmed.toUpperCase().startsWith("ORD-")
+                        || trimmed.toUpperCase().startsWith("CHG-")
+                        || trimmed.toUpperCase().startsWith("TRD-")
+                        || trimmed.toUpperCase().startsWith("PRM-")
+                        || trimmed.toUpperCase().startsWith("SUPP-"));
+            if (looksLikeIdPrefix) {
+                where.append(" AND (entity_key LIKE :qPrefix OR parent_entity_key LIKE :qPrefix OR journey_id LIKE :qPrefix)");
+                params.addValue("qPrefix", trimmed.toUpperCase() + "%");
+            } else {
+                where.append(" AND (entity_key ILIKE :qPattern"
+                        + " OR customer_id ILIKE :qPattern"
+                        + " OR subscriber_id ILIKE :qPattern"
+                        + " OR journey_id ILIKE :qPattern"
+                        + " OR order_type ILIKE :qPattern"
+                        + " OR item_type ILIKE :qPattern)");
+                params.addValue("qPattern", "%" + trimmed + "%");
+            }
         }
         if (status != null && !status.isBlank()) {
-            where.append(" AND status = :status");
-            params.addValue("status", status.trim().toUpperCase());
+            String st = status.trim().toUpperCase();
+            if ("ATTENTION".equals(st)) {
+                where.append(" AND (status IN ('WARNING', 'JEOPARDY', 'BREACHED', 'IN_FALLOUT') OR has_active_fallout = TRUE)");
+            } else {
+                where.append(" AND status = :status");
+                params.addValue("status", st);
+            }
         }
         if (orderFamily != null && !orderFamily.isBlank()) {
             where.append(" AND order_family = :orderFamily");
@@ -86,9 +140,21 @@ public class TrackerRepository {
             where.append(" AND order_type = :orderType");
             params.addValue("orderType", orderType.trim());
         }
+        if (itemType != null && !itemType.isBlank()) {
+            where.append(" AND item_type = :itemType");
+            params.addValue("itemType", itemType.trim());
+        }
         if (accountType != null && !accountType.isBlank()) {
             where.append(" AND account_type = :accountType");
             params.addValue("accountType", accountType.trim());
+        }
+        if (channel != null && !channel.isBlank()) {
+            where.append(" AND channel = :channel");
+            params.addValue("channel", channel.trim());
+        }
+        if (region != null && !region.isBlank()) {
+            where.append(" AND region = :region");
+            params.addValue("region", region.trim());
         }
         if (hasActiveFallout != null) {
             where.append(" AND has_active_fallout = :hasActiveFallout");
@@ -104,6 +170,12 @@ public class TrackerRepository {
         params.addValue("limit", safeLimit);
         params.addValue("offset", safeOffset);
 
+        String outerOrderBy = switch (sortBy != null ? sortBy.trim().toLowerCase() : "attention") {
+            case "newest" -> "ORDER BY created_at DESC, last_event_time DESC";
+            case "oldest" -> "ORDER BY created_at ASC, last_event_time ASC";
+            default -> "ORDER BY has_active_fallout DESC, last_event_time DESC";
+        };
+
         String dataSql = """
                 SELECT * FROM (
                     SELECT DISTINCT ON (entity_key)
@@ -116,12 +188,88 @@ public class TrackerRepository {
                 """ + where + """
                     ORDER BY entity_key, last_event_time DESC, created_at DESC
                 ) latest
-                ORDER BY has_active_fallout DESC, last_event_time DESC
+                """ + outerOrderBy + """
+                
                 LIMIT :limit OFFSET :offset
                 """;
 
         List<EntitySummaryDto> items = postgresJdbc.query(dataSql, params, (rs, rowNum) -> mapEntity(rs));
-        return new QueueSearchResponse(items, totalCount, safeLimit, safeOffset);
+        long queryMs = Math.max(1L, (System.nanoTime() - startNs) / 1_000_000L);
+        return new QueueSearchResponse(items, totalCount, safeLimit, safeOffset, queryMs, from, to);
+    }
+
+    /**
+     * Single-pass partition-pruned calendar timeline histogram over {@code tracked_entities}.
+     */
+    public TimelineHistogramResponse queryTimelineHistogram(
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            Instant from,
+            Instant to) {
+        long startNs = System.nanoTime();
+        Instant safeTo = to != null ? to : Instant.now();
+        Instant safeFrom = from != null ? from : safeTo.minusSeconds(7L * 24L * 3600L);
+        long spanHours = Math.max(1L, (safeTo.getEpochSecond() - safeFrom.getEpochSecond()) / 3600L);
+        String granularity = spanHours <= 72L ? "hour" : "day";
+        long bucketSeconds = "hour".equals(granularity) ? 3600L : 86400L;
+
+        StringBuilder where = new StringBuilder(" WHERE created_at >= :fromTs AND created_at <= :toTs");
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("fromTs", Timestamp.from(safeFrom))
+                .addValue("toTs", Timestamp.from(safeTo));
+
+        if (orderFamily != null && !orderFamily.isBlank()) {
+            where.append(" AND order_family = :orderFamily");
+            params.addValue("orderFamily", orderFamily.trim());
+        }
+        if (orderType != null && !orderType.isBlank()) {
+            where.append(" AND order_type = :orderType");
+            params.addValue("orderType", orderType.trim());
+        }
+        if (itemType != null && !itemType.isBlank()) {
+            where.append(" AND item_type = :itemType");
+            params.addValue("itemType", itemType.trim());
+        }
+        if (accountType != null && !accountType.isBlank()) {
+            where.append(" AND account_type = :accountType");
+            params.addValue("accountType", accountType.trim());
+        }
+        if (channel != null && !channel.isBlank()) {
+            where.append(" AND channel = :channel");
+            params.addValue("channel", channel.trim());
+        }
+        if (region != null && !region.isBlank()) {
+            where.append(" AND region = :region");
+            params.addValue("region", region.trim());
+        }
+
+        String sql = "SELECT date_trunc('" + granularity + "', created_at) AS bucket_start,"
+                + " COUNT(DISTINCT entity_key) AS total_cnt,"
+                + " COUNT(DISTINCT entity_key) FILTER (WHERE status = 'COMPLETED') AS completed_cnt,"
+                + " COUNT(DISTINCT entity_key) FILTER (WHERE status IN ('WARNING', 'JEOPARDY', 'BREACHED')) AS attention_cnt,"
+                + " COUNT(DISTINCT entity_key) FILTER (WHERE status = 'IN_FALLOUT' OR has_active_fallout = TRUE) AS fallout_cnt"
+                + " FROM tracked_entities"
+                + where
+                + " GROUP BY 1 ORDER BY 1 ASC";
+
+        List<TimelineHistogramResponse.Bucket> buckets = postgresJdbc.query(sql, params, (rs, idx) -> {
+            Instant bStart = toInstant(rs, "bucket_start");
+            return new TimelineHistogramResponse.Bucket(
+                    bStart,
+                    bStart != null ? bStart.plusSeconds(bucketSeconds) : null,
+                    rs.getLong("total_cnt"),
+                    rs.getLong("completed_cnt"),
+                    rs.getLong("attention_cnt"),
+                    rs.getLong("fallout_cnt"));
+        });
+
+        long totalOrders = buckets.stream().mapToLong(TimelineHistogramResponse.Bucket::totalCount).sum();
+        long queryMs = Math.max(1L, (System.nanoTime() - startNs) / 1_000_000L);
+        return new TimelineHistogramResponse(safeFrom, safeTo, granularity, queryMs, totalOrders, buckets);
     }
 
     public List<EntitySummaryDto> findEntitiesByCustomerId(String customerId) {

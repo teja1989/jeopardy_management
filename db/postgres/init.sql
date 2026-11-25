@@ -530,3 +530,21 @@ VALUES
         'system'
     )
 ON CONFLICT (rule_id) DO NOTHING;
+
+
+-- -----------------------------------------------------------------------------
+-- 10. PARTITION-PRUNED TIME-RANGE SEARCH & MULTI-FACET SLICE INDEXES
+--     Created on partitioned parent `tracked_entities` -> propagates automatically
+--     to every monthly range partition for <10ms calendar & slice-and-dice queries.
+-- -----------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_tracked_entities_created_order_status
+    ON tracked_entities (created_at DESC, order_type, status);
+
+CREATE INDEX IF NOT EXISTS idx_tracked_entities_item_type_created
+    ON tracked_entities (item_type, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tracked_entities_channel_region_created
+    ON tracked_entities (channel, region, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tracked_entities_key_prefix
+    ON tracked_entities (entity_key varchar_pattern_ops, created_at DESC);

@@ -7,6 +7,7 @@ import { SUPPORTED_A2UI_CATALOGS } from '../components/a2ui/a2uiTypes';
 import type {
   AlertDeliveryDto,
   AlertRoutingRuleDto,
+  AnalyticsFacetsResponse,
   AuthStatusResponse,
   ClusterScanSummary,
   CustomerJourneyResponse,
@@ -29,8 +30,10 @@ import type {
   OrderFamilyRecord,
   PublishResponse,
   QueueSearchResponse,
+  SliceBreakdownResponse,
   SseConnectionState,
   SseStatsDto,
+  TimelineHistogramResponse,
   UiDeltaEvent,
 } from './types';
 
@@ -64,10 +67,33 @@ export interface TrackerQueueQuery {
   status?: string;
   orderFamily?: string;
   orderType?: string;
+  itemType?: string;
   accountType?: string;
+  channel?: string;
+  region?: string;
   hasActiveFallout?: boolean;
+  from?: string;
+  to?: string;
+  sortBy?: 'attention' | 'newest' | 'oldest';
   limit?: number;
   offset?: number;
+}
+
+export interface SliceBreakdownQuery {
+  groupBy: string;
+  from?: string;
+  to?: string;
+  hours?: number;
+  orderFamily?: string;
+  orderType?: string;
+  itemType?: string;
+  accountType?: string;
+  channel?: string;
+  region?: string;
+  status?: string;
+  dimKey?: string;
+  dimVal?: string;
+  limit?: number;
 }
 
 export interface ExportReportQuery {
@@ -256,12 +282,62 @@ export function searchTrackerQueue(query: TrackerQueueQuery = {}): Promise<Queue
     status: query.status,
     orderFamily: query.orderFamily,
     orderType: query.orderType,
+    itemType: query.itemType,
     accountType: query.accountType,
+    channel: query.channel,
+    region: query.region,
     hasActiveFallout: query.hasActiveFallout,
+    from: query.from,
+    to: query.to,
+    sortBy: query.sortBy,
     limit: query.limit ?? 50,
     offset: query.offset ?? 0,
   };
   return fetchJson<QueueSearchResponse>(`${API_BASE}/tracker/queue${buildQueryString(params)}`);
+}
+
+export function getTimelineHistogram(query: {
+  orderFamily?: string;
+  orderType?: string;
+  itemType?: string;
+  accountType?: string;
+  channel?: string;
+  region?: string;
+  from?: string;
+  to?: string;
+} = {}): Promise<TimelineHistogramResponse> {
+  return fetchJson<TimelineHistogramResponse>(
+    `${API_BASE}/tracker/timeline-histogram${buildQueryString(query)}`,
+  );
+}
+
+export function getAnalyticsFacets(refresh = false): Promise<AnalyticsFacetsResponse> {
+  return fetchJson<AnalyticsFacetsResponse>(
+    `${API_BASE}/analytics/facets${buildQueryString({ refresh: refresh ? true : undefined })}`,
+  );
+}
+
+export function getSliceBreakdown(query: SliceBreakdownQuery): Promise<SliceBreakdownResponse> {
+  const params: Record<string, string | number | undefined> = {
+    groupBy: query.groupBy,
+    from: query.from,
+    to: query.to,
+    hours: query.hours,
+    orderFamily: query.orderFamily,
+    orderType: query.orderType,
+    itemType: query.itemType,
+    accountType: query.accountType,
+    channel: query.channel,
+    region: query.region,
+    status: query.status,
+    limit: query.limit ?? 50,
+  };
+  if (query.dimKey && query.dimKey.trim() && query.dimVal && query.dimVal.trim()) {
+    params[`dim.${query.dimKey.trim()}`] = query.dimVal.trim();
+  }
+  return fetchJson<SliceBreakdownResponse>(
+    `${API_BASE}/analytics/slice-breakdown${buildQueryString(params)}`,
+  );
 }
 
 export function getCustomerJourneys(customerId: string): Promise<CustomerJourneyResponse> {

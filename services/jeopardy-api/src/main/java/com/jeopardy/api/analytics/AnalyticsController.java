@@ -16,12 +16,65 @@ public class AnalyticsController {
 
     private final AnalyticsService analyticsService;
     private final ReportExportService reportExportService;
+    private final SliceExplorerService sliceExplorerService;
 
     public AnalyticsController(
             AnalyticsService analyticsService,
-            ReportExportService reportExportService) {
+            ReportExportService reportExportService,
+            SliceExplorerService sliceExplorerService) {
         this.analyticsService = analyticsService;
         this.reportExportService = reportExportService;
+        this.sliceExplorerService = sliceExplorerService;
+    }
+
+    /** Cached live distinct filter values (itemTypes, channels, regions, custom JSONB keys). */
+    @GetMapping("/analytics/facets")
+    public AnalyticsFacetsResponse getFacets(
+            @RequestParam(defaultValue = "false") boolean refresh) {
+        return sliceExplorerService.getFacets(refresh);
+    }
+
+    /** Zero-extra-storage dynamic slice-and-dice across ANY dimension and explicit calendar range. */
+    @GetMapping("/analytics/slice-breakdown")
+    public SliceBreakdownResponse getSliceBreakdown(
+            @RequestParam(defaultValue = "order_type") String groupBy,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
+            @RequestParam(required = false) Integer hours,
+            @RequestParam(required = false) String orderFamily,
+            @RequestParam(required = false) String orderType,
+            @RequestParam(required = false) String itemType,
+            @RequestParam(required = false) String accountType,
+            @RequestParam(required = false) String channel,
+            @RequestParam(required = false) String region,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam Map<String, String> allQueryParams) {
+        return sliceExplorerService.getSliceBreakdown(
+                groupBy,
+                parseInstant(from),
+                parseInstant(to),
+                hours,
+                orderFamily,
+                orderType,
+                itemType,
+                accountType,
+                channel,
+                region,
+                status,
+                allQueryParams,
+                limit);
+    }
+
+    private static java.time.Instant parseInstant(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return java.time.Instant.parse(raw.trim());
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Invalid ISO-8601 timestamp: '" + raw + "'");
+        }
     }
 
     @GetMapping("/analytics/exec-summary")

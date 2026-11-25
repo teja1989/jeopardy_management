@@ -126,6 +126,75 @@ export interface QueueSearchResponse {
   totalCount: number;
   limit: number;
   offset: number;
+  queryMs?: number;
+  from?: string | null;
+  to?: string | null;
+}
+
+export interface TimelineHistogramBucket {
+  bucketStart: string;
+  bucketEnd: string;
+  totalCount: number;
+  completedCount: number;
+  attentionCount: number;
+  falloutCount: number;
+}
+
+export interface TimelineHistogramResponse {
+  from: string;
+  to: string;
+  granularity: 'hour' | 'day';
+  queryMs: number;
+  totalOrders: number;
+  buckets: TimelineHistogramBucket[];
+}
+
+export interface AnalyticsFacetsResponse {
+  generatedAt: string;
+  queryMs: number;
+  orderFamilies: string[];
+  orderTypes: string[];
+  itemTypes: string[];
+  accountTypes: string[];
+  channels: string[];
+  regions: string[];
+  statuses: string[];
+  customAttributeKeys: string[];
+}
+
+export interface SliceBreakdownRow {
+  sliceKey: string;
+  totalOrders: number;
+  liveOpenCount: number;
+  completedCount: number;
+  atRiskCount: number;
+  falloutCount: number;
+  breachedCount: number;
+  sharePct: number;
+  slaAttainmentPct: number;
+  p50DurationMs: number;
+  p90DurationMs: number;
+}
+
+export interface SliceBreakdownResponse {
+  generatedAt: string;
+  groupBy: string;
+  from: string;
+  to: string;
+  queryMs: number;
+  querySource: string;
+  clickhouseEnriched: boolean;
+  appliedFilters: Record<string, string>;
+  totals: {
+    totalOrders: number;
+    liveOpenCount: number;
+    completedCount: number;
+    atRiskCount: number;
+    falloutCount: number;
+    breachedCount: number;
+    slaAttainmentPct: number;
+  };
+  slices: SliceBreakdownRow[];
 }
 
 export interface EntityRelationshipDto {

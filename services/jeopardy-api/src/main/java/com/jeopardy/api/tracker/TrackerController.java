@@ -36,12 +36,45 @@ public class TrackerController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String orderFamily,
             @RequestParam(required = false) String orderType,
+            @RequestParam(required = false) String itemType,
             @RequestParam(required = false) String accountType,
+            @RequestParam(required = false) String channel,
+            @RequestParam(required = false) String region,
             @RequestParam(required = false) Boolean hasActiveFallout,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
+            @RequestParam(defaultValue = "attention") String sortBy,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(defaultValue = "0") int offset) {
         return trackerService.searchQueue(
-                q, status, orderFamily, orderType, accountType, hasActiveFallout, limit, offset);
+                q, status, orderFamily, orderType, itemType, accountType, channel, region,
+                hasActiveFallout, parseInstant(from), parseInstant(to), sortBy, limit, offset);
+    }
+
+    @GetMapping("/tracker/timeline-histogram")
+    public TimelineHistogramResponse getTimelineHistogram(
+            @RequestParam(required = false) String orderFamily,
+            @RequestParam(required = false) String orderType,
+            @RequestParam(required = false) String itemType,
+            @RequestParam(required = false) String accountType,
+            @RequestParam(required = false) String channel,
+            @RequestParam(required = false) String region,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to) {
+        return trackerService.getTimelineHistogram(
+                orderFamily, orderType, itemType, accountType, channel, region,
+                parseInstant(from), parseInstant(to));
+    }
+
+    private static java.time.Instant parseInstant(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return java.time.Instant.parse(raw.trim());
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Invalid ISO-8601 timestamp: '" + raw + "'");
+        }
     }
 
     @GetMapping("/customers/{customerId}/journeys")

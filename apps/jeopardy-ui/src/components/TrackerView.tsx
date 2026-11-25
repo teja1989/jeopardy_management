@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  BarChart3,
   Check,
   ChevronDown,
   ChevronRight,
@@ -14,18 +15,22 @@ import {
   RefreshCw,
   Search,
   ShieldAlert,
+  SlidersHorizontal,
   Sparkles,
   User,
   X,
 } from 'lucide-react';
 import {
+  getAnalyticsFacets,
   getCustomerJourneys,
   getEntityTimeline,
+  getTimelineHistogram,
   listPublicTrackerBlueprints,
   searchTrackerQueue,
   subscribeCustomer,
 } from '../api/client';
 import type {
+  AnalyticsFacetsResponse,
   BlueprintStepDefinition,
   CustomerJourneyResponse,
   EntitySummaryDto,
@@ -34,6 +39,7 @@ import type {
   JourneyBlueprintRecord,
   MilestoneDto,
   SseConnectionState,
+  TimelineHistogramResponse,
   UiDeltaEvent,
 } from '../api/types';
 import {
@@ -43,6 +49,11 @@ import {
   formatTimestamp,
 } from '../utils/format';
 import type { DashboardDrilldownTarget } from './DashboardsView';
+import {
+  DateRangePicker,
+  createPresetRange,
+  type TimeRangeValue,
+} from './DateRangePicker';
 
 interface TrackerViewProps {
   initialFilter: DashboardDrilldownTarget | null;
@@ -159,14 +170,43 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   initialFilter,
   onClearInitialFilter,
 }) => {
-  // Search & filter state
+  // Search, calendar time range & multi-facet filter state
   const [searchText, setSearchText] = useState('');
+  const [timeRange, setTimeRange] = useState<TimeRangeValue>(() =>
+    initialFilter?.from && initialFilter?.to
+      ? {
+          preset: 'custom',
+          from: initialFilter.from,
+          to: initialFilter.to,
+          label: initialFilter.rangeLabel || 'Filtered Range',
+        }
+      : createPresetRange('all'),
+  );
   const [orderTypeFilter, setOrderTypeFilter] = useState<string | undefined>(
     initialFilter?.orderType,
   );
   const [orderFamilyFilter, setOrderFamilyFilter] = useState<string | undefined>(
     initialFilter?.orderFamily,
   );
+  const [itemTypeFilter, setItemTypeFilter] = useState<string | undefined>(
+    initialFilter?.itemType,
+  );
+  const [channelFilter, setChannelFilter] = useState<string | undefined>(
+    initialFilter?.channel,
+  );
+  const [regionFilter, setRegionFilter] = useState<string | undefined>(
+    initialFilter?.region,
+  );
+  const [accountTypeFilter, setAccountTypeFilter] = useState<string | undefined>(
+    initialFilter?.accountType,
+  );
+  const [sortBy, setSortBy] = useState<'attention' | 'newest' | 'oldest'>('attention');
+  const [showFacetFilters, setShowFacetFilters] = useState(false);
+  const [showTimelineBar, setShowTimelineBar] = useState(true);
+  const [facets, setFacets] = useState<AnalyticsFacetsResponse | null>(null);
+  const [histogram, setHistogram] = useState<TimelineHistogramResponse | null>(null);
+  const [queueTotalCount, setQueueTotalCount] = useState(0);
+  const [queueQueryMs, setQueueQueryMs] = useState<number | null>(null);
   const [statusQuickFilter, setStatusQuickFilter] = useState<'ALL' | 'ATTENTION' | 'FALLOUT'>(
     'ALL',
   );
@@ -234,11 +274,32 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
       });
   }, []);
 
-  // Sync incoming drill-down filters from Overview
+  // Load live facet values once (30s server-cached) for instant multi-facet filter dropdowns
+  useEffect(() => {
+    void getAnalyticsFacets()
+      .then((res) => setFacets(res))
+      .catch(() => {
+        // non-fatal
+      });
+  }, []);
+
+  // Sync incoming drill-down filters (including calendar range & slices!) from Overview
   useEffect(() => {
     if (!initialFilter) return;
     if (initialFilter.orderFamily) setOrderFamilyFilter(initialFilter.orderFamily);
     if (initialFilter.orderType) setOrderTypeFilter(initialFilter.orderType);
+    if (initialFilter.itemType) setItemTypeFilter(initialFilter.itemType);
+    if (initialFilter.channel) setChannelFilter(initialFilter.channel);
+    if (initialFilter.region) setRegionFilter(initialFilter.region);
+    if (initialFilter.accountType) setAccountTypeFilter(initialFilter.accountType);
+    if (initialFilter.from && initialFilter.to) {
+      setTimeRange({
+        preset: 'custom',
+        from: initialFilter.from,
+        to: initialFilter.to,
+        label: initialFilter.rangeLabel || 'Filtered Range',
+      });
+    }
     if (initialFilter.customerId) setSelectedCustomerId(initialFilter.customerId);
     if (initialFilter.entityKey) setSelectedEntityKey(initialFilter.entityKey);
   }, [initialFilter]);
@@ -250,9 +311,16 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
         q: searchText || undefined,
         orderFamily: orderFamilyFilter,
         orderType: orderTypeFilter,
+        itemType: itemTypeFilter,
+        channel: channelFilter,
+        region: regionFilter,
+        accountType: accountTypeFilter,
+        from: timeRange.from,
+        to: timeRange.to,
+        sortBy,
         hasActiveFallout: statusQuickFilter === 'FALLOUT' ? true : undefined,
-        status: statusQuickFilter === 'ATTENTION' ? 'JEOPARDY' : undefined,
-        limit: 50,
+        status: statusQuickFilter === 'ATTENTION' ? 'ATTENTION' : undefined,
+        limit: 60,
       });
       // Defensive client dedupe by entityKey
       const seen = new Set<string>();
@@ -262,6 +330,8 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
         return true;
       });
       setQueueItems(unique);
+      setQueueTotalCount(res.totalCount);
+      setQueueQueryMs(res.queryMs ?? null);
 
       if (!selectedEntityKeyRef.current && unique.length > 0) {
         const preferred =
@@ -278,7 +348,54 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     } finally {
       setQueueLoading(false);
     }
-  }, [searchText, orderFamilyFilter, orderTypeFilter, statusQuickFilter]);
+  }, [
+    searchText,
+    orderFamilyFilter,
+    orderTypeFilter,
+    itemTypeFilter,
+    channelFilter,
+    regionFilter,
+    accountTypeFilter,
+    timeRange.from,
+    timeRange.to,
+    sortBy,
+    statusQuickFilter,
+  ]);
+
+  // Load interactive calendar timeline histogram (partition-pruned PG query)
+  useEffect(() => {
+    if (!showTimelineBar) return;
+    let cancelled = false;
+    void getTimelineHistogram({
+      orderFamily: orderFamilyFilter,
+      orderType: orderTypeFilter,
+      itemType: itemTypeFilter,
+      accountType: accountTypeFilter,
+      channel: channelFilter,
+      region: regionFilter,
+      from: timeRange.from,
+      to: timeRange.to,
+    })
+      .then((res) => {
+        if (!cancelled) setHistogram(res);
+      })
+      .catch(() => {
+        if (!cancelled) setHistogram(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    showTimelineBar,
+    orderFamilyFilter,
+    orderTypeFilter,
+    itemTypeFilter,
+    accountTypeFilter,
+    channelFilter,
+    regionFilter,
+    timeRange.from,
+    timeRange.to,
+  ]);
 
   const loadCustomerJourneys = useCallback(async (cid: string) => {
     if (!cid) return;
@@ -623,7 +740,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span
             className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
               sseState === 'LIVE'
@@ -642,6 +759,26 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                 ? 'Live Sync On'
                 : 'Connecting'}
           </span>
+
+          <DateRangePicker
+            value={timeRange}
+            onChange={setTimeRange}
+            allowAllTime
+          />
+
+          <button
+            type="button"
+            onClick={() => setShowTimelineBar((v) => !v)}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+              showTimelineBar
+                ? 'border-blue-500/40 bg-blue-50/70 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
+                : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300'
+            }`}
+            title="Toggle interactive order timeline bar chart"
+          >
+            <BarChart3 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Timeline</span>
+          </button>
 
           <div className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-0.5">
             {(['ALL', 'SALES', 'CHANGE'] as const).map((ot) => {
@@ -667,6 +804,90 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Interactive Calendar Order Activity Timeline (Click any bar to zoom!) */}
+      {showTimelineBar && histogram && histogram.buckets.length > 0 && (
+        <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 shadow-sm space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-slate-900 dark:text-white">
+                Order Volume Timeline
+              </span>
+              <span className="rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[10px] font-mono text-slate-500">
+                {histogram.totalOrders} orders · {histogram.granularity} buckets · {histogram.queryMs}ms
+              </span>
+            </div>
+            <div className="flex items-center gap-3 text-[11px] text-slate-500">
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2 h-2 rounded-sm bg-emerald-500" /> Done
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2 h-2 rounded-sm bg-blue-500" /> In-Flight
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="w-2 h-2 rounded-sm bg-rose-500" /> Fallout/Risk
+              </span>
+              {timeRange.preset !== 'all' && (
+                <button
+                  type="button"
+                  onClick={() => setTimeRange(createPresetRange('all'))}
+                  className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                >
+                  Reset Zoom
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-end gap-1.5 h-16 pt-1 overflow-x-auto">
+            {(() => {
+              const maxCnt = Math.max(1, ...histogram.buckets.map((b) => b.totalCount));
+              return histogram.buckets.map((b) => {
+                const heightPct = Math.max(14, Math.round((b.totalCount / maxCnt) * 100));
+                const riskCnt = Math.max(b.falloutCount, b.attentionCount);
+                const riskPct = b.totalCount > 0 ? Math.round((riskCnt / b.totalCount) * 100) : 0;
+                const donePct = b.totalCount > 0 ? Math.round((b.completedCount / b.totalCount) * 100) : 0;
+                const dt = new Date(b.bucketStart);
+                const label =
+                  histogram.granularity === 'hour'
+                    ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    : dt.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                return (
+                  <button
+                    key={b.bucketStart}
+                    type="button"
+                    onClick={() =>
+                      setTimeRange({
+                        preset: 'custom',
+                        from: b.bucketStart,
+                        to: b.bucketEnd,
+                        label: `${label} (${histogram.granularity})`,
+                      })
+                    }
+                    className="flex-1 min-w-[24px] h-full flex flex-col justify-end items-center group"
+                    title={`${label}: ${b.totalCount} total (${b.completedCount} done, ${riskCnt} risk/fallout) — click to zoom`}
+                  >
+                    <div
+                      className="w-full max-w-[32px] rounded-t-md overflow-hidden flex flex-col justify-end bg-blue-500/85 group-hover:ring-2 group-hover:ring-blue-400 transition"
+                      style={{ height: `${heightPct}%` }}
+                    >
+                      {riskPct > 0 && (
+                        <div className="w-full bg-rose-500" style={{ height: `${riskPct}%` }} />
+                      )}
+                      {donePct > 0 && (
+                        <div className="w-full bg-emerald-500" style={{ height: `${donePct}%` }} />
+                      )}
+                    </div>
+                    <span className="mt-1 text-[9px] font-mono text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-200 truncate max-w-full">
+                      {label}
+                    </span>
+                  </button>
+                );
+              });
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* Main 2-Column Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
@@ -718,6 +939,19 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
 
               <button
                 type="button"
+                onClick={() => setShowFacetFilters((v) => !v)}
+                className={`p-1.5 rounded-md border text-[11px] transition shrink-0 ${
+                  showFacetFilters || itemTypeFilter || channelFilter || regionFilter || accountTypeFilter
+                    ? 'border-blue-500/40 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
+                    : 'border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+                title="Facet filters (Item Type, Channel, Region, Sort)"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setGroupByOrder((v) => !v)}
                 className={`p-1.5 rounded-md border text-[11px] transition shrink-0 ${
                   groupByOrder
@@ -730,14 +964,81 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
               </button>
             </div>
 
-            {(orderFamilyFilter || orderTypeFilter) && (
+            {showFacetFilters && (
+              <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-1.5">
+                <select
+                  value={itemTypeFilter ?? ''}
+                  onChange={(e) => setItemTypeFilter(e.target.value || undefined)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px]"
+                >
+                  <option value="">All Item Types</option>
+                  {(facets?.itemTypes ?? []).map((it) => (
+                    <option key={it} value={it}>
+                      {it}
+                    </option>
+                  ))}
+                </select>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <select
+                    value={channelFilter ?? ''}
+                    onChange={(e) => setChannelFilter(e.target.value || undefined)}
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px]"
+                  >
+                    <option value="">All Channels</option>
+                    {(facets?.channels ?? []).map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={regionFilter ?? ''}
+                    onChange={(e) => setRegionFilter(e.target.value || undefined)}
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px]"
+                  >
+                    <option value="">All Regions</option>
+                    {(facets?.regions ?? []).map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px]"
+                >
+                  <option value="attention">Sort: Needs Attention First</option>
+                  <option value="newest">Sort: Newest Orders First</option>
+                  <option value="oldest">Sort: Oldest Orders First</option>
+                </select>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+              <span>
+                {queueTotalCount} matching {queueTotalCount === 1 ? 'entity' : 'entities'}
+              </span>
+              {queueQueryMs !== null && <span>{queueQueryMs}ms</span>}
+            </div>
+
+            {(orderFamilyFilter || orderTypeFilter || itemTypeFilter || channelFilter || regionFilter || accountTypeFilter) && (
               <div className="flex items-center justify-between rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-500/30 px-2.5 py-1 text-[11px] text-blue-700 dark:text-blue-300">
-                <span className="truncate">Filtered: {orderTypeFilter || orderFamilyFilter}</span>
+                <span className="truncate">
+                  {[orderTypeFilter, itemTypeFilter, channelFilter, regionFilter, accountTypeFilter, orderFamilyFilter]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </span>
                 <button
                   type="button"
                   onClick={() => {
                     setOrderFamilyFilter(undefined);
                     setOrderTypeFilter(undefined);
+                    setItemTypeFilter(undefined);
+                    setChannelFilter(undefined);
+                    setRegionFilter(undefined);
+                    setAccountTypeFilter(undefined);
                     onClearInitialFilter();
                   }}
                 >
