@@ -343,15 +343,15 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* Page Title & Right Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="font-display text-xl font-bold tracking-tight text-[#1F1F1F] dark:text-white">
             Operations Overview
           </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Real-time order health, SLA risks, and active fallout queues
+          <p className="text-xs text-[#5F6368] dark:text-[#9AA0A6]">
+            Real-time order health, dynamic slice analytics, SLA risks, and fallout recovery
             {lastRefreshed ? ` · Updated ${formatShortTime(lastRefreshed)}` : ''}
           </p>
         </div>
@@ -692,7 +692,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
       )}
 
       {/* Single-Row Clean Filter & View Bar */}
-      <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 shadow-sm">
+      <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-4 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* Left: View Switcher + Quick Order Type Pills */}
           <div className="flex flex-wrap items-center gap-3">
@@ -936,7 +936,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
       {activeView === 'health' && (
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
           {/* Dynamic Multi-Dimension Slice Table */}
-          <div className="xl:col-span-8 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+          <div className="xl:col-span-8 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] overflow-hidden">
             <div className="px-5 py-3.5 border-b border-slate-100 dark:border-slate-800 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">

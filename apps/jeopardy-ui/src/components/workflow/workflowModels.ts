@@ -64,6 +64,32 @@ export interface EditableMilestoneNode {
   isNewTemplate: boolean;
 }
 
+export type WorkflowRoleType = 'PRIMARY_CUSTOMER' | 'LINKED_COMPANION' | 'CHANGE_SUPPLEMENTAL';
+export type TrackerAudienceVisibility = 'CUSTOMER_AND_INTERNAL' | 'INTERNAL_ONLY';
+export type LinkedSlaBehavior = 'INDEPENDENT_PARALLEL' | 'PAUSE_PARENT_SLA' | 'BLOCK_PARENT_COMPLETION';
+
+export interface LinkedOrderConfig {
+  workflowRole: WorkflowRoleType;
+  parentOrderTypes: string[];
+  relationshipType:
+    | 'TRIGGERED_BY_ORDER'
+    | 'TRIGGERED_BY_ITEM'
+    | 'BUNDLED_FEATURE'
+    | 'CHANGE_ORDER_OF'
+    | 'CHILD_WORK_ORDER'
+    | string;
+  bpmnProcessKey: string;
+  sourceTopic: string;
+  entityKeyPath: string;
+  parentOrderIdPath: string;
+  parentLineItemIdPath?: string;
+  visibility: TrackerAudienceVisibility;
+  customerFacingLabel: string;
+  internalOwningTeam: string;
+  slaBehavior: LinkedSlaBehavior;
+  autoWireAdapterRule: boolean;
+}
+
 export interface EditableWorkflowDraft {
   blueprintId: string;
   version: number;
@@ -79,6 +105,7 @@ export interface EditableWorkflowDraft {
   overallBreach: string;
   steps: EditableMilestoneNode[];
   crossOrderPolicies: CrossOrderPolicyConfig[];
+  linkedOrderConfig?: LinkedOrderConfig;
 }
 
 export interface SamplePayloadPreset {
@@ -407,6 +434,11 @@ export function blueprintToDraft(
     ? (def.crossOrderPolicies as CrossOrderPolicyConfig[])
     : [];
 
+  const rawLinked =
+    def.linkedOrderConfig && typeof def.linkedOrderConfig === 'object'
+      ? (def.linkedOrderConfig as LinkedOrderConfig)
+      : undefined;
+
   return {
     blueprintId: bp.blueprintId,
     version: bp.version,
@@ -422,8 +454,21 @@ export function blueprintToDraft(
     overallBreach: typeof overall.breach === 'string' ? overall.breach : '2h',
     steps,
     crossOrderPolicies: policies,
+    linkedOrderConfig: rawLinked,
   };
 }
+
+export type StarterPresetId =
+  | 'esim'
+  | 'plan'
+  | 'ship'
+  | 'port'
+  | 'insurance_addon'
+  | 'trade_in'
+  | 'field_install'
+  | 'partner_perk'
+  | 'change_supp'
+  | 'blank';
 
 export function createStarterWorkflowDraft(params: {
   orderType: string;
@@ -431,8 +476,9 @@ export function createStarterWorkflowDraft(params: {
   displayName: string;
   orderFamily: string;
   entityLevel: string;
-  preset: 'esim' | 'plan' | 'ship' | 'port' | 'blank';
+  preset: StarterPresetId;
   templates: MilestoneTemplateRecord[];
+  linkedOrderConfig?: LinkedOrderConfig;
 }): EditableWorkflowDraft {
   const tmplMap = new Map(params.templates.map((t) => [t.templateId, t]));
   const slug = (params.itemType || params.orderType)
@@ -441,7 +487,7 @@ export function createStarterWorkflowDraft(params: {
     .replace(/^-|-$/g, '');
   const blueprintId = `bp-${slug || 'custom-tracker'}`;
 
-  const presetTemplates: Record<typeof params.preset, Array<{ tid: string; label: string }>> = {
+  const presetTemplates: Record<StarterPresetId, Array<{ tid: string; label: string }>> = {
     esim: [
       { tid: 'TMPL_ORDER_RECEIVED', label: `${params.displayName} Requested` },
       { tid: 'TMPL_FRAUD_CHECK', label: 'Identity & SIM Security Check' },
@@ -471,6 +517,36 @@ export function createStarterWorkflowDraft(params: {
       { tid: 'TMPL_BILLING_SYNC', label: 'Ported Line Billing Sync' },
       { tid: 'TMPL_ORDER_CLOSED', label: `${params.displayName} Completed` },
     ],
+    insurance_addon: [
+      { tid: 'TMPL_ORDER_RECEIVED', label: 'Companion Order Spawned from Sales Order' },
+      { tid: 'TMPL_PARTNER_ENROLL', label: 'Insurance Partner Policy Enrollment' },
+      { tid: 'TMPL_BILLING_SYNC', label: 'Line Protection Feature Billing Sync' },
+      { tid: 'TMPL_ORDER_CLOSED', label: 'Device Protection Active' },
+    ],
+    trade_in: [
+      { tid: 'TMPL_ORDER_RECEIVED', label: 'Trade-In Companion Order Created' },
+      { tid: 'TMPL_FULFILLMENT_SHIP', label: 'Return Kit Shipped to Customer' },
+      { tid: 'TMPL_TRADEIN_RETURN', label: 'Device Return & Warehouse Inspection' },
+      { tid: 'TMPL_BILLING_SYNC', label: 'Trade-In Bill Credit Applied' },
+      { tid: 'TMPL_ORDER_CLOSED', label: 'Trade-In Completed' },
+    ],
+    field_install: [
+      { tid: 'TMPL_ORDER_RECEIVED', label: 'Install Work Order Dispatched' },
+      { tid: 'TMPL_FULFILLMENT_SHIP', label: 'Technician Appointment & On-Site Install' },
+      { tid: 'TMPL_ESIM_ACTIVATION', label: 'Service Line Activation & Speed Test' },
+      { tid: 'TMPL_BILLING_SYNC', label: 'Installation & Billing Sync' },
+      { tid: 'TMPL_ORDER_CLOSED', label: 'Installation Completed' },
+    ],
+    partner_perk: [
+      { tid: 'TMPL_ORDER_RECEIVED', label: 'Promo / Perk Companion Order Triggered' },
+      { tid: 'TMPL_PARTNER_ENROLL', label: 'Partner Entitlement Provisioning' },
+      { tid: 'TMPL_ORDER_CLOSED', label: 'Customer Perk Active' },
+    ],
+    change_supp: [
+      { tid: 'TMPL_ORDER_RECEIVED', label: 'Supplemental Change Order Opened' },
+      { tid: 'TMPL_PAYMENT_AUTH', label: 'Customer Update / Re-Verification' },
+      { tid: 'TMPL_ORDER_CLOSED', label: 'Change Applied & Parent Resumed' },
+    ],
     blank: [
       { tid: 'TMPL_ORDER_RECEIVED', label: `${params.displayName} Started` },
       { tid: 'TMPL_ORDER_CLOSED', label: `${params.displayName} Completed` },
@@ -487,6 +563,35 @@ export function createStarterWorkflowDraft(params: {
     ),
   );
 
+  // Auto-generate Cross-Order SLA Pause/Resume policies when SLA behavior is PAUSE_PARENT_SLA
+  const crossOrderPolicies: CrossOrderPolicyConfig[] = [];
+  if (params.linkedOrderConfig?.slaBehavior === 'PAUSE_PARENT_SLA') {
+    const rel = params.linkedOrderConfig.relationshipType || 'CHANGE_ORDER_OF';
+    crossOrderPolicies.push(
+      {
+        triggerPhase: 'ON_ENTITY_STARTED',
+        action: 'PAUSE_SLA_CLOCK',
+        targetRelationship: rel,
+        signalTopic: 'jeopardy.cross-order.signals',
+        reason: `Paused while ${params.displayName} is in progress`,
+      },
+      {
+        triggerPhase: 'ON_ENTITY_COMPLETED',
+        action: 'RESUME_SLA_CLOCK',
+        targetRelationship: rel,
+        signalTopic: 'jeopardy.cross-order.signals',
+        reason: `Resumed after ${params.displayName} completed`,
+      },
+    );
+  }
+
+  const ttlDays =
+    params.preset === 'trade_in'
+      ? 60
+      : params.preset === 'ship' || params.preset === 'field_install'
+        ? 30
+        : 14;
+
   return {
     blueprintId,
     version: 1,
@@ -496,11 +601,12 @@ export function createStarterWorkflowDraft(params: {
     orderType: params.orderType.trim().toUpperCase(),
     itemType: params.itemType.trim().toUpperCase(),
     entityLevel: params.entityLevel,
-    stateTtlDays: params.preset === 'ship' ? 30 : 14,
-    overallWarning: params.preset === 'ship' ? '48h' : '15m',
-    overallJeopardy: params.preset === 'ship' ? '72h' : '30m',
-    overallBreach: params.preset === 'ship' ? '120h' : '2h',
+    stateTtlDays: ttlDays,
+    overallWarning: params.preset === 'trade_in' ? '14d' : params.preset === 'ship' ? '48h' : '15m',
+    overallJeopardy: params.preset === 'trade_in' ? '25d' : params.preset === 'ship' ? '72h' : '30m',
+    overallBreach: params.preset === 'trade_in' ? '60d' : params.preset === 'ship' ? '120h' : '2h',
     steps,
-    crossOrderPolicies: [],
+    crossOrderPolicies,
+    linkedOrderConfig: params.linkedOrderConfig,
   };
 }

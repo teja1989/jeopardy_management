@@ -233,9 +233,9 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
   };
 
   return (
-    <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex flex-col h-full overflow-hidden">
+    <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] flex flex-col h-full overflow-hidden">
       {/* Inspector Header */}
-      <div className="px-4 py-3.5 border-b border-slate-200 dark:border-slate-800">
+      <div className="px-5 py-4 border-b border-[#E0E6F0] dark:border-[#333639]">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -306,7 +306,7 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
       </div>
 
       {/* Inspector Body */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-5 space-y-5">
         {tab === 'events' && (
           <>
             {/* Prominent Pick From JSON Callout */}

@@ -9,7 +9,11 @@ import {
   ChevronRight,
   Clock,
   Database,
+  Eye,
+  EyeOff,
   GitBranch,
+  Link2,
+  PanelLeft,
   Play,
   Plus,
   Rocket,
@@ -20,6 +24,7 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  createAdapterVersion,
   createBlueprintVersion,
   createTemplateVersion,
   listAdapters,
@@ -37,12 +42,11 @@ import type {
 import { AdapterEditorView } from './AdapterEditorView';
 import { JsonEventPickerModal } from './JsonEventPickerModal';
 import { MilestoneInspector } from './MilestoneInspector';
+import { OnboardTrackerWizardModal } from './OnboardTrackerWizardModal';
 import { TeamsAlertsView } from './TeamsAlertsView';
 import {
-  ORDER_FAMILY_OPTIONS,
   blueprintToDraft,
   buildNodeFromTemplate,
-  createStarterWorkflowDraft,
   domainAccentClasses,
   type EditableMilestoneNode,
   type EditableWorkflowDraft,
@@ -67,9 +71,11 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
   const [blueprints, setBlueprints] = useState<JourneyBlueprintRecord[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Left catalog search & group expansion
+  // Collapsible Trackers Catalog (starts collapsed on standard screens so Canvas + Inspector have generous room!)
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalogSearch, setCatalogSearch] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
+    LINKED: true,
     CHANGE: true,
     SALES: true,
     OTHER: false,
@@ -86,15 +92,8 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
   const [newMilestoneName, setNewMilestoneName] = useState('');
   const [newMilestoneDomain, setNewMilestoneDomain] = useState('PROVISIONING');
 
-  // Onboard New Tracker Modal
+  // Guided Linked & Companion Order Onboarding Wizard Modal
   const [onboardOpen, setOnboardOpen] = useState(false);
-  const [obOrderType, setObOrderType] = useState('CHANGE');
-  const [obCustomOrderType, setObCustomOrderType] = useState('');
-  const [obItemType, setObItemType] = useState('');
-  const [obDisplayName, setObDisplayName] = useState('');
-  const [obFamily, setObFamily] = useState('CHANGE_CANCEL');
-  const [obEntityLevel, setObEntityLevel] = useState<'ORDER_ITEM' | 'ORDER'>('ORDER_ITEM');
-  const [obPreset, setObPreset] = useState<'esim' | 'plan' | 'ship' | 'port' | 'blank'>('esim');
 
   // Dry-run modal
   const [dryRunOpen, setDryRunOpen] = useState(false);
@@ -149,7 +148,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
     }
   }, [autoOpenOnboard, onConsumedAutoOpen]);
 
-  // Group blueprints neatly by CHANGE / SALES / OTHER
+  // Group blueprints neatly by LINKED COMPANION / CHANGE / SALES / OTHER
   const groupedBlueprints = useMemo(() => {
     const q = catalogSearch.trim().toLowerCase();
     const filtered = blueprints.filter((bp) => {
@@ -163,18 +162,34 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
       );
     });
 
-    const groups: Record<'CHANGE' | 'SALES' | 'OTHER', JourneyBlueprintRecord[]> = {
+    const groups: Record<'LINKED' | 'CHANGE' | 'SALES' | 'OTHER', JourneyBlueprintRecord[]> = {
+      LINKED: [],
       CHANGE: [],
       SALES: [],
       OTHER: [],
     };
     for (const bp of filtered) {
-      if (bp.orderType === 'CHANGE') groups.CHANGE.push(bp);
+      const def = (bp.definition ?? {}) as Record<string, unknown>;
+      const linkedCfg = def.linkedOrderConfig as Record<string, unknown> | undefined;
+      const isCompanion =
+        (linkedCfg && linkedCfg.workflowRole && linkedCfg.workflowRole !== 'PRIMARY_CUSTOMER') ||
+        bp.entityLevel === 'INTERNAL_PROMO' ||
+        bp.entityLevel === 'TRADE_IN' ||
+        bp.entityLevel === 'CHANGE_ORDER' ||
+        bp.orderType.startsWith('INTERNAL_') ||
+        bp.orderType === 'DEVICE_TRADE_IN';
+      if (isCompanion) groups.LINKED.push(bp);
+      else if (bp.orderType === 'CHANGE') groups.CHANGE.push(bp);
       else if (bp.orderType === 'SALES') groups.SALES.push(bp);
       else groups.OTHER.push(bp);
     }
     return groups;
   }, [blueprints, catalogSearch]);
+
+  const existingOrderTypes = useMemo(
+    () => Array.from(new Set(blueprints.map((b) => b.orderType).filter(Boolean))).sort(),
+    [blueprints],
+  );
 
   const selectedNode = useMemo(
     () => draft?.steps.find((s) => s.stepId === selectedStepId) ?? draft?.steps[0] ?? null,
@@ -213,6 +228,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
     setSelectedStepId(next.steps[0]?.stepId ?? null);
     setDirty(false);
     setToast(null);
+    setCatalogOpen(false);
   };
 
   const updateDraft = (updater: (prev: EditableWorkflowDraft) => EditableWorkflowDraft) => {
@@ -323,33 +339,17 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
     setNewMilestoneName('');
   };
 
-  const handleCreateNewTracker = (e: React.FormEvent) => {
-    e.preventDefault();
-    const resolvedOrderType = (obOrderType === '__CUSTOM__' ? obCustomOrderType : obOrderType)
-      .trim()
-      .toUpperCase();
-    const resolvedItemType = obItemType.trim().toUpperCase();
-    const resolvedDisplayName = obDisplayName.trim() || resolvedItemType || resolvedOrderType;
-    if (!resolvedOrderType) return;
-
-    const starter = createStarterWorkflowDraft({
-      orderType: resolvedOrderType,
-      itemType: resolvedItemType,
-      displayName: resolvedDisplayName,
-      orderFamily: obFamily,
-      entityLevel: obEntityLevel,
-      preset: obPreset,
-      templates,
-    });
+  const handleWizardCreateDraft = (starter: EditableWorkflowDraft) => {
     setDraft(starter);
     setSelectedStepId(starter.steps[0]?.stepId ?? null);
     setDirty(true);
-    setOnboardOpen(false);
-    setObItemType('');
-    setObDisplayName('');
+    setCatalogOpen(false);
+    const linkedNote = starter.linkedOrderConfig?.autoWireAdapterRule
+      ? ` Linked BPMN "${starter.linkedOrderConfig.bpmnProcessKey}" will auto-wire into adapter-flowable-bpmn on Publish Live.`
+      : '';
     setToast({
       tone: 'ok',
-      text: `Created draft workflow "${starter.displayName}". Click any milestone to pick events from JSON, then click Save & Publish Live.`,
+      text: `Created draft "${starter.displayName}".${linkedNote} Review steps or click Save & Publish Live.`,
     });
   };
 
@@ -392,7 +392,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         }
       }
 
-      // 3. Save immutable Journey Blueprint version
+      // 3. Save immutable Journey Blueprint version (including linkedOrderConfig metadata)
       const blueprintDef: Record<string, unknown> = {
         blueprintId: draft.blueprintId.trim(),
         active: true,
@@ -408,6 +408,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
           breach: draft.overallBreach,
         },
         crossOrderPolicies: draft.crossOrderPolicies,
+        ...(draft.linkedOrderConfig ? { linkedOrderConfig: draft.linkedOrderConfig } : {}),
         steps: draft.steps.map((s) => ({
           stepId: s.stepId,
           useTemplate: s.templateId,
@@ -426,17 +427,104 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         createdBy: adminUsername,
       });
 
+      // 3b. Auto-wire Flowable BPMN correlation rule into adapter-flowable-bpmn for Linked Companion Orders!
+      let autoWiredBpmn = false;
+      const linked = draft.linkedOrderConfig;
+      if (linked?.autoWireAdapterRule && linked.bpmnProcessKey?.trim()) {
+        const bpmnAdapter = adapters.find(
+          (a) =>
+            a.adapterId === 'adapter-flowable-bpmn' ||
+            a.sourceTopic === (linked.sourceTopic || 'flowable.activity.events'),
+        );
+        if (bpmnAdapter) {
+          const defCopy = JSON.parse(JSON.stringify(bpmnAdapter.definition ?? {})) as Record<
+            string,
+            unknown
+          >;
+          const existingRules = Array.isArray(defCopy.processDefinitionRules)
+            ? [...(defCopy.processDefinitionRules as Array<Record<string, unknown>>)]
+            : [];
+
+          const extraLinks: Array<Record<string, unknown>> = [];
+          if (linked.parentOrderIdPath?.trim()) {
+            extraLinks.push({
+              whenPathExists: linked.parentOrderIdPath.trim(),
+              targetEntityKeyTemplate: `{${linked.parentOrderIdPath.trim()}}`,
+              relationshipType: linked.relationshipType || 'TRIGGERED_BY_ORDER',
+            });
+          }
+          if (linked.parentOrderIdPath?.trim() && linked.parentLineItemIdPath?.trim()) {
+            extraLinks.push({
+              whenAllPathsExist: [
+                linked.parentOrderIdPath.trim(),
+                linked.parentLineItemIdPath.trim(),
+              ],
+              targetEntityKeyTemplate: `{${linked.parentOrderIdPath.trim()}}:{${linked.parentLineItemIdPath.trim()}}`,
+              relationshipType: 'TRIGGERED_BY_ITEM',
+            });
+          }
+
+          const newRule: Record<string, unknown> = {
+            processDefinitionKey: linked.bpmnProcessKey.trim(),
+            description: `Auto-wired companion tracker for ${draft.displayName} (Team: ${linked.internalOwningTeam})`,
+            entityLevel: draft.entityLevel,
+            entityKeyTemplate: `{${linked.entityKeyPath.trim()}}`,
+            orderTypeLiteral: draft.orderType.trim().toUpperCase(),
+            itemTypeLiteral: (draft.itemType.trim() || draft.orderType.trim()).toUpperCase(),
+            registerInBpmnRegistry: true,
+            walkParentProcessInstanceId: false,
+            extraLinks,
+            dimensions: {
+              bpmn_process_key: '$.processDefinitionKey',
+              activity_id: '$.activityId',
+              audience_visibility: linked.visibility,
+              internal_owning_team: linked.internalOwningTeam,
+            },
+          };
+
+          const existingIdx = existingRules.findIndex(
+            (r) => String(r.processDefinitionKey ?? '') === linked.bpmnProcessKey.trim(),
+          );
+          if (existingIdx >= 0) {
+            existingRules[existingIdx] = newRule;
+          } else {
+            // Insert before wildcard "*" rule so exact BPMN key always matches first!
+            const wildcardIdx = existingRules.findIndex(
+              (r) => String(r.processDefinitionKey ?? '') === '*',
+            );
+            if (wildcardIdx >= 0) {
+              existingRules.splice(wildcardIdx, 0, newRule);
+            } else {
+              existingRules.push(newRule);
+            }
+          }
+          defCopy.processDefinitionRules = existingRules;
+
+          await createAdapterVersion({
+            adapterId: bpmnAdapter.adapterId,
+            sourceTopic: bpmnAdapter.sourceTopic,
+            definition: defCopy,
+            createdBy: adminUsername,
+          });
+          autoWiredBpmn = true;
+        }
+      }
+
       // 4. Hot-reload live Apache Flink via Kafka jeopardy.config.updates
       if (andPublish) {
         const pub = await publishConfigs(adminUsername);
         setToast({
           tone: 'ok',
-          text: `Live! Saved ${savedBp.blueprintId} v${savedBp.version} (${savedTemplateIds.size} template updates) & hot-reloaded Bundle v${pub.bundleVersion} to Apache Flink (by ${adminUsername}).`,
+          text: `Live! Saved ${savedBp.blueprintId} v${savedBp.version}${
+            autoWiredBpmn ? ` + auto-wired BPMN "${linked?.bpmnProcessKey}"` : ''
+          } & hot-reloaded Bundle v${pub.bundleVersion} to Apache Flink.`,
         });
       } else {
         setToast({
           tone: 'ok',
-          text: `Saved ${savedBp.blueprintId} v${savedBp.version} to PostgreSQL (ready to Publish Live).`,
+          text: `Saved ${savedBp.blueprintId} v${savedBp.version}${
+            autoWiredBpmn ? ` + auto-wired BPMN "${linked?.bpmnProcessKey}"` : ''
+          } to PostgreSQL (ready to Publish Live).`,
         });
       }
 
@@ -467,35 +555,35 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
       {/* Studio Top Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="font-display text-xl font-bold tracking-tight text-[#1F1F1F] dark:text-white">
             Workflow Studio
           </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Onboard order &amp; item trackers visually — configure milestones, bind events from JSON, and hot-reload Flink with zero code changes.
+          <p className="text-xs text-[#5F6368] dark:text-[#9AA0A6]">
+            Onboard customer orders &amp; linked internal BPMN trackers visually — zero code or YAML editing required.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-0.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-full bg-[#F0F4F9] dark:bg-[#1E1F20] border border-[#E0E6F0] dark:border-[#333639] p-1">
             <button
               type="button"
               onClick={() => setStudioMode('workflows')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
                 studioMode === 'workflows'
-                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400'
+                  ? 'bg-white dark:bg-[#282A2C] text-[#1F1F1F] dark:text-white shadow-sm font-semibold'
+                  : 'text-[#5F6368] dark:text-[#9AA0A6]'
               }`}
             >
               <GitBranch className="w-3.5 h-3.5" />
-              Tracker Workflows ({blueprints.length})
+              Trackers ({blueprints.length})
             </button>
             <button
               type="button"
               onClick={() => setStudioMode('adapters')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
                 studioMode === 'adapters'
-                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400'
+                  ? 'bg-white dark:bg-[#282A2C] text-[#1F1F1F] dark:text-white shadow-sm font-semibold'
+                  : 'text-[#5F6368] dark:text-[#9AA0A6]'
               }`}
             >
               <Database className="w-3.5 h-3.5" />
@@ -504,10 +592,10 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
             <button
               type="button"
               onClick={() => setStudioMode('alerts')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
                 studioMode === 'alerts'
-                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400'
+                  ? 'bg-white dark:bg-[#282A2C] text-[#1F1F1F] dark:text-white shadow-sm font-semibold'
+                  : 'text-[#5F6368] dark:text-[#9AA0A6]'
               }`}
             >
               <Bell className="w-3.5 h-3.5" />
@@ -519,9 +607,9 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
             <button
               type="button"
               onClick={() => setOnboardOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 text-xs font-medium shadow-sm transition"
+              className="inline-flex items-center gap-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-4 py-2 text-xs font-semibold shadow-sm transition"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Plus className="w-4 h-4" />
               Onboard New Tracker
             </button>
           )}
@@ -531,13 +619,13 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
       {/* Feedback Toast */}
       {toast && (
         <div
-          className={`rounded-xl border px-4 py-2.5 text-xs flex items-center justify-between gap-3 ${
+          className={`rounded-2xl border px-4 py-3 text-xs flex items-center justify-between gap-3 ${
             toast.tone === 'ok'
-              ? 'border-emerald-200 dark:border-emerald-500/40 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200'
-              : 'border-rose-200 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200'
+              ? 'border-[#CEEAD6] dark:border-[#1E4620] bg-[#E6F4EA] dark:bg-[#132E1C] text-[#137333] dark:text-[#81C995]'
+              : 'border-[#FAD2CF] dark:border-[#5C2020] bg-[#FCE8E6] dark:bg-[#3C1919] text-[#C5221F] dark:text-[#F28B82]'
           }`}
         >
-          <span className="inline-flex items-center gap-2">
+          <span className="inline-flex items-center gap-2 font-medium">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             {toast.text}
           </span>
@@ -556,158 +644,192 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
       ) : studioMode === 'alerts' ? (
         <TeamsAlertsView />
       ) : (
-        /* 3-Column Visual Workflow Builder */
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-          {/* LEFT RAIL: Trackers Catalog (Grouped by CHANGE / SALES / Other) */}
-          <div className="lg:col-span-3 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden flex flex-col max-h-[760px]">
-            <div className="p-3 border-b border-slate-100 dark:border-slate-800 space-y-2">
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-                <input
-                  type="text"
-                  value={catalogSearch}
-                  onChange={(e) => setCatalogSearch(e.target.value)}
-                  placeholder="Filter 58 trackers (e.g. CHANGE_ESIM)..."
-                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-                />
+        /* Spacious 2-Pane Visual Studio + Toggleable Trackers Catalog Drawer */
+        <div className="flex flex-col lg:flex-row gap-5 items-stretch min-h-[calc(100vh-195px)]">
+          {/* COLLAPSIBLE TRACKERS CATALOG DRAWER */}
+          {catalogOpen && (
+            <div className="w-full lg:w-[290px] xl:w-[310px] shrink-0 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] overflow-hidden flex flex-col max-h-[calc(100vh-195px)]">
+              <div className="p-3.5 border-b border-[#E0E6F0] dark:border-[#333639] space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-[#1F1F1F] dark:text-white">
+                    All Trackers ({blueprints.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCatalogOpen(false)}
+                    className="p-1 rounded-full hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] text-[#5F6368]"
+                    title="Hide catalog to expand canvas"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={catalogSearch}
+                    onChange={(e) => setCatalogSearch(e.target.value)}
+                    placeholder="Filter trackers (e.g. Insurance, CHANGE_ESIM)..."
+                    className="w-full rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:border-[#1A73E8]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-2.5 space-y-2.5">
+                {loading && blueprints.length === 0 ? (
+                  <div className="py-10 text-center text-xs text-slate-400">Loading trackers...</div>
+                ) : (
+                  (['LINKED', 'CHANGE', 'SALES', 'OTHER'] as const).map((groupKey) => {
+                    const items = groupedBlueprints[groupKey];
+                    if (items.length === 0) return null;
+                    const open = expandedGroups[groupKey] || catalogSearch.trim().length > 0;
+                    const groupTitle =
+                      groupKey === 'LINKED'
+                        ? 'Linked & Companion BPMNs'
+                        : groupKey === 'OTHER'
+                          ? 'Specialized Journeys'
+                          : `${groupKey} Order Items`;
+                    return (
+                      <div key={groupKey}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedGroups((prev) => ({ ...prev, [groupKey]: !open }))
+                          }
+                          className="w-full flex items-center justify-between px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6] hover:text-[#1F1F1F] dark:hover:text-white"
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {open ? (
+                              <ChevronDown className="w-3.5 h-3.5" />
+                            ) : (
+                              <ChevronRight className="w-3.5 h-3.5" />
+                            )}
+                            {groupTitle}
+                          </span>
+                          <span className="rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2 text-[10px]">
+                            {items.length}
+                          </span>
+                        </button>
+
+                        {open && (
+                          <div className="space-y-1 mt-1">
+                            {items.map((bp) => {
+                              const active = draft?.blueprintId === bp.blueprintId;
+                              const stepCount = Array.isArray(
+                                (bp.definition as Record<string, unknown>)?.steps,
+                              )
+                                ? ((bp.definition as Record<string, unknown>).steps as unknown[])
+                                    .length
+                                : 0;
+                              return (
+                                <button
+                                  key={`${bp.blueprintId}-v${bp.version}`}
+                                  type="button"
+                                  onClick={() => handleSelectBlueprint(bp)}
+                                  className={`w-full text-left rounded-2xl px-3 py-2.5 transition ${
+                                    active
+                                      ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF]'
+                                      : 'hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] text-[#1F1F1F] dark:text-[#E3E3E3]'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <span className="text-xs font-semibold truncate">
+                                      {bp.itemType || bp.orderType}
+                                    </span>
+                                    <span className="text-[10px] font-mono opacity-70 shrink-0">
+                                      {stepCount} steps
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] opacity-75 truncate mt-0.5">
+                                    {String(
+                                      (bp.definition as Record<string, unknown>)?.displayName ??
+                                        bp.blueprintId,
+                                    )}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
+          )}
 
-            <div className="flex-1 overflow-y-auto p-2 space-y-2">
-              {loading && blueprints.length === 0 ? (
-                <div className="py-10 text-center text-xs text-slate-400">Loading trackers...</div>
-              ) : (
-                (['CHANGE', 'SALES', 'OTHER'] as const).map((groupKey) => {
-                  const items = groupedBlueprints[groupKey];
-                  if (items.length === 0) return null;
-                  const open = expandedGroups[groupKey] || catalogSearch.trim().length > 0;
-                  return (
-                    <div key={groupKey}>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedGroups((prev) => ({ ...prev, [groupKey]: !open }))
-                        }
-                        className="w-full flex items-center justify-between px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500 hover:text-slate-900 dark:hover:text-white"
-                      >
-                        <span className="inline-flex items-center gap-1">
-                          {open ? (
-                            <ChevronDown className="w-3.5 h-3.5" />
-                          ) : (
-                            <ChevronRight className="w-3.5 h-3.5" />
-                          )}
-                          {groupKey === 'OTHER' ? 'Specialized Journeys' : `${groupKey} Order Items`}
-                        </span>
-                        <span className="rounded-full bg-slate-100 dark:bg-slate-800 px-1.5 text-[10px]">
-                          {items.length}
-                        </span>
-                      </button>
-
-                      {open && (
-                        <div className="space-y-0.5 mt-0.5">
-                          {items.map((bp) => {
-                            const active = draft?.blueprintId === bp.blueprintId;
-                            const stepCount = Array.isArray(
-                              (bp.definition as Record<string, unknown>)?.steps,
-                            )
-                              ? ((bp.definition as Record<string, unknown>).steps as unknown[])
-                                  .length
-                              : 0;
-                            return (
-                              <button
-                                key={`${bp.blueprintId}-v${bp.version}`}
-                                type="button"
-                                onClick={() => handleSelectBlueprint(bp)}
-                                className={`w-full text-left rounded-lg px-2.5 py-2 transition ${
-                                  active
-                                    ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 ring-1 ring-blue-500/30'
-                                    : 'hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300'
-                                }`}
-                              >
-                                <div className="flex items-center justify-between gap-1.5">
-                                  <span className="text-xs font-semibold truncate">
-                                    {bp.itemType || bp.orderType}
-                                  </span>
-                                  <span className="text-[10px] font-mono text-slate-400 shrink-0">
-                                    {stepCount} steps
-                                  </span>
-                                </div>
-                                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                                  {String(
-                                    (bp.definition as Record<string, unknown>)?.displayName ??
-                                      bp.blueprintId,
-                                  )}
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* CENTER: Visual Milestone Workflow Canvas */}
-          <div className="lg:col-span-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden flex flex-col max-h-[760px]">
+          {/* MAIN WORKSPACE: Spacious Visual Milestone Workflow Canvas */}
+          <div className="flex-1 min-w-0 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] overflow-hidden flex flex-col">
             {!draft ? (
-              <div className="p-10 text-center text-xs text-slate-400">
-                Select a tracker from the left or click <strong>Onboard New Tracker</strong>.
+              <div className="p-12 text-center text-xs text-[#5F6368] dark:text-[#9AA0A6]">
+                Click <strong>Browse Trackers</strong> or <strong>Onboard New Tracker</strong> to begin.
               </div>
             ) : (
               <>
-                {/* Compact Editable Workflow Header */}
-                <div className="px-4 py-3.5 border-b border-slate-200 dark:border-slate-800 space-y-2.5 bg-white dark:bg-slate-900">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <input
-                        type="text"
-                        value={draft.displayName}
-                        onChange={(e) =>
-                          updateDraft((p) => ({ ...p, displayName: e.target.value }))
-                        }
-                        className="w-full text-sm font-semibold text-slate-900 dark:text-white bg-transparent border-b border-transparent hover:border-slate-300 dark:hover:border-slate-700 focus:border-blue-500 focus:outline-none pb-0.5"
-                      />
-                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                        <span className="inline-flex items-center rounded-md bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-500/30 px-2 py-0.5 text-[10px] font-mono font-semibold text-blue-700 dark:text-blue-300">
-                          Order: {draft.orderType}
-                        </span>
-                        {draft.itemType && (
-                          <span className="inline-flex items-center rounded-md bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-500/30 px-2 py-0.5 text-[10px] font-mono font-semibold text-indigo-700 dark:text-indigo-300">
-                            Item: {draft.itemType}
+                {/* Spacious Editable Workflow Header + Tracker Switcher */}
+                <div className="px-5 py-4 border-b border-[#E0E6F0] dark:border-[#333639] space-y-3 bg-white dark:bg-[#1E1F20]">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <button
+                        type="button"
+                        onClick={() => setCatalogOpen((v) => !v)}
+                        className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-semibold transition shrink-0 ${
+                          catalogOpen
+                            ? 'border-[#1A73E8] bg-[#E8F0FE] dark:bg-[#004A77] text-[#1967D2] dark:text-[#C2E7FF]'
+                            : 'border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] text-[#1F1F1F] dark:text-[#E3E3E3]'
+                        }`}
+                        title="Browse & switch between all configured trackers"
+                      >
+                        <PanelLeft className="w-4 h-4" />
+                        <span>{catalogOpen ? 'Hide Catalog' : `Browse Trackers (${blueprints.length})`}</span>
+                      </button>
+
+                      <div className="min-w-0 flex-1">
+                        <input
+                          type="text"
+                          value={draft.displayName}
+                          onChange={(e) =>
+                            updateDraft((p) => ({ ...p, displayName: e.target.value }))
+                          }
+                          className="w-full font-display text-base font-bold text-[#1F1F1F] dark:text-white bg-transparent border-b border-transparent hover:border-[#DDE3EA] dark:hover:border-[#3C4043] focus:border-[#1A73E8] focus:outline-none pb-0.5"
+                        />
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                          <span className="inline-flex items-center rounded-full bg-[#E8F0FE] dark:bg-[#004A77]/60 px-2.5 py-0.5 text-[10px] font-mono font-semibold text-[#1967D2] dark:text-[#C2E7FF]">
+                            Order: {draft.orderType}
                           </span>
-                        )}
-                        <span className="inline-flex items-center rounded-md bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[10px] font-mono text-slate-500">
-                          {draft.isNew ? 'NEW DRAFT' : `v${draft.version}`}
-                        </span>
-                        {dirty && (
-                          <span className="inline-flex items-center rounded-md bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
-                            Unsaved
+                          {draft.itemType && (
+                            <span className="inline-flex items-center rounded-full bg-[#F3E8FD] dark:bg-[#2D1B3E] px-2.5 py-0.5 text-[10px] font-mono font-semibold text-[#7627BB] dark:text-[#D7AEFB]">
+                              Item: {draft.itemType}
+                            </span>
+                          )}
+                          <span className="inline-flex items-center rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2.5 py-0.5 text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6]">
+                            {draft.isNew ? 'NEW DRAFT' : `v${draft.version}`}
                           </span>
-                        )}
+                          {dirty && (
+                            <span className="inline-flex items-center rounded-full bg-[#FEF7E0] dark:bg-[#332609] px-2.5 py-0.5 text-[10px] font-semibold text-[#B06000] dark:text-[#FDD663]">
+                              Unsaved changes
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Action Toolbar */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setDryRunOpen(true)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 transition"
-                    >
-                      <Play className="w-3.5 h-3.5 text-emerald-500" />
-                      Test JSON
-                    </button>
-
-                    <div className="flex items-center gap-1.5">
+                    {/* Action Toolbar */}
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setDryRunOpen(true)}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-3.5 py-1.5 text-xs font-medium text-[#1F1F1F] dark:text-[#E3E3E3] transition"
+                      >
+                        <Play className="w-3.5 h-3.5 text-[#1E8E3E]" />
+                        Test JSON
+                      </button>
                       <button
                         type="button"
                         disabled={saving}
                         onClick={() => void handleSaveWorkflow(false)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 px-3 py-1.5 text-xs font-medium transition disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-3.5 py-1.5 text-xs font-medium transition disabled:opacity-50"
                       >
                         <Save className="w-3.5 h-3.5" />
                         Save
@@ -716,18 +838,61 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                         type="button"
                         disabled={saving}
                         onClick={() => void handleSaveWorkflow(true)}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 text-xs font-medium shadow-sm transition disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-4 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-50"
                       >
                         <Rocket className="w-3.5 h-3.5" />
                         {saving ? 'Publishing...' : 'Publish Live'}
                       </button>
                     </div>
                   </div>
+
+                  {/* Linked Companion Order Context Strip (when configured!) */}
+                  {draft.linkedOrderConfig &&
+                    draft.linkedOrderConfig.workflowRole !== 'PRIMARY_CUSTOMER' && (
+                      <div className="rounded-2xl border border-[#C2E7FF] dark:border-[#004A77] bg-[#F0F7FF] dark:bg-[#002844]/40 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex items-center gap-1 font-semibold text-[#1967D2] dark:text-[#8AB4F8]">
+                            <Link2 className="w-3.5 h-3.5" />
+                            Linked Companion BPMN
+                          </span>
+                          <span className="text-[#5F6368] dark:text-[#9AA0A6]">
+                            Parent:{' '}
+                            <strong className="font-mono text-[#1F1F1F] dark:text-white">
+                              {draft.linkedOrderConfig.parentOrderTypes.join(', ') || 'SALES'}
+                            </strong>
+                          </span>
+                          <span className="rounded-full bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] px-2 py-0.5 text-[10px] font-mono">
+                            {draft.linkedOrderConfig.relationshipType}
+                          </span>
+                          {draft.linkedOrderConfig.bpmnProcessKey && (
+                            <span className="rounded-full bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] px-2 py-0.5 text-[10px] font-mono text-[#7627BB] dark:text-[#D7AEFB]">
+                              BPMN: {draft.linkedOrderConfig.bpmnProcessKey}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px]">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-white dark:bg-[#1E1F20] px-2.5 py-0.5 font-medium text-[#444746] dark:text-[#C4C7C5]">
+                            {draft.linkedOrderConfig.visibility === 'INTERNAL_ONLY' ? (
+                              <>
+                                <EyeOff className="w-3 h-3 text-[#7627BB]" /> Internal Ops Only
+                              </>
+                            ) : (
+                              <>
+                                <Eye className="w-3 h-3 text-[#137333]" /> Customer &amp; Internal
+                              </>
+                            )}
+                          </span>
+                          <span className="text-[#5F6368] dark:text-[#9AA0A6]">
+                            Team: <strong>{draft.linkedOrderConfig.internalOwningTeam}</strong>
+                          </span>
+                        </div>
+                      </div>
+                    )}
                 </div>
 
-                {/* Visual Dot-Grid Workflow Canvas */}
-                <div className="flex-1 overflow-y-auto workflow-canvas-bg p-5">
-                  <div className="max-w-md mx-auto flex flex-col items-center">
+                {/* Visual Dot-Grid Workflow Canvas (Wide & Generous!) */}
+                <div className="flex-1 overflow-y-auto workflow-canvas-bg p-6">
+                  <div className="max-w-xl mx-auto flex flex-col items-center">
                     {/* Start Node */}
                     <div className="inline-flex items-center gap-2 rounded-full border border-emerald-300 dark:border-emerald-500/40 bg-emerald-50 dark:bg-emerald-950/60 px-3.5 py-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 shadow-sm">
                       <span className="w-2 h-2 rounded-full bg-emerald-500" />
@@ -870,8 +1035,8 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
             )}
           </div>
 
-          {/* RIGHT: Contextual Milestone Inspector */}
-          <div className="lg:col-span-4 max-h-[760px] h-[760px]">
+          {/* RIGHT: Spacious Contextual Milestone Inspector */}
+          <div className="w-full lg:w-[440px] xl:w-[480px] shrink-0 max-h-[calc(100vh-195px)] lg:sticky lg:top-20">
             {selectedNode ? (
               <MilestoneInspector
                 node={selectedNode}
@@ -880,13 +1045,13 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                 onDelete={() => handleDeleteStep(selectedNode.stepId)}
               />
             ) : (
-              <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50 h-full flex items-center justify-center p-8 text-center">
+              <div className="rounded-[24px] border border-dashed border-[#DDE3EA] dark:border-[#333639] bg-white/70 dark:bg-[#1E1F20]/70 h-full min-h-[420px] flex items-center justify-center p-8 text-center">
                 <div className="space-y-2 max-w-xs">
-                  <Sparkles className="w-6 h-6 text-blue-500 mx-auto" />
-                  <p className="text-xs font-semibold text-slate-900 dark:text-white">
+                  <Sparkles className="w-6 h-6 text-[#1A73E8] mx-auto" />
+                  <p className="text-xs font-semibold text-[#1F1F1F] dark:text-white">
                     Click any milestone node
                   </p>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-[#5F6368] dark:text-[#9AA0A6]">
                     Configure its Start/Complete/Fail events from JSON, SLA guardrails, and ML prediction model right here.
                   </p>
                 </div>
@@ -896,190 +1061,14 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         </div>
       )}
 
-      {/* Modal 1: Onboard New Order / Item Tracker */}
-      {onboardOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <form
-            onSubmit={handleCreateNewTracker}
-            className="w-full max-w-lg rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden"
-          >
-            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Onboard New Order / Item Tracker
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Configure a brand-new order type or item type workflow — zero code changes required.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setOnboardOpen(false)}
-                className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                    Order Type
-                  </label>
-                  <select
-                    value={obOrderType}
-                    onChange={(e) => setObOrderType(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
-                  >
-                    <option value="CHANGE">CHANGE</option>
-                    <option value="SALES">SALES</option>
-                    <option value="__CUSTOM__">+ Custom New Order Type</option>
-                  </select>
-                </div>
-
-                {obOrderType === '__CUSTOM__' ? (
-                  <div>
-                    <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                      Custom Order Type Code
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={obCustomOrderType}
-                      onChange={(e) => setObCustomOrderType(e.target.value)}
-                      placeholder="e.g. RETURN_EXCHANGE"
-                      className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
-                    />
-                  </div>
-                ) : (
-                  <div>
-                    <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                      Order Item Type Code
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={obItemType}
-                      onChange={(e) => setObItemType(e.target.value)}
-                      placeholder="e.g. CHANGE_ESIM_TRANSFER"
-                      className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
-                    />
-                  </div>
-                )}
-              </div>
-
-              {obOrderType === '__CUSTOM__' && (
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                    Order Item Type Code (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={obItemType}
-                    onChange={(e) => setObItemType(e.target.value)}
-                    placeholder="e.g. EXCHANGE_HANDSET"
-                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
-                  />
-                </div>
-              )}
-
-              <div>
-                <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                  Display Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={obDisplayName}
-                  onChange={(e) => setObDisplayName(e.target.value)}
-                  placeholder="e.g. eSIM Quick Transfer Flow"
-                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                    Order Family
-                  </label>
-                  <select
-                    value={obFamily}
-                    onChange={(e) => setObFamily(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs"
-                  >
-                    {ORDER_FAMILY_OPTIONS.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                    Tracked Granularity
-                  </label>
-                  <select
-                    value={obEntityLevel}
-                    onChange={(e) => setObEntityLevel(e.target.value as 'ORDER_ITEM' | 'ORDER')}
-                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs"
-                  >
-                    <option value="ORDER_ITEM">Order Item (Line-Level)</option>
-                    <option value="ORDER">Root Order</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-medium text-slate-500 mb-1.5">
-                  Starter Milestone Workflow Preset
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {[
-                    { id: 'esim', label: 'eSIM / Digital', desc: '5 steps · ML eSIM' },
-                    { id: 'plan', label: 'Plan / Billing', desc: '3 steps · Fast SOC' },
-                    { id: 'ship', label: 'Device Ship', desc: '7 steps · Warehouse' },
-                    { id: 'port', label: 'Number Port-In', desc: '6 steps · Donor FOC' },
-                    { id: 'blank', label: 'Start Blank', desc: '2 steps · Custom' },
-                  ].map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => setObPreset(p.id as typeof obPreset)}
-                      className={`rounded-xl border p-2.5 text-left transition ${
-                        obPreset === p.id
-                          ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/40'
-                          : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40'
-                      }`}
-                    >
-                      <div className="text-xs font-semibold text-slate-900 dark:text-white">
-                        {p.label}
-                      </div>
-                      <div className="text-[10px] text-slate-500">{p.desc}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setOnboardOpen(false)}
-                className="rounded-lg border border-slate-200 dark:border-slate-700 px-3.5 py-1.5 text-xs font-medium"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="rounded-lg bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 text-xs font-medium shadow-sm"
-              >
-                Create Workflow Canvas
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+      {/* Modal 1: Guided Linked & Companion Order Onboarding Wizard */}
+      <OnboardTrackerWizardModal
+        open={onboardOpen}
+        templates={templates}
+        existingOrderTypes={existingOrderTypes}
+        onClose={() => setOnboardOpen(false)}
+        onCreateDraft={handleWizardCreateDraft}
+      />
 
       {/* Modal 2: Add Milestone (Pick Existing OR Create New Inline) */}
       {addStepAtIndex !== null && (

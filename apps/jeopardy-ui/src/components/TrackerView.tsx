@@ -9,8 +9,12 @@ import {
   Clock,
   Code2,
   Copy,
+  Eye,
+  EyeOff,
   Layers,
+  Link2,
   List,
+  PanelLeft,
   PauseCircle,
   RefreshCw,
   Search,
@@ -250,7 +254,9 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   const [includeNoise, setIncludeNoise] = useState(false);
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
 
-  // Queue grouping & copy feedback state (Clean UX upgrades)
+  // Queue grouping, Focus Timeline mode, Audience switcher & copy feedback state
+  const [queueOpen, setQueueOpen] = useState(true);
+  const [linkedAudience, setLinkedAudience] = useState<'ALL' | 'CUSTOMER' | 'INTERNAL'>('ALL');
   const [groupByOrder, setGroupByOrder] = useState(true);
   const [collapsedOrders, setCollapsedOrders] = useState<Record<string, boolean>>({});
   const [copiedAction, setCopiedAction] = useState<'id' | 'summary' | 'api' | null>(null);
@@ -757,15 +763,28 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
       {/* Page Title + Quick Order Type Pills */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="font-display text-xl font-bold tracking-tight text-[#1F1F1F] dark:text-white">
             Order Tracker
           </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            See exactly where any customer order stands, step by step — updated live with zero page refresh.
+          <p className="text-xs text-[#5F6368] dark:text-[#9AA0A6]">
+            See exactly where any customer order &amp; its linked internal workflows stand — updated live with zero page refresh.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setQueueOpen((v) => !v)}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+              !queueOpen
+                ? 'border-[#1A73E8] bg-[#E8F0FE] dark:bg-[#004A77] text-[#1967D2] dark:text-[#C2E7FF]'
+                : 'border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] text-[#444746] dark:text-[#C4C7C5] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]'
+            }`}
+            title={queueOpen ? 'Hide order list to give timeline full width' : 'Show order list sidebar'}
+          >
+            <PanelLeft className="w-3.5 h-3.5" />
+            <span>{queueOpen ? 'Focus Timeline' : 'Show Order List'}</span>
+          </button>
           <span
             className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
               sseState === 'LIVE'
@@ -914,10 +933,11 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
         </div>
       )}
 
-      {/* Main 2-Column Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+      {/* Main Spacious 2-Pane Layout (Queue collapses cleanly for Focus Timeline mode!) */}
+      <div className="flex flex-col lg:flex-row gap-5 items-start">
         {/* LEFT RAIL: M3 Tonal Order & Customer Queue */}
-        <div className="lg:col-span-4 xl:col-span-3 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] overflow-hidden flex flex-col max-h-[780px]">
+        {queueOpen && (
+          <div className="w-full lg:w-[340px] xl:w-[360px] shrink-0 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] overflow-hidden flex flex-col max-h-[calc(100vh-210px)] lg:sticky lg:top-20">
           <div className="p-3.5 border-b border-slate-100 dark:border-slate-800 space-y-2.5">
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
@@ -1254,9 +1274,10 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
             )}
           </div>
         </div>
+        )}
 
-        {/* RIGHT MAIN AREA: Domino's / BMW Style Order Progress Tracker */}
-        <div className="lg:col-span-8 xl:col-span-9 space-y-5">
+        {/* RIGHT MAIN AREA: Spacious Domino's / BMW Style Order Progress Tracker */}
+        <div className="flex-1 min-w-0 space-y-5 w-full">
           {timelineError && (
             <div className="rounded-xl border border-rose-200 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-950/30 px-4 py-3 text-xs text-rose-700 dark:text-rose-200">
               {timelineError}
@@ -1692,50 +1713,196 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                 )}
               </div>
 
-              {/* RELATED ITEMS IN CUSTOMER'S ORDER (Clean Horizontal Cards) */}
-              {customerEntities.length > 1 && (
-                <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      All Items for Customer {selectedCustomerId} ({customerEntities.length})
-                    </h3>
-                  </div>
+              {/* CONNECTED ORDER JOURNEY & LINKED INTERNAL / COMPANION BPMN ORDERS */}
+              {(customerEntities.length > 1 || (timelineData?.relationships ?? []).length > 0) && (() => {
+                const relByOtherKey = new Map<string, { label: string; rawType: string; isCompanion: boolean }>();
+                for (const rel of timelineData?.relationships ?? []) {
+                  const otherKey =
+                    rel.sourceEntityKey === entity.entityKey
+                      ? rel.targetEntityKey
+                      : rel.sourceEntityKey;
+                  const rt = (rel.relationType || '').toUpperCase();
+                  const label =
+                    rt === 'TRIGGERED_BY_ORDER' || rt === 'TRIGGERED_BY_ITEM'
+                      ? rel.targetEntityKey === entity.entityKey
+                        ? 'Spawned Companion Order'
+                        : 'Parent Sales Order'
+                      : rt === 'BUNDLED_FEATURE' || rt === 'BUNDLED_LINE_ITEM'
+                        ? 'Bundled Feature / Trade-In'
+                        : rt === 'CHANGE_ORDER_OF'
+                          ? 'Supplemental Change Order'
+                          : rt === 'CHILD_WORK_ORDER'
+                            ? 'Internal Work Order'
+                            : rt === 'CHILD_ITEM_OF'
+                              ? rel.targetEntityKey === entity.entityKey
+                                ? 'Line Item'
+                                : 'Parent Order'
+                              : prettifyName(rt);
+                  const isComp =
+                    rt === 'TRIGGERED_BY_ORDER' ||
+                    rt === 'TRIGGERED_BY_ITEM' ||
+                    rt === 'BUNDLED_FEATURE' ||
+                    rt === 'BUNDLED_LINE_ITEM' ||
+                    rt === 'CHANGE_ORDER_OF' ||
+                    rt === 'CHILD_WORK_ORDER';
+                  relByOtherKey.set(otherKey, { label, rawType: rt, isCompanion: isComp });
+                }
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                    {customerEntities.map((sib) => {
-                      const active = sib.entityKey === entity.entityKey;
-                      const st = humanStatusLabel(sib.status, sib.hasActiveFallout);
-                      return (
-                        <button
-                          key={sib.entityKey}
-                          type="button"
-                          onClick={() => setSelectedEntityKey(sib.entityKey)}
-                          className={`text-left rounded-xl border p-3 transition ${
-                            active
-                              ? 'border-blue-500 bg-blue-50/70 dark:bg-blue-950/40 ring-1 ring-blue-500/30'
-                              : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
-                          }`}
+                const isInternalCompanion = (sib: EntitySummaryDto): boolean => {
+                  const ot = (sib.orderType || '').toUpperCase();
+                  const el = (sib.entityLevel || '').toUpperCase();
+                  return (
+                    ot.startsWith('INTERNAL_') ||
+                    ot === 'DEVICE_TRADE_IN' ||
+                    ot.startsWith('SUPP_') ||
+                    el === 'INTERNAL_PROMO' ||
+                    el === 'TRADE_IN' ||
+                    el === 'CHANGE_ORDER' ||
+                    Boolean(relByOtherKey.get(sib.entityKey)?.isCompanion)
+                  );
+                };
+
+                const isInternalOnly = (sib: EntitySummaryDto): boolean => {
+                  const vis = String(sib.attributes?.audience_visibility ?? '').toUpperCase();
+                  return vis === 'INTERNAL_ONLY';
+                };
+
+                const visibleEntities = customerEntities.filter((sib) => {
+                  if (linkedAudience === 'CUSTOMER') return !isInternalOnly(sib);
+                  if (linkedAudience === 'INTERNAL') return isInternalCompanion(sib) || sib.entityKey === entity.entityKey;
+                  return true;
+                });
+
+                const companionItems = visibleEntities.filter((sib) => isInternalCompanion(sib));
+                const primaryItems = visibleEntities.filter((sib) => !isInternalCompanion(sib));
+
+                const renderLinkedCard = (sib: EntitySummaryDto) => {
+                  const active = sib.entityKey === entity.entityKey;
+                  const st = humanStatusLabel(sib.status, sib.hasActiveFallout);
+                  const relInfo = relByOtherKey.get(sib.entityKey);
+                  const internalOnly = isInternalOnly(sib);
+                  const owningTeam = sib.attributes?.internal_owning_team
+                    ? String(sib.attributes.internal_owning_team)
+                    : null;
+
+                  return (
+                    <button
+                      key={sib.entityKey}
+                      type="button"
+                      onClick={() => setSelectedEntityKey(sib.entityKey)}
+                      className={`text-left rounded-2xl border p-3.5 transition ${
+                        active
+                          ? 'border-[#1A73E8] bg-[#E8F0FE]/70 dark:bg-[#004A77]/40 ring-1 ring-[#1A73E8]/30'
+                          : 'border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314] hover:border-[#AECBFA] dark:hover:border-[#5F6368]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-[#1F1F1F] dark:text-white truncate">
+                          {friendlyEntityTitle(sib)}
+                        </span>
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold shrink-0 ${st.badgeClass}`}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                              {friendlyEntityTitle(sib)}
+                          <span className={`w-1.5 h-1.5 rounded-full ${st.dotClass}`} />
+                          {st.label}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] font-mono text-[#5F6368] dark:text-[#9AA0A6]">
+                        <span className="truncate">{sib.entityKey}</span>
+                        {sib.blueprintId && (
+                          <span className="text-[10px] opacity-75 truncate">{sib.orderType}</span>
+                        )}
+                      </div>
+                      {(relInfo || internalOnly || owningTeam) && (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          {relInfo && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] px-2 py-0.5 text-[10px] font-medium text-[#1967D2] dark:text-[#8AB4F8]">
+                              <Link2 className="w-2.5 h-2.5" />
+                              {relInfo.label}
                             </span>
-                            <span
-                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0 ${st.badgeClass}`}
-                            >
-                              <span className={`w-1.5 h-1.5 rounded-full ${st.dotClass}`} />
-                              {st.label}
+                          )}
+                          {internalOnly ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-[#F3E8FD] dark:bg-[#2D1B3E] px-2 py-0.5 text-[10px] font-medium text-[#7627BB] dark:text-[#D7AEFB]">
+                              <EyeOff className="w-2.5 h-2.5" />
+                              Internal Ops Only
                             </span>
-                          </div>
-                          <div className="mt-1 text-[11px] font-mono text-slate-500 truncate">
-                            {sib.entityKey}
-                          </div>
-                        </button>
-                      );
-                    })}
+                          ) : isInternalCompanion(sib) ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-[#E6F4EA] dark:bg-[#132E1C] px-2 py-0.5 text-[10px] font-medium text-[#137333] dark:text-[#81C995]">
+                              <Eye className="w-2.5 h-2.5" />
+                              Customer &amp; Ops
+                            </span>
+                          ) : null}
+                          {owningTeam && (
+                            <span className="text-[10px] text-[#5F6368] dark:text-[#9AA0A6]">
+                              · {owningTeam}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </button>
+                  );
+                };
+
+                return (
+                  <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)] space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="font-display text-sm font-bold text-[#1F1F1F] dark:text-white flex items-center gap-2">
+                          <Link2 className="w-4 h-4 text-[#1A73E8] dark:text-[#8AB4F8]" />
+                          Connected Order Journey · Customer {selectedCustomerId}
+                        </h3>
+                        <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] mt-0.5">
+                          Track customer-facing order items alongside separately spawned internal BPMN workflows (Insurance, Trade-In, Installs, Perks).
+                        </p>
+                      </div>
+
+                      {/* Audience Switcher for Care Agents vs Internal Ops */}
+                      <div className="inline-flex items-center rounded-full bg-[#F0F4F9] dark:bg-[#131314] border border-[#E0E6F0] dark:border-[#333639] p-0.5 text-[11px]">
+                        {[
+                          { id: 'ALL' as const, label: `All (${customerEntities.length})` },
+                          { id: 'CUSTOMER' as const, label: 'Customer View' },
+                          { id: 'INTERNAL' as const, label: 'Internal / Companion' },
+                        ].map((tab) => (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setLinkedAudience(tab.id)}
+                            className={`rounded-full px-3 py-1 font-medium transition ${
+                              linkedAudience === tab.id
+                                ? 'bg-white dark:bg-[#282A2C] text-[#1F1F1F] dark:text-white shadow-sm font-semibold'
+                                : 'text-[#5F6368] dark:text-[#9AA0A6]'
+                            }`}
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {companionItems.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-[#1967D2] dark:text-[#8AB4F8]">
+                          Linked Internal &amp; Companion Workflows ({companionItems.length})
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                          {companionItems.map(renderLinkedCard)}
+                        </div>
+                      </div>
+                    )}
+
+                    {primaryItems.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
+                          Customer Order &amp; Line Items ({primaryItems.length})
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                          {primaryItems.map(renderLinkedCard)}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* PROGRESSIVE DISCLOSURE: Technical Details & Raw Event Audit Log */}
               <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">

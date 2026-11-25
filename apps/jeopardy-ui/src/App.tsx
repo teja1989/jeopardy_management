@@ -27,6 +27,10 @@ type WorkspaceTab = 'overview' | 'tracker' | 'studio';
 export const App: React.FC = () => {
   const [workspace, setWorkspace] = useState<WorkspaceTab>('overview');
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railPinnedExpanded, setRailPinnedExpanded] = useState(false);
+
+  // Give Workflow Studio extra breathing room automatically unless user explicitly expanded the rail
+  const effectiveRailCollapsed = railCollapsed || (workspace === 'studio' && !railPinnedExpanded);
   const [openNewTrackerModal, setOpenNewTrackerModal] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -190,26 +194,33 @@ export const App: React.FC = () => {
       {/* Google Workspace / M3 Collapsible Left Navigation Rail */}
       <aside
         className={`hidden md:flex flex-col shrink-0 sticky top-0 h-screen bg-[#F0F4F9] dark:bg-[#1E1F20] border-r border-[#E0E6F0]/80 dark:border-[#333639]/80 transition-all duration-200 ${
-          railCollapsed ? 'w-[76px] px-2.5' : 'w-[236px] px-3'
+          effectiveRailCollapsed ? 'w-[72px] px-2' : 'w-[228px] px-3'
         } py-3.5`}
       >
         {/* Rail Header: Collapse Toggle + Brand */}
         <div
           className={`flex items-center gap-2.5 px-1.5 mb-4 ${
-            railCollapsed ? 'justify-center' : ''
+            effectiveRailCollapsed ? 'justify-center' : ''
           }`}
         >
           <button
             type="button"
-            onClick={() => setRailCollapsed((v) => !v)}
+            onClick={() => {
+              if (workspace === 'studio') {
+                setRailPinnedExpanded((v) => !v);
+                setRailCollapsed(false);
+              } else {
+                setRailCollapsed((v) => !v);
+              }
+            }}
             className="w-9 h-9 rounded-full hover:bg-[#E2E9F4] dark:hover:bg-[#282A2C] flex items-center justify-center text-[#444746] dark:text-[#C4C7C5] transition shrink-0"
-            title={railCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+            title={effectiveRailCollapsed ? 'Expand navigation' : 'Collapse navigation'}
             aria-label="Toggle navigation rail"
           >
             <Menu className="w-5 h-5" />
           </button>
 
-          {!railCollapsed && (
+          {!effectiveRailCollapsed && (
             <button
               type="button"
               onClick={() => setWorkspace('overview')}
@@ -231,17 +242,17 @@ export const App: React.FC = () => {
         </div>
 
         {/* M3 Tonal FAB (+ New Tracker) */}
-        <div className={`mb-4 ${railCollapsed ? 'flex justify-center' : 'px-0.5'}`}>
+        <div className={`mb-4 ${effectiveRailCollapsed ? 'flex justify-center' : 'px-0.5'}`}>
           <button
             type="button"
             onClick={handleQuickOnboard}
             className={`inline-flex items-center justify-center gap-2.5 rounded-2xl bg-[#C2E7FF] hover:bg-[#AEDBFF] dark:bg-[#004A77] dark:hover:bg-[#005B91] text-[#001D35] dark:text-[#C2E7FF] font-semibold text-xs shadow-sm hover:shadow transition-all ${
-              railCollapsed ? 'w-12 h-12' : 'px-4 py-3.5'
+              effectiveRailCollapsed ? 'w-12 h-12' : 'px-4 py-3.5'
             }`}
             title="Onboard New Order Tracker"
           >
             <Plus className="w-5 h-5 stroke-[2.2]" />
-            {!railCollapsed && <span>New Tracker</span>}
+            {!effectiveRailCollapsed && <span>New Tracker</span>}
           </button>
         </div>
 
@@ -256,7 +267,7 @@ export const App: React.FC = () => {
                 onClick={() => setWorkspace(item.id)}
                 title={item.label}
                 className={`w-full flex items-center gap-3 rounded-full transition-all duration-150 text-xs ${
-                  railCollapsed ? 'justify-center h-11 px-0' : 'px-3.5 py-2.5'
+                  effectiveRailCollapsed ? 'justify-center h-11 px-0' : 'px-3.5 py-2.5'
                 } ${
                   active
                     ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold'
@@ -264,8 +275,8 @@ export const App: React.FC = () => {
                 }`}
               >
                 {item.icon}
-                {!railCollapsed && <span className="truncate">{item.label}</span>}
-                {!railCollapsed && item.badge}
+                {!effectiveRailCollapsed && <span className="truncate">{item.label}</span>}
+                {!effectiveRailCollapsed && item.badge}
               </button>
             );
           })}
@@ -278,7 +289,7 @@ export const App: React.FC = () => {
             onClick={() => setAssistantOpen((v) => !v)}
             title="Toggle Order AI Assistant (⌘J)"
             className={`w-full flex items-center gap-3 rounded-full transition-all duration-150 text-xs ${
-              railCollapsed ? 'justify-center h-11 px-0' : 'px-3.5 py-2.5'
+              effectiveRailCollapsed ? 'justify-center h-11 px-0' : 'px-3.5 py-2.5'
             } ${
               assistantOpen
                 ? 'bg-gradient-to-r from-[#D3E3FD] to-[#E8DEF8] dark:from-[#004A77] dark:to-[#3E2759] text-[#041E49] dark:text-[#E8DEF8] font-semibold'
@@ -286,7 +297,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Sparkles className="w-[18px] h-[18px] text-[#1A73E8] dark:text-[#8AB4F8] shrink-0" />
-            {!railCollapsed && (
+            {!effectiveRailCollapsed && (
               <>
                 <span className="truncate">Ask AI</span>
                 <span className="ml-auto rounded-full bg-white/80 dark:bg-[#131314]/60 px-1.5 py-0.5 text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6]">
@@ -298,7 +309,7 @@ export const App: React.FC = () => {
         </nav>
 
         {/* Subtle Bottom Status Pill */}
-        {!railCollapsed && (
+        {!effectiveRailCollapsed && (
           <div className="mt-auto pt-3">
             <div className="rounded-2xl bg-white/80 dark:bg-[#131314]/70 border border-[#E0E6F0] dark:border-[#333639] px-3 py-2.5 space-y-1">
               <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#137333] dark:text-[#81C995]">
@@ -426,8 +437,14 @@ export const App: React.FC = () => {
           ))}
         </div>
 
-        {/* Workspace Canvas + Docked Gemini-Style A2UI Side Panel */}
-        <div className="flex-1 flex items-start gap-4 px-4 sm:px-6 pb-8 pt-1 max-w-[1680px] w-full mx-auto min-w-0">
+        {/* Workspace Canvas + Docked Gemini-Style A2UI Side Panel (Full-bleed spacious width!) */}
+        <div
+          className={`flex-1 flex items-start gap-5 px-4 sm:px-6 lg:px-7 pb-8 pt-2 w-full mx-auto min-w-0 ${
+            workspace === 'studio' || workspace === 'tracker'
+              ? 'max-w-[1960px]'
+              : 'max-w-[1760px]'
+          }`}
+        >
           <main className="flex-1 min-w-0">
             {workspace === 'overview' && (
               <DashboardsView
