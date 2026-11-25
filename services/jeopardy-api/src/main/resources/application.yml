@@ -35,6 +35,14 @@ jeopardy:
       client-id: ${AZURE_AD_CLIENT_ID:}
       admin-role: ${AZURE_AD_ADMIN_ROLE:Jeopardy.Admin}
       operator-role: ${AZURE_AD_OPERATOR_ROLE:Jeopardy.Operator}
+  ai:
+    provider: ${JEOPARDY_AI_PROVIDER:azure-openai}
+    timeout-seconds: ${JEOPARDY_AI_TIMEOUT_SECONDS:25}
+    azure-openai:
+      endpoint: ${AZURE_OPENAI_ENDPOINT:}
+      api-key: ${AZURE_OPENAI_API_KEY:}
+      deployment: ${AZURE_OPENAI_DEPLOYMENT:}
+      api-version: ${AZURE_OPENAI_API_VERSION:2024-10-21}
   topics:
     config-updates: ${JEOPARDY_TOPIC_CONFIG_UPDATES:jeopardy.config.updates}
     ui-updates: ${JEOPARDY_TOPIC_UI_UPDATES:jeopardy.ui.updates}

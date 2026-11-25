@@ -1,7 +1,7 @@
-# Next Goal: Conversational AI Assistant in Jeopardy Studio UI
+# Conversational AI Assistant (A2UI v0.9 Protocol + Azure OpenAI)
 
-**Status:** Planned (Next Milestone)  
-**Objective:** Replace multi-click navigation, manual filtering, and raw error-code hunting with a grounded, role-aware **AI Assistant Drawer (`⌘J`)** embedded directly in Jeopardy Studio — using **Azure OpenAI as the primary AI model provider** (matching Entra ID / Azure AD SSO), and cleanly displaying **"AI Agent Not Configured"** with setup instructions whenever Azure OpenAI credentials are not configured.
+**Status:** COMPLETE & LIVE-VERIFIED (`http://localhost:3000` · `⌘J` / Ask AI button)  
+**Objective:** Replace multi-click navigation, manual filtering, and raw error-code hunting with a grounded, role-aware **AI Assistant Drawer (`⌘J`)** implementing the **A2UI (Agent-to-User Interface) v0.9 declarative protocol** — using **Azure OpenAI as the primary AI model provider** and cleanly displaying **"AI Agent Not Configured"** whenever Azure OpenAI env vars are unset.
 
 ---
 
@@ -57,3 +57,14 @@ Spring Boot 3 (services/jeopardy-api/.../assistant/)
    - When configured, shows starter prompt chips tailored to the current page + rich inline response cards (clickable order badges, Copy Support Summary button, and **"Open Draft in Studio"** button for admins).
 3. **Verification Gate:**
    - Test with live orders (`ORD-88412`, `CHG-ZEROCODE-007`), bottleneck queries, and unauthenticated vs authenticated admin guardrails.
+
+---
+
+## 4. How to Expand Later (Zero Core Refactoring!)
+
+1. **Add a New Backend Agent Capability (1 Class):**
+   - Create a Spring `@Component` under `services/jeopardy-api/src/main/java/com/jeopardy/api/assistant/tools/` implementing `AssistantTool` (`name`, `description`, `parameterSchema`, `supportedActions`, `requiresAdmin`, `execute`).
+   - `AssistantToolRegistry` auto-discovers it on startup — automatically exposing it to **Azure OpenAI function calling**, **A2UI `userAction` dispatch**, and **RBAC enforcement** with zero edits to `AssistantService` or `AssistantController`.
+2. **Add a New Visual A2UI Widget (1 Registration Call):**
+   - Register a React component in `apps/jeopardy-ui/src/components/a2ui/a2uiCatalog.tsx` via `registerA2uiComponent("MyWidget", (def, ctx) => ...)` using `resolveBoundValue(def.prop, ctx.dataModel)` for reactive JSON Pointer bindings.
+   - Any backend tool can immediately emit `"component": "MyWidget"` in `A2uiSurfaceBuilder`!

@@ -8,12 +8,14 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  Sparkles,
   Sun,
   Waypoints,
 } from 'lucide-react';
 import { getAuthStatus, logoutAdmin } from './api/client';
 import type { AuthStatusResponse, AuthUser, EntitySummaryDto } from './api/types';
 import { AdminAuthGate } from './components/AdminAuthGate';
+import { AiAssistantDrawer } from './components/AiAssistantDrawer';
 import { CommandPalette } from './components/CommandPalette';
 import { DashboardsView, type DashboardDrilldownTarget } from './components/DashboardsView';
 import { TrackerView } from './components/TrackerView';
@@ -25,6 +27,7 @@ export const App: React.FC = () => {
   const [workspace, setWorkspace] = useState<WorkspaceTab>('overview');
   const [openNewTrackerModal, setOpenNewTrackerModal] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = window.localStorage.getItem('jeopardy-ui-theme');
     return saved === 'dark' ? 'dark' : 'light';
@@ -71,12 +74,15 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('jeopardy:auth-required', onAuthRequired);
   }, []);
 
-  // Global Cmd+K / Ctrl+K shortcut for instant Command Palette search
+  // Global Cmd+K (Quick Jump) and Cmd+J (AI Assistant) shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setCommandOpen((prev) => !prev);
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        setAssistantOpen((prev) => !prev);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -350,6 +356,30 @@ export const App: React.FC = () => {
         onSelectEntity={handleCommandSelectEntity}
         onNavigate={(tab) => setWorkspace(tab)}
         onQuickOnboard={handleQuickOnboard}
+      />
+
+      {/* Floating Ask AI Trigger (Cmd+J) */}
+      {!assistantOpen && (
+        <button
+          type="button"
+          onClick={() => setAssistantOpen(true)}
+          className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-4 py-2.5 text-xs font-semibold shadow-lg shadow-blue-600/25 transition"
+          title="Open Order AI Assistant (A2UI v0.9 · ⌘J)"
+        >
+          <Sparkles className="w-4 h-4" />
+          <span>Ask AI</span>
+          <kbd className="rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-mono">⌘J</kbd>
+        </button>
+      )}
+
+      {/* A2UI v0.9 Conversational AI Assistant Drawer */}
+      <AiAssistantDrawer
+        open={assistantOpen}
+        onClose={() => setAssistantOpen(false)}
+        onOpenOrderInTracker={(entityKey, customerId) => {
+          setTrackerDrilldown({ entityKey, customerId });
+          setWorkspace('tracker');
+        }}
       />
     </div>
   );

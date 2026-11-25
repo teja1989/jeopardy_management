@@ -1,4 +1,10 @@
 import type {
+  A2uiUserAction,
+  AssistantChatResponse,
+  AssistantStatusResponse,
+} from '../components/a2ui/a2uiTypes';
+import { SUPPORTED_A2UI_CATALOGS } from '../components/a2ui/a2uiTypes';
+import type {
   AuthStatusResponse,
   CustomerJourneyResponse,
   DevOpsBottlenecksResponse,
@@ -142,6 +148,40 @@ export function loginAdmin(username: string, password: string): Promise<LoginRes
 export function logoutAdmin(): Promise<{ authenticated: boolean }> {
   return fetchJson<{ authenticated: boolean }>(`${API_BASE}/auth/logout`, {
     method: 'POST',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// A2UI v0.9 AI Chat Assistant API (Azure OpenAI primary + grounded tools)
+// ---------------------------------------------------------------------------
+
+export function getAssistantStatus(): Promise<AssistantStatusResponse> {
+  return fetchJson<AssistantStatusResponse>(`${API_BASE}/assistant/status`);
+}
+
+export function sendAssistantChat(
+  message: string,
+  activeOrderId?: string,
+): Promise<AssistantChatResponse> {
+  return fetchJson<AssistantChatResponse>(`${API_BASE}/assistant/chat`, {
+    method: 'POST',
+    body: JSON.stringify({
+      message,
+      activeOrderId: activeOrderId || null,
+      supportedCatalogIds: SUPPORTED_A2UI_CATALOGS,
+    }),
+  });
+}
+
+export function sendAssistantUserAction(
+  userAction: A2uiUserAction,
+): Promise<AssistantChatResponse> {
+  return fetchJson<AssistantChatResponse>(`${API_BASE}/assistant/action`, {
+    method: 'POST',
+    body: JSON.stringify({
+      userAction,
+      supportedCatalogIds: SUPPORTED_A2UI_CATALOGS,
+    }),
   });
 }
 
