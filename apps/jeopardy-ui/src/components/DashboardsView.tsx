@@ -522,17 +522,19 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
         </div>
       )}
 
-      {/* Clean 4-Card Hero KPI Strip */}
+      {/* Clean 4-Card M3 Expressive Hero KPI Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-sm">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+        <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+          <div className="flex items-center justify-between text-xs font-medium text-[#5F6368] dark:text-[#9AA0A6]">
             <span>In-Flight Orders</span>
-            <Layers className="w-4 h-4 text-blue-500" />
+            <span className="w-8 h-8 rounded-full bg-[#E8F0FE] dark:bg-[#004A77]/60 text-[#1A73E8] dark:text-[#8AB4F8] flex items-center justify-center">
+              <Layers className="w-4 h-4" />
+            </span>
           </div>
-          <div className="mt-2 text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <div className="mt-2 font-display text-[28px] font-extrabold tabular-nums tracking-tight text-[#1F1F1F] dark:text-white">
             {(totals?.liveOpenCount ?? 0).toLocaleString()}
           </div>
-          <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+          <div className="mt-1 text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
             Active across all configured workflows
           </div>
         </div>
@@ -540,21 +542,23 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
         <button
           type="button"
           onClick={() => onInspectOrders({})}
-          className="text-left rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-amber-300 dark:hover:border-amber-500/50 p-4 shadow-sm transition group"
+          className="text-left rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] hover:border-[#F9AB00]/60 p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition group"
         >
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+          <div className="flex items-center justify-between text-xs font-medium text-[#5F6368] dark:text-[#9AA0A6]">
             <span>At Risk / Jeopardy</span>
-            <AlertTriangle className="w-4 h-4 text-amber-500" />
+            <span className="w-8 h-8 rounded-full bg-[#FEF7E0] dark:bg-[#332609] text-[#B06000] dark:text-[#FDD663] flex items-center justify-center">
+              <AlertTriangle className="w-4 h-4" />
+            </span>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold tracking-tight text-amber-600 dark:text-amber-400">
+            <span className="font-display text-[28px] font-extrabold tabular-nums tracking-tight text-[#B06000] dark:text-[#FDD663]">
               {attentionCount.toLocaleString()}
             </span>
-            <span className="text-[11px] text-slate-500">
+            <span className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
               ({totals?.liveBreachedCount ?? 0} breached)
             </span>
           </div>
-          <div className="mt-1 text-[11px] text-blue-600 dark:text-blue-400 inline-flex items-center gap-0.5 group-hover:underline">
+          <div className="mt-1 text-[11px] text-[#1A73E8] dark:text-[#8AB4F8] font-medium inline-flex items-center gap-0.5 group-hover:underline">
             Inspect queue <ArrowUpRight className="w-3 h-3" />
           </div>
         </button>
@@ -562,29 +566,33 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
         <button
           type="button"
           onClick={() => setActiveView('bottlenecks')}
-          className="text-left rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-rose-300 dark:hover:border-rose-500/50 p-4 shadow-sm transition group"
+          className="text-left rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] hover:border-[#D93025]/50 p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition group"
         >
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+          <div className="flex items-center justify-between text-xs font-medium text-[#5F6368] dark:text-[#9AA0A6]">
             <span>Active Fallouts</span>
-            <ShieldAlert className="w-4 h-4 text-rose-500" />
+            <span className="w-8 h-8 rounded-full bg-[#FCE8E6] dark:bg-[#3C1919] text-[#C5221F] dark:text-[#F28B82] flex items-center justify-center">
+              <ShieldAlert className="w-4 h-4" />
+            </span>
           </div>
-          <div className="mt-2 text-2xl font-bold tracking-tight text-rose-600 dark:text-rose-400">
+          <div className="mt-2 font-display text-[28px] font-extrabold tabular-nums tracking-tight text-[#C5221F] dark:text-[#F28B82]">
             {(totals?.liveFalloutCount ?? 0).toLocaleString()}
           </div>
-          <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+          <div className="mt-1 text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
             {(totals?.falloutCount ?? 0).toLocaleString()} fallout events in last {windowHours}h
           </div>
         </button>
 
-        <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-sm">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+        <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+          <div className="flex items-center justify-between text-xs font-medium text-[#5F6368] dark:text-[#9AA0A6]">
             <span>SLA Attainment</span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+            <span className="w-8 h-8 rounded-full bg-[#E6F4EA] dark:bg-[#132E1C] text-[#137333] dark:text-[#81C995] flex items-center justify-center">
+              <CheckCircle2 className="w-4 h-4" />
+            </span>
           </div>
-          <div className="mt-2 text-2xl font-bold tracking-tight text-emerald-600 dark:text-emerald-400">
+          <div className="mt-2 font-display text-[28px] font-extrabold tabular-nums tracking-tight text-[#137333] dark:text-[#81C995]">
             {formatPct(totals?.slaCompliancePct)}
           </div>
-          <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+          <div className="mt-1 text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
             {(totals?.completedCount ?? 0).toLocaleString()} milestones completed ({windowHours}h)
           </div>
         </div>
@@ -886,20 +894,19 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                 </span>
               </div>
 
-              {/* Slice-By Dimension Pills + Dynamic JSONB Attribute Picker */}
+              {/* M3 Expressive Filter Chips (Slice-By Dimension Pills + Dynamic JSONB Attribute Picker) */}
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] font-medium text-slate-500 mr-1">Slice by:</span>
+                <span className="text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6] mr-1">Slice by:</span>
                 {SLICE_DIMENSIONS.map((dim) => (
                   <button
                     key={dim.id}
                     type="button"
                     onClick={() => setSliceBy(dim.id)}
-                    className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
-                      sliceBy === dim.id
-                        ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-sm'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    className={`m3-chip ${
+                      sliceBy === dim.id ? 'm3-chip-active' : 'm3-chip-idle'
                     }`}
                   >
+                    {sliceBy === dim.id && <span className="text-[11px]">✓</span>}
                     {dim.label}
                   </button>
                 ))}

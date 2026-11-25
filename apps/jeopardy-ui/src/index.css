@@ -2,28 +2,82 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --m3-canvas: #F8FAFD;
+  --m3-surface-low: #F0F4F9;
+  --m3-surface-default: #E8EEF7;
+  --m3-surface-sheet: #FFFFFF;
+  --m3-outline-variant: #DDE3EA;
+  --m3-primary: #1A73E8;
+  --m3-primary-container: #D3E3FD;
+  --m3-on-primary-container: #041E49;
+  --m3-fab: #C2E7FF;
+}
+
+.dark {
+  --m3-canvas: #131314;
+  --m3-surface-low: #1E1F20;
+  --m3-surface-default: #282A2C;
+  --m3-surface-sheet: #1E1F20;
+  --m3-outline-variant: #333639;
+  --m3-primary: #8AB4F8;
+  --m3-primary-container: #004A77;
+  --m3-on-primary-container: #C2E7FF;
+  --m3-fab: #004A77;
+}
+
 @layer base {
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     font-size: 13px;
     line-height: 1.5;
+    background-color: var(--m3-canvas);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  h1, h2, h3, .font-display {
+    font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    letter-spacing: -0.02em;
+  }
 }
 
-/* Subtle workflow canvas dot-grid */
+@layer components {
+  .m3-sheet {
+    @apply rounded-[24px] bg-white dark:bg-[#1E1F20] border border-[#E0E6F0] dark:border-[#333639] shadow-[0_1px_2px_rgba(16,24,40,0.04)];
+  }
+
+  .m3-tonal-card {
+    @apply rounded-2xl bg-[#F0F4F9] dark:bg-[#282A2C]/80 border border-transparent;
+  }
+
+  .m3-chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all duration-150;
+  }
+
+  .m3-chip-active {
+    @apply bg-[#D3E3FD] text-[#041E49] dark:bg-[#004A77] dark:text-[#C2E7FF] font-semibold;
+  }
+
+  .m3-chip-idle {
+    @apply bg-[#F0F4F9] dark:bg-[#282A2C] text-[#444746] dark:text-[#C4C7C5] hover:bg-[#E2E9F4] dark:hover:bg-[#333639];
+  }
+}
+
+/* Subtle workflow canvas dot-grid (M3 tonal) */
 .workflow-canvas-bg {
-  background-image: radial-gradient(rgba(148, 163, 184, 0.22) 1px, transparent 1px);
-  background-size: 20px 20px;
+  background-color: #F8FAFD;
+  background-image: radial-gradient(rgba(26, 115, 232, 0.14) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
 
 .dark .workflow-canvas-bg {
-  background-image: radial-gradient(rgba(148, 163, 184, 0.14) 1px, transparent 1px);
-  background-size: 20px 20px;
+  background-color: #131314;
+  background-image: radial-gradient(rgba(138, 180, 248, 0.14) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
 
-/* Custom thin scrollbars */
+/* Thin Google-style scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -34,10 +88,10 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.3);
+  background: rgba(95, 99, 104, 0.28);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.5);
+  background: rgba(95, 99, 104, 0.48);
 }

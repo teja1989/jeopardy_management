@@ -5,21 +5,23 @@ export default {
   theme: {
     extend: {
       fontFamily: {
+        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+        display: ['"Plus Jakarta Sans"', 'Inter', '-apple-system', 'sans-serif'],
         mono: [
+          '"JetBrains Mono"',
           'ui-monospace',
           'SFMono-Regular',
           'Menlo',
           'Monaco',
           'Consolas',
-          'Liberation Mono',
           'monospace',
         ],
       },
       keyframes: {
         'sse-flash': {
-          '0%': { boxShadow: '0 0 0 0 rgba(59, 130, 246, 0.55)' },
-          '70%': { boxShadow: '0 0 0 8px rgba(59, 130, 246, 0)' },
-          '100%': { boxShadow: '0 0 0 0 rgba(59, 130, 246, 0)' },
+          '0%': { boxShadow: '0 0 0 0 rgba(26, 115, 232, 0.5)' },
+          '70%': { boxShadow: '0 0 0 10px rgba(26, 115, 232, 0)' },
+          '100%': { boxShadow: '0 0 0 0 rgba(26, 115, 232, 0)' },
         },
       },
       animation: {

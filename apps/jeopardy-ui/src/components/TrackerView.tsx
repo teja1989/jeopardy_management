@@ -58,6 +58,7 @@ import {
 interface TrackerViewProps {
   initialFilter: DashboardDrilldownTarget | null;
   onClearInitialFilter: () => void;
+  onActiveEntityChange?: (entityKey: string | null) => void;
 }
 
 interface UnifiedStage {
@@ -114,47 +115,47 @@ function humanStatusLabel(status: string, hasActiveFallout?: boolean): {
     return {
       label: 'Action Needed',
       badgeClass:
-        'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-500/30',
-      dotClass: 'bg-rose-500',
+        'bg-[#FCE8E6] text-[#C5221F] border-transparent dark:bg-[#3C1919] dark:text-[#F28B82]',
+      dotClass: 'bg-[#D93025]',
     };
   }
   if (s === 'BREACHED') {
     return {
       label: 'SLA Overdue',
       badgeClass:
-        'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-500/30',
-      dotClass: 'bg-rose-500',
+        'bg-[#FCE8E6] text-[#C5221F] border-transparent dark:bg-[#3C1919] dark:text-[#F28B82]',
+      dotClass: 'bg-[#D93025]',
     };
   }
   if (s === 'JEOPARDY' || s === 'WARNING') {
     return {
       label: 'Delayed',
       badgeClass:
-        'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-500/30',
-      dotClass: 'bg-amber-500',
+        'bg-[#FEF7E0] text-[#B06000] border-transparent dark:bg-[#332609] dark:text-[#FDD663]',
+      dotClass: 'bg-[#F9AB00]',
     };
   }
   if (s === 'PAUSED') {
     return {
       label: 'On Hold',
       badgeClass:
-        'bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950/50 dark:text-violet-300 dark:border-violet-500/30',
-      dotClass: 'bg-violet-500',
+        'bg-[#F3E8FD] text-[#7627BB] border-transparent dark:bg-[#2D1B3E] dark:text-[#D7AEFB]',
+      dotClass: 'bg-[#9334E6]',
     };
   }
   if (s === 'COMPLETED') {
     return {
       label: 'Completed',
       badgeClass:
-        'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-500/30',
-      dotClass: 'bg-emerald-500',
+        'bg-[#E6F4EA] text-[#137333] border-transparent dark:bg-[#132E1C] dark:text-[#81C995]',
+      dotClass: 'bg-[#1E8E3E]',
     };
   }
   return {
     label: 'In Progress',
     badgeClass:
-      'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-500/30',
-    dotClass: 'bg-blue-500',
+      'bg-[#E8F0FE] text-[#1967D2] border-transparent dark:bg-[#004A77] dark:text-[#C2E7FF]',
+    dotClass: 'bg-[#1A73E8]',
   };
 }
 
@@ -169,6 +170,7 @@ function falloutStageIndex(status: string): number {
 export const TrackerView: React.FC<TrackerViewProps> = ({
   initialFilter,
   onClearInitialFilter,
+  onActiveEntityChange,
 }) => {
   // Search, calendar time range & multi-facet filter state
   const [searchText, setSearchText] = useState('');
@@ -256,7 +258,8 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
 
   useEffect(() => {
     selectedEntityKeyRef.current = selectedEntityKey;
-  }, [selectedEntityKey]);
+    onActiveEntityChange?.(selectedEntityKey);
+  }, [selectedEntityKey, onActiveEntityChange]);
 
   useEffect(() => {
     showTechAuditRef.current = showTechAudit;
@@ -891,8 +894,8 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
 
       {/* Main 2-Column Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        {/* LEFT RAIL: Clean Order & Customer Queue */}
-        <div className="lg:col-span-4 xl:col-span-3 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden flex flex-col max-h-[780px]">
+        {/* LEFT RAIL: M3 Tonal Order & Customer Queue */}
+        <div className="lg:col-span-4 xl:col-span-3 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] overflow-hidden flex flex-col max-h-[780px]">
           <div className="p-3.5 border-b border-slate-100 dark:border-slate-800 space-y-2.5">
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
@@ -1220,8 +1223,8 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
             </div>
           ) : (
             <>
-              {/* HERO TRACKER CARD (Domino's / BMW My Garage Style) */}
-              <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+              {/* HERO TRACKER CARD (Google M3 Expressive Journey Sheet) */}
+              <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_3px_rgba(16,24,40,0.05)] overflow-hidden">
                 {/* 1. Plain-English Status Hero Banner */}
                 <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-start justify-between gap-4">
                   <div className="space-y-1.5">

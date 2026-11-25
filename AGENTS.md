@@ -12,6 +12,7 @@ These rules apply to **every** primary agent and sub-agent working in `/Users/te
      - Docker Compose, DB DDLs, Configs, Simulator, K8s/CF deploy → `jeopardy-infra-data`
      - Apache Flink (Java 21) streaming engine → `jeopardy-flink-engine`
      - Spring Boot 3 API, SSE, React UI, Python ML/ONNX → `jeopardy-api-ui`
+     - UI/UX redesign, Google Material 3 Expressive tokens, layout & accessibility → `google-ux-design`
 2. **Before Finishing Any Phase or Major Milestone:**
    - Run the phase's verification gate (build/tests/schema checks) and confirm zero regressions.
    - Update [`MEMORY.md`](./MEMORY.md) with completed deliverables, new ADRs/deviations, verification results, and exact next-step handoff notes.

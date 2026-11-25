@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jeopardy Studio — Google Material 3 Expressive UX Design System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --canvas: #F8FAFD;
+      --surface-low: #F0F4F9;
+      --surface-default: #E8EEF7;
+      --sheet: #FFFFFF;
+      --border: #DDE3EA;
+      --text: #1F1F1F;
+      --muted: #5F6368;
+      --blue: #1A73E8;
+      --blue-container: #D3E3FD;
+      --blue-on-container: #041E49;
+      --fab: #C2E7FF;
+      --green: #137333;
+      --green-bg: #E6F4EA;
+      --amber: #B06000;
+      --amber-bg: #FEF7E0;
+      --red: #C5221F;
+      --red-bg: #FCE8E6;
+      --violet: #7627BB;
+      --violet-bg: #F3E8FD;
+    }
+    body.dark {
+      --canvas: #131314;
+      --surface-low: #1E1F20;
+      --surface-default: #282A2C;
+      --sheet: #1E1F20;
+      --border: #333639;
+      --text: #E3E3E3;
+      --muted: #9AA0A6;
+      --blue: #8AB4F8;
+      --blue-container: #004A77;
+      --blue-on-container: #C2E7FF;
+      --fab: #004A77;
+      --green: #81C995;
+      --green-bg: #132E1C;
+      --amber: #FDD663;
+      --amber-bg: #332609;
+      --red: #F28B82;
+      --red-bg: #3C1919;
+      --violet: #D7AEFB;
+      --violet-bg: #2D1B3E;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--canvas);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      transition: background 0.2s, color 0.2s;
+    }
+    h1, h2, h3, .display { font-family: 'Plus Jakarta Sans', sans-serif; letter-spacing: -0.02em; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .rail {
+      width: 232px;
+      background: var(--surface-low);
+      padding: 16px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border-right: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 6px 10px 16px; }
+    .logo {
+      width: 34px; height: 34px; border-radius: 12px;
+      background: linear-gradient(135deg, #1A73E8, #4285F4, #7B61FF);
+      color: #fff; font-weight: 800; font-size: 13px;
+      display: grid; place-items: center;
+    }
+    .fab {
+      display: inline-flex; align-items: center; gap: 10px;
+      background: var(--fab); color: var(--blue-on-container);
+      border: none; border-radius: 16px; padding: 13px 18px;
+      font-weight: 600; font-size: 13px; cursor: pointer;
+      margin-bottom: 10px; width: fit-content;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 14px; border-radius: 9999px; border: none;
+      background: transparent; color: var(--muted); font-size: 13px; font-weight: 500;
+      cursor: pointer; text-align: left; width: 100%;
+    }
+    .nav-item.active { background: var(--blue-container); color: var(--blue-on-container); font-weight: 600; }
+    .main-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .topbar {
+      height: 64px; padding: 0 24px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    }
+    .pill-search {
+      flex: 1; max-width: 560px; height: 42px;
+      background: var(--surface-default); border-radius: 9999px;
+      padding: 0 18px; display: flex; align-items: center; justify-content: space-between;
+      color: var(--muted); font-size: 13px;
+    }
+    .btn-tonal {
+      border: 1px solid var(--border); background: var(--sheet); color: var(--text);
+      border-radius: 9999px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .workspace { display: flex; flex: 1; gap: 16px; padding: 8px 24px 24px; min-height: 0; }
+    .canvas { flex: 1; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+    .sheet {
+      background: var(--sheet); border-radius: 24px; padding: 22px;
+      border: 1px solid var(--border);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .kpi { background: var(--sheet); border-radius: 22px; padding: 18px; border: 1px solid var(--border); }
+    .kpi-val { font-size: 28px; font-weight: 800; margin-top: 8px; }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .chip {
+      border-radius: 9999px; padding: 6px 14px; font-size: 12px; font-weight: 500;
+      background: var(--surface-low); color: var(--muted); border: 1px solid transparent;
+    }
+    .chip.active { background: var(--blue-container); color: var(--blue-on-container); font-weight: 600; }
+    .stepper { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 22px; position: relative; }
+    .step { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; }
+    .dot {
+      width: 38px; height: 38px; border-radius: 9999px;
+      display: grid; place-items: center; font-weight: 700; font-size: 13px;
+    }
+    .dot.done { background: var(--green-bg); color: var(--green); }
+    .dot.active { background: var(--blue); color: #fff; box-shadow: 0 0 0 6px var(--blue-container); }
+    .dot.warn { background: var(--red-bg); color: var(--red); box-shadow: 0 0 0 6px var(--red-bg); }
+    .dot.next { background: var(--surface-low); color: var(--muted); }
+    .ai-panel {
+      width: 340px; background: var(--sheet); border-radius: 24px;
+      border: 1px solid var(--border); padding: 18px;
+      display: flex; flex-direction: column; gap: 12px; flex-shrink: 0;
+    }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
+    .pill.red { background: var(--red-bg); color: var(--red); }
+    .pill.green { background: var(--green-bg); color: var(--green); }
+    .pill.blue { background: var(--blue-container); color: var(--blue-on-container); }
+  </style>
+</head>
+<body>
+  <aside class="rail">
+    <div class="brand">
+      <div class="logo">JM</div>
+      <div>
+        <div class="display" style="font-size:14px;font-weight:700;">Jeopardy Studio</div>
+        <div style="font-size:11px;color:var(--muted);">Google M3 Expressive</div>
+      </div>
+    </div>
+    <button class="fab">＋ New Tracker</button>
+    <button class="nav-item active">● Operations Overview</button>
+    <button class="nav-item">◎ Order Tracker</button>
+    <button class="nav-item">⚿ Workflow Studio</button>
+    <div style="margin-top:auto;padding:12px;border-radius:16px;background:var(--sheet);border:1px solid var(--border);font-size:11px;color:var(--muted);">
+      <span style="color:var(--green);font-weight:700;">● Live Sync</span> · 100% OSS Stack
+    </div>
+  </aside>
+
+  <div class="main-wrap">
+    <header class="topbar">
+      <div class="pill-search">
+        <span>🔍 Search orders, customers, CHANGE_ESIM...</span>
+        <span class="mono" style="font-size:11px;background:var(--sheet);padding:2px 8px;border-radius:9999px;">⌘K</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn-tonal" onclick="document.body.classList.toggle('dark')">◐ Toggle Light / Dark</button>
+        <span class="pill blue">✦ Ask AI · ⌘J</span>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <section class="canvas">
+        <div class="kpi-grid">
+          <div class="kpi">
+            <div style="font-size:12px;color:var(--muted);">In-Flight Orders</div>
+            <div class="kpi-val display">327</div>
+            <div style="font-size:11px;color:var(--green);margin-top:4px;">Partition-pruned · 4ms</div>
+          </div>
+          <div class="kpi">
+            <div style="font-size:12px;color:var(--muted);">At Risk / Jeopardy</div>
+            <div class="kpi-val display" style="color:var(--amber);">26</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px;">Predicted via ONNX</div>
+          </div>
+          <div class="kpi">
+            <div style="font-size:12px;color:var(--muted);">Active Fallouts</div>
+            <div class="kpi-val display" style="color:var(--red);">14</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px;">Clustered into 1 Incident</div>
+          </div>
+          <div class="kpi">
+            <div style="font-size:12px;color:var(--muted);">SLA Attainment</div>
+            <div class="kpi-val display" style="color:var(--green);">98.4%</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px;">Last 7 days</div>
+          </div>
+        </div>
+
+        <div class="sheet">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <span class="pill red">● Action Needed</span>
+              <span class="mono" style="font-size:12px;color:var(--muted);margin-left:8px;">ORD-88412:ITM-1</span>
+              <h2 style="font-size:20px;margin-top:6px;">Port-In Line Activation</h2>
+              <p style="font-size:12px;color:var(--muted);margin-top:3px;">Step 3 of 5 · Waiting on Donor Carrier PIN verification</p>
+            </div>
+            <div style="background:var(--surface-low);padding:12px 16px;border-radius:16px;text-align:right;">
+              <div style="font-size:11px;color:var(--muted);">Estimated Completion</div>
+              <div class="display" style="font-size:15px;font-weight:700;margin-top:2px;">Today, 4:45 PM</div>
+            </div>
+          </div>
+
+          <div class="stepper">
+            <div class="step"><div class="dot done">✓</div><div style="font-size:12px;font-weight:600;">Order Placed</div></div>
+            <div class="step"><div class="dot done">✓</div><div style="font-size:12px;font-weight:600;">Payment Verified</div></div>
+            <div class="step"><div class="dot warn">!</div><div style="font-size:12px;font-weight:600;color:var(--red);">Carrier Port-In</div></div>
+            <div class="step"><div class="dot next">4</div><div style="font-size:12px;color:var(--muted);">eSIM Activation</div></div>
+            <div class="step"><div class="dot next">5</div><div style="font-size:12px;color:var(--muted);">Order Complete</div></div>
+          </div>
+        </div>
+
+        <div class="sheet">
+          <h3 style="font-size:15px;">Zero-Storage Slice &amp; Dice Explorer</h3>
+          <div class="chip-row">
+            <span class="chip active">✓ Item Type</span>
+            <span class="chip">Order Type</span>
+            <span class="chip">Channel</span>
+            <span class="chip">Region</span>
+            <span class="chip">Account Type</span>
+            <span class="chip">Status</span>
+            <span class="chip">+ Custom Attribute</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="ai-panel">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="display" style="font-size:14px;font-weight:700;">✦ Order AI Assistant</div>
+          <span class="pill blue">A2UI v0.9</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.5;">
+          Docked Gemini-in-Workspace panel: inspect orders on the left while rendering live declarative A2UI cards on the right — zero dark overlay blocking your screen.
+        </div>
+        <div style="background:var(--surface-low);border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <strong style="font-size:12px;">Order ORD-88412</strong>
+            <span class="pill red">Action Needed</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);">Step 3 of 5 · Carrier Port-In · 40% complete</div>
+          <div style="height:6px;background:var(--surface-default);border-radius:9999px;overflow:hidden;">
+            <div style="width:45%;height:100%;background:var(--red);border-radius:9999px;"></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</body>
+</html>

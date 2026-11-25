@@ -48,7 +48,7 @@ export const AdminAuthGate: React.FC<AdminAuthGateProps> = ({
 
   return (
     <div className="min-h-[70vh] flex items-center justify-center py-8 px-4">
-      <div className="w-full max-w-md rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-lg overflow-hidden">
+      <div className="w-full max-w-md rounded-[28px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-xl overflow-hidden">
         {/* Top Accent Banner */}
         <div className="px-6 pt-6 pb-5 border-b border-slate-100 dark:border-slate-800 bg-gradient-to-br from-slate-50 to-blue-50/40 dark:from-slate-900 dark:to-blue-950/20">
           <div className="flex items-center gap-3">

@@ -36,12 +36,16 @@ interface ChatTurn {
 
 interface AiAssistantDrawerProps {
   open: boolean;
+  docked?: boolean;
+  activeOrderId?: string | null;
   onClose: () => void;
   onOpenOrderInTracker: (entityKey: string, customerId?: string) => void;
 }
 
 export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
   open,
+  docked = false,
+  activeOrderId = null,
   onClose,
   onOpenOrderInTracker,
 }) => {
@@ -160,7 +164,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
     setInput('');
     setBusy(true);
     try {
-      const res = await sendAssistantChat(trimmed);
+      const res = await sendAssistantChat(trimmed, activeOrderId || undefined);
       appendResponse(trimmed, res.replyText, res.a2uiMessages, res.toolsInvoked);
     } catch (err) {
       appendResponse(
@@ -261,25 +265,26 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
 
   const isConfigured = status?.configured ?? false;
 
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35 backdrop-blur-[2px]">
-      {/* Backdrop click closes drawer */}
-      <div className="flex-1" onClick={onClose} />
-
-      {/* Slide-over Assistant Panel */}
-      <aside className="w-full max-w-lg bg-white dark:bg-slate-950 border-l border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col h-full">
-        {/* Header */}
-        <div className="px-4 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 bg-gradient-to-r from-slate-50 to-blue-50/40 dark:from-slate-900 dark:to-blue-950/20">
+  const panelBody = (
+    <aside
+      className={
+        docked
+          ? 'w-full lg:w-[390px] xl:w-[410px] shrink-0 lg:sticky lg:top-[72px] lg:h-[calc(100vh-88px)] rounded-[24px] bg-white dark:bg-[#1E1F20] border border-[#E0E6F0] dark:border-[#333639] shadow-[0_2px_10px_rgba(16,24,40,0.06)] flex flex-col overflow-hidden'
+          : 'w-full max-w-lg bg-white dark:bg-[#1E1F20] border-l border-[#E0E6F0] dark:border-[#333639] shadow-2xl flex flex-col h-full'
+      }
+    >
+      {/* Header */}
+      <div className="px-4 py-3.5 border-b border-[#E0E6F0]/80 dark:border-[#333639] flex items-center justify-between gap-3 bg-[#F8FAFD] dark:bg-[#1E1F20]">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-sm shrink-0">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#1A73E8] via-[#4285F4] to-[#7B61FF] text-white flex items-center justify-center shadow-sm shrink-0">
               <Sparkles className="w-4 h-4" />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                <h2 className="font-display text-sm font-bold text-[#1F1F1F] dark:text-white truncate">
                   Order AI Assistant
                 </h2>
-                <span className="rounded-md bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-500/30 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-indigo-700 dark:text-indigo-300">
+                <span className="rounded-full bg-[#D3E3FD] dark:bg-[#004A77] px-2 py-0.5 text-[10px] font-mono font-semibold text-[#041E49] dark:text-[#C2E7FF]">
                   A2UI {status?.protocolVersion || 'v0.9'}
                 </span>
               </div>
@@ -292,8 +297,8 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
                 <span
                   className={
                     isConfigured
-                      ? 'text-emerald-700 dark:text-emerald-300 font-medium'
-                      : 'text-amber-700 dark:text-amber-300 font-medium'
+                      ? 'text-[#137333] dark:text-[#81C995] font-medium'
+                      : 'text-[#B06000] dark:text-[#FDD663] font-medium'
                   }
                 >
                   {isConfigured ? 'Azure OpenAI Connected' : 'AI Agent Not Configured'}
@@ -310,7 +315,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
                   setTurns([]);
                   setSurfaces({});
                 }}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-[#EDF2FA] dark:hover:bg-[#282A2C] transition"
                 title="Clear conversation"
               >
                 <Trash2 className="w-4 h-4" />
@@ -319,7 +324,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-[#EDF2FA] dark:hover:bg-[#282A2C] transition"
               aria-label="Close AI Assistant"
             >
               <X className="w-4 h-4" />
@@ -393,6 +398,16 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           </form>
 
           <div className="flex flex-wrap items-center gap-1.5">
+            {activeOrderId && (
+              <button
+                type="button"
+                onClick={() => handleQuickOrderLookup(activeOrderId)}
+                disabled={busy}
+                className="rounded-full bg-[#D3E3FD] dark:bg-[#004A77] px-2.5 py-0.5 text-[11px] font-semibold text-[#041E49] dark:text-[#C2E7FF] transition"
+              >
+                Current: {activeOrderId}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => handleQuickOrderLookup('ORD-88412')}
@@ -564,6 +579,26 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           </div>
         </form>
       </aside>
+  );
+
+  if (docked) {
+    return (
+      <>
+        {/* Desktop: Docked Gemini-in-Workspace Side Panel (no blocking dark backdrop!) */}
+        <div className="hidden lg:block">{panelBody}</div>
+        {/* Mobile/Tablet: Graceful Slide-Over Drawer */}
+        <div className="lg:hidden fixed inset-0 z-50 flex justify-end bg-slate-950/35 backdrop-blur-[2px]">
+          <div className="flex-1" onClick={onClose} />
+          <div className="w-full max-w-md h-full">{panelBody}</div>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35 backdrop-blur-[2px]">
+      <div className="flex-1" onClick={onClose} />
+      {panelBody}
     </div>
   );
 };
