@@ -1,0 +1,150 @@
+# =============================================================================
+# Multi-Region DR Fallback Safety Net — <60s SLA Timer Rehydration Job
+# =============================================================================
+# Guardrail #4 (Double-Safety Timer Rehydration):
+#   If Region A suffers a total outage and S3-replicated Flink savepoints are
+#   unavailable or stale, run this one-shot Kubernetes Job against the promoted
+#   Region B CloudNativePG Primary.
+#
+# How it achieves <60s recovery:
+#   1. Scans ONLY active SLA timers using the tiny PostgreSQL partial index
+#      `idx_entity_milestones_dr_timers` (WHERE status IN ('IN_PROGRESS',
+#      'WARNING','JEOPARDY','IN_FALLOUT') AND sla_breach_at IS NOT NULL).
+#   2. Streams compact JSON timer-rehydration signals into Region B Kafka
+#      (`jeopardy.cross-order.signals`), allowing Region B Apache Flink to
+#      immediately re-arm all 60-day Trade-In & open Sales SLA timers.
+#
+# Run during DR cutover:
+#   kubectl -n jeopardy apply -f deploy/k8s/dr/timer-rehydration-job.yaml
+#   kubectl -n jeopardy logs -f job/jeopardy-dr-timer-rehydration
+# =============================================================================
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jeopardy-dr-rehydration-script
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: jeopardy-dr-timer-rehydration
+    app.kubernetes.io/part-of: jeopardy-management
+data:
+  rehydrate_timers.sql: |
+    -- Uses partial index: idx_entity_milestones_dr_timers
+    SELECT json_build_object(
+      'signalType',       'DR_TIMER_REHYDRATE',
+      'targetEntityKey',  m.entity_key,
+      'sourceEntityKey',  'DR-BOOTSTRAP',
+      'milestoneId',      m.milestone_id,
+      'templateId',       m.template_id,
+      'displayName',      m.display_name,
+      'status',           m.status,
+      'blueprintId',      e.blueprint_id,
+      'blueprintVersion', e.blueprint_version,
+      'orderType',        e.order_type,
+      'orderFamily',      e.order_family,
+      'accountType',      e.account_type,
+      'slaWarningAtMs',   EXTRACT(EPOCH FROM m.sla_warning_at)::bigint * 1000,
+      'slaJeopardyAtMs',  EXTRACT(EPOCH FROM m.sla_jeopardy_at)::bigint * 1000,
+      'slaBreachAtMs',    EXTRACT(EPOCH FROM m.sla_breach_at)::bigint * 1000,
+      'eventTimeMs',      EXTRACT(EPOCH FROM NOW())::bigint * 1000
+    )::text
+    FROM entity_milestones m
+    JOIN tracked_entities e
+      ON e.entity_key = m.entity_key
+    WHERE m.status IN ('IN_PROGRESS', 'WARNING', 'JEOPARDY', 'IN_FALLOUT')
+      AND m.sla_breach_at IS NOT NULL
+    ORDER BY m.sla_breach_at ASC;
+  run_rehydration.sh: |
+    #!/bin/sh
+    set -eu
+    START_TS="$(date +%s)"
+    echo "[DR-REHYDRATE] Scanning active timers via idx_entity_milestones_dr_timers..."
+    psql "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}" \
+      --no-align --tuples-only \
+      -f /scripts/rehydrate_timers.sql \
+      -o /tmp/dr_timers.jsonl
+
+    COUNT="$(wc -l < /tmp/dr_timers.jsonl | tr -d ' ')"
+    echo "[DR-REHYDRATE] Extracted ${COUNT} active SLA timers."
+
+    if [ "${COUNT}" -gt 0 ]; then
+      echo "[DR-REHYDRATE] Publishing timer rehydration batch to Kafka topic ${DR_TARGET_TOPIC}..."
+      kcat -P -b "${KAFKA_BOOTSTRAP_SERVERS}" -t "${DR_TARGET_TOPIC}" -l /tmp/dr_timers.jsonl
+    else
+      echo "[DR-REHYDRATE] Zero active timers to rehydrate."
+    fi
+
+    END_TS="$(date +%s)"
+    echo "[DR-REHYDRATE] Completed ${COUNT} timers in $((END_TS - START_TS))s."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jeopardy-dr-timer-rehydration
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: jeopardy-dr-timer-rehydration
+    app.kubernetes.io/part-of: jeopardy-management
+    app.kubernetes.io/component: disaster-recovery
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jeopardy-dr-timer-rehydration
+        app.kubernetes.io/part-of: jeopardy-management
+    spec:
+      serviceAccountName: jeopardy-batch-sa
+      restartPolicy: OnFailure
+      containers:
+        - name: timer-rehydrator
+          # Lightweight open-source Alpine container with psql + kcat (or custom org tools image)
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              if ! command -v kcat >/dev/null 2>&1; then
+                apk add --no-cache kcat >/dev/null
+              fi
+              /scripts/run_rehydration.sh
+          env:
+            - name: POSTGRES_HOST
+              value: "jeopardy-pg-rw.jeopardy.svc.cluster.local"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: "jeopardy"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jeopardy-db-credentials
+                  key: postgres-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jeopardy-db-credentials
+                  key: postgres-password
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-bootstrap.jeopardy.svc.cluster.local:9092"
+            - name: DR_TARGET_TOPIC
+              value: "jeopardy.cross-order.signals"
+          volumeMounts:
+            - name: rehydration-scripts
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        - name: rehydration-scripts
+          configMap:
+            name: jeopardy-dr-rehydration-script
+            defaultMode: 0755

@@ -1,0 +1,169 @@
+# =============================================================================
+# PostgreSQL 16 OSS — Multi-AZ Cluster (CloudNativePG Operator)
+# =============================================================================
+# 100% Open-Source (Apache 2.0 / PostgreSQL License) — ZERO AWS Aurora!
+#   * Official CloudNativePG (CNPG) Operator (postgresql.cnpg.io/v1)
+#   * Multi-AZ Primary + Read Replica (instances: 2; bump up to 4 for read scale)
+#   * Dedicated WAL PVC + Barman continuous WAL archiving to S3 (RPO < 1 min)
+#   * Exposes Services automatically:
+#       - jeopardy-pg-rw.jeopardy.svc.cluster.local:5432 (Primary: Flink batched upserts & Admin Studio)
+#       - jeopardy-pg-ro.jeopardy.svc.cluster.local:5432 (Read Replicas: Care Tracker & Live Open KPIs)
+# =============================================================================
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: jeopardy-pg
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/part-of: jeopardy-management
+spec:
+  description: "Jeopardy Management Operational State & 3-Block Admin Config DB (PostgreSQL 16 OSS)"
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+  instances: 2
+  primaryUpdateStrategy: unsupervised
+  enableSuperuserAccess: false
+
+  # Multi-AZ spreading: Primary & Read Replica never co-locate in the same AZ
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          cnpg.io/cluster: jeopardy-pg
+
+  bootstrap:
+    initdb:
+      database: jeopardy
+      owner: jeopardy
+      secret:
+        name: jeopardy-pg-app-secret
+      encoding: UTF8
+      localeCType: C
+      localeCollate: C
+
+  postgresql:
+    parameters:
+      # Tuned for 16 GiB RAM nodes + high-rate micro-batched Flink upserts + partial index reads
+      shared_buffers: "4GB"
+      effective_cache_size: "12GB"
+      work_mem: "16MB"
+      maintenance_work_mem: "512MB"
+      max_connections: "300"
+      max_wal_size: "4GB"
+      min_wal_size: "1GB"
+      checkpoint_completion_target: "0.9"
+      wal_compression: "zstd"
+      random_page_cost: "1.1"
+      effective_io_concurrency: "200"
+      autovacuum_naptime: "15s"
+      autovacuum_vacuum_scale_factor: "0.05"
+      log_min_duration_statement: "500"
+
+  resources:
+    requests:
+      cpu: "2"
+      memory: "8Gi"
+    limits:
+      cpu: "4"
+      memory: "16Gi"
+
+  storage:
+    storageClass: gp3
+    size: 200Gi
+
+  walStorage:
+    storageClass: gp3
+    size: 50Gi
+
+  # Continuous WAL archiving to S3 via Barman (enable S3 CRR to Region B for DR)
+  backup:
+    retentionPolicy: "30d"
+    barmanObjectStore:
+      destinationPath: "s3://jeopardy-pg-wal-backups/prod/region-a/"
+      s3Credentials:
+        accessKeyId:
+          name: jeopardy-s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: jeopardy-s3-credentials
+          key: ACCESS_SECRET_KEY
+      wal:
+        compression: gzip
+        maxParallel: 4
+      data:
+        compression: gzip
+        jobs: 2
+
+  monitoring:
+    enablePodMonitor: true
+---
+# Daily Base Backup via CloudNativePG Barman S3
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: jeopardy-pg-daily-backup
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/part-of: jeopardy-management
+spec:
+  schedule: "0 0 1 * * *"
+  backupOwnerReference: self
+  cluster:
+    name: jeopardy-pg
+---
+# =============================================================================
+# COMMENTED CROSS-REGION DR REPLICA CLUSTER (Deploy in Region B — e.g. us-west-2)
+# =============================================================================
+# Continuously streams WAL from Region A's S3 Cross-Region Replicated bucket
+# (`s3://jeopardy-pg-wal-backups-dr/prod/region-a/`).
+#
+# During a Region A outage, promote Region B in < 1-2 minutes by patching:
+#   kubectl -n jeopardy patch cluster jeopardy-pg \
+#     --type=merge -p '{"spec":{"replica":{"enabled":false}}}'
+#
+# apiVersion: postgresql.cnpg.io/v1
+# kind: Cluster
+# metadata:
+#   name: jeopardy-pg
+#   namespace: jeopardy
+#   labels:
+#     app.kubernetes.io/part-of: jeopardy-management
+#     dr-role: cross-region-standby
+# spec:
+#   imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+#   instances: 2
+#   bootstrap:
+#     recovery:
+#       source: region-a-s3-crr
+#   replica:
+#     enabled: true
+#     source: region-a-s3-crr
+#   externalClusters:
+#     - name: region-a-s3-crr
+#       barmanObjectStore:
+#         destinationPath: "s3://jeopardy-pg-wal-backups-dr/prod/region-a/"
+#         serverName: jeopardy-pg
+#         s3Credentials:
+#           accessKeyId:
+#             name: jeopardy-s3-credentials
+#             key: ACCESS_KEY_ID
+#           secretAccessKey:
+#             name: jeopardy-s3-credentials
+#             key: ACCESS_SECRET_KEY
+#   storage:
+#     storageClass: gp3
+#     size: 200Gi
+#   walStorage:
+#     storageClass: gp3
+#     size: 50Gi
+#   resources:
+#     requests:
+#       cpu: "2"
+#       memory: "8Gi"
+#     limits:
+#       cpu: "4"
+#       memory: "16Gi"

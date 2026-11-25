@@ -1,0 +1,192 @@
+# =============================================================================
+# Jeopardy Management & Predictive SLA Tracker — Order Family Taxonomy
+# Maps 60+ enterprise telecom order types into 6 executive portfolios.
+# Hot-reloaded via Kafka topic: jeopardy.config.updates
+# =============================================================================
+schemaVersion: "1.0"
+configType: "ORDER_FAMILY_TAXONOMY"
+version: 1
+updatedBy: "system-seed"
+
+families:
+  - familyId: "UPGRADES_TRADEIN"
+    displayName: "Upgrades & Trade-Ins"
+    executiveOwner: "VP Device Lifecycle"
+    colorToken: "#2563EB"
+    slaTargetPct: 97.5
+    orderTypes:
+      - orderType: "SALES_UPGRADE"
+        displayName: "Handset Ship-to-Home Upgrade"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "3d"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE"]
+      - orderType: "DEVICE_TRADE_IN"
+        displayName: "60-Day Mail-In Device Trade-In"
+        defaultBlueprintId: "bp-tradein-60day"
+        typicalDuration: "21d"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE"]
+      - orderType: "EARLY_UPGRADE_JUMP"
+        displayName: "Early Upgrade Lease Buyout"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "4d"
+        accountTypes: ["CONSUMER", "VIP"]
+      - orderType: "BYOD_UPGRADE"
+        displayName: "Bring-Your-Own-Device SIM/eSIM Swap"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "30m"
+        accountTypes: ["CONSUMER", "SMB", "ENTERPRISE"]
+      - orderType: "ACCESSORY_BUNDLE_UPGRADE"
+        displayName: "Device & Accessory Ship Bundle"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "3d"
+        accountTypes: ["CONSUMER", "VIP", "SMB"]
+
+  - familyId: "PORT_INS"
+    displayName: "Wireless & Wireline Port-Ins"
+    executiveOwner: "VP Network Switching"
+    colorToken: "#7C3AED"
+    slaTargetPct: 96.0
+    orderTypes:
+      - orderType: "MOBILE_PORT_IN"
+        displayName: "Consumer Mobile Number Port-In"
+        defaultBlueprintId: "bp-mobile-port-in"
+        typicalDuration: "15m"
+        accountTypes: ["CONSUMER", "VIP"]
+      - orderType: "ENTERPRISE_PORT_IN"
+        displayName: "Enterprise Multi-Line Number Port-In"
+        defaultBlueprintId: "bp-mobile-port-in"
+        typicalDuration: "6h"
+        accountTypes: ["SMB", "ENTERPRISE", "GOV"]
+      - orderType: "MULTI_LINE_PORT_IN"
+        displayName: "Family Plan Multi-Carrier Port-In"
+        defaultBlueprintId: "bp-mobile-port-in"
+        typicalDuration: "2h"
+        accountTypes: ["CONSUMER", "VIP"]
+      - orderType: "WIRELINE_TO_WIRELESS_PORT"
+        displayName: "VoIP / Wireline to Wireless Port-In"
+        defaultBlueprintId: "bp-mobile-port-in"
+        typicalDuration: "48h"
+        accountTypes: ["CONSUMER", "SMB", "ENTERPRISE"]
+
+  - familyId: "WIRELESS_NEW"
+    displayName: "New Wireless Activations"
+    executiveOwner: "VP Consumer Growth"
+    colorToken: "#059669"
+    slaTargetPct: 98.5
+    orderTypes:
+      - orderType: "SALES"
+        displayName: "Unified Sales Order (25 Sales Item Types)"
+        defaultBlueprintId: "bp-sales-root-order"
+        typicalDuration: "2d"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE", "GOV"]
+      - orderType: "NEW_LINE_ACTIVATION"
+        displayName: "New Wireless Line + Device"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "2d"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE"]
+      - orderType: "ADD_A_LINE"
+        displayName: "Existing Account Add-a-Line"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "1d"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE"]
+      - orderType: "WEARABLE_ESIM_ADD"
+        displayName: "Smartwatch eSIM Companion Line"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "20m"
+        accountTypes: ["CONSUMER", "VIP"]
+      - orderType: "TABLET_DATA_LINE"
+        displayName: "5G Tablet Connected Line"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "2d"
+        accountTypes: ["CONSUMER", "SMB", "ENTERPRISE"]
+      - orderType: "PREPAID_TO_POSTPAID"
+        displayName: "Prepaid to Postpaid Migration"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "1h"
+        accountTypes: ["CONSUMER"]
+
+  - familyId: "PLAN_PROMO"
+    displayName: "Plans, Promos & Partner Perks"
+    executiveOwner: "VP Commercial Offers"
+    colorToken: "#D97706"
+    slaTargetPct: 99.0
+    orderTypes:
+      - orderType: "INTERNAL_PROMO_PROVISIONING"
+        displayName: "Auto-Triggered Free Device Insurance Promo"
+        defaultBlueprintId: "bp-internal-free-insurance"
+        typicalDuration: "30m"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE"]
+      - orderType: "PLAN_CHANGE"
+        displayName: "Rate Plan Tier Change"
+        defaultBlueprintId: "bp-internal-free-insurance"
+        typicalDuration: "15m"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE"]
+      - orderType: "FEATURE_ADD_INSURANCE"
+        displayName: "Standalone Device Protection Add-On"
+        defaultBlueprintId: "bp-internal-free-insurance"
+        typicalDuration: "20m"
+        accountTypes: ["CONSUMER", "VIP", "SMB"]
+      - orderType: "STREAMING_PERK_ENROLL"
+        displayName: "Partner Streaming Bundle Enrollment"
+        defaultBlueprintId: "bp-internal-free-insurance"
+        typicalDuration: "15m"
+        accountTypes: ["CONSUMER", "VIP"]
+
+  - familyId: "CHANGE_CANCEL"
+    displayName: "Supplemental Change & Cancel Orders"
+    executiveOwner: "VP Care Operations"
+    colorToken: "#DC2626"
+    slaTargetPct: 98.0
+    orderTypes:
+      - orderType: "CHANGE"
+        displayName: "Unified Change Order (25 Change Item Types: eSIM, Plan, SIM, Suspend, Cancel)"
+        defaultBlueprintId: "bp-change-root-order"
+        typicalDuration: "15m"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE", "GOV"]
+      - orderType: "SUPP_PAYMENT_UPDATE"
+        displayName: "Supplemental Payment Method Update"
+        defaultBlueprintId: "bp-supp-payment-update"
+        typicalDuration: "15m"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE"]
+      - orderType: "SUPP_ADDRESS_CHANGE"
+        displayName: "In-Flight Shipping Address Amendment"
+        defaultBlueprintId: "bp-supp-payment-update"
+        typicalDuration: "30m"
+        accountTypes: ["CONSUMER", "VIP", "SMB"]
+      - orderType: "ORDER_CANCELLATION"
+        displayName: "In-Flight Order Cancellation"
+        defaultBlueprintId: "bp-supp-payment-update"
+        typicalDuration: "20m"
+        accountTypes: ["CONSUMER", "VIP", "SMB", "ENTERPRISE"]
+      - orderType: "RETURN_RMA_EXCHANGE"
+        displayName: "Post-Delivery Buyer's Remorse Exchange"
+        defaultBlueprintId: "bp-tradein-60day"
+        typicalDuration: "10d"
+        accountTypes: ["CONSUMER", "VIP", "SMB"]
+
+  - familyId: "BROADBAND"
+    displayName: "5G Home & Fiber Broadband"
+    executiveOwner: "VP Home & Business Broadband"
+    colorToken: "#0891B2"
+    slaTargetPct: 96.5
+    orderTypes:
+      - orderType: "FWA_5G_HOME_INTERNET"
+        displayName: "5G Fixed Wireless Gateway Ship & Activate"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "3d"
+        accountTypes: ["CONSUMER", "SMB"]
+      - orderType: "FIBER_PRO_INSTALL"
+        displayName: "Fiber ONT Dispatch & Provisioning"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "5d"
+        accountTypes: ["CONSUMER", "SMB", "ENTERPRISE"]
+      - orderType: "BROADBAND_EQUIPMENT_SWAP"
+        displayName: "Router / Gateway Replacement"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "3d"
+        accountTypes: ["CONSUMER", "SMB"]
+      - orderType: "SMB_DEDICATED_INTERNET"
+        displayName: "Business Dedicated Fiber Circuit"
+        defaultBlueprintId: "bp-sales-iphone-upgrade"
+        typicalDuration: "14d"
+        accountTypes: ["SMB", "ENTERPRISE", "GOV"]

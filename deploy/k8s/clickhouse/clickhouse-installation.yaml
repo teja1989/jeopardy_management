@@ -1,0 +1,199 @@
+# =============================================================================
+# ClickHouse 24.8 OSS — 2-Replica Multi-AZ Cluster (Altinity K8s Operator)
+# =============================================================================
+# 100% Open-Source (Apache 2.0) — ZERO ClickHouse Cloud!
+#   * 1 Shard x 2 Multi-AZ Replicas (ReplicatedMergeTree via ClickHouse Keeper)
+#   * 8 vCPU / 32 GiB RAM per replica (40k -> 200k+ launch-day spike headroom)
+#   * Hot/Cold S3 storage policy (`hot_cold_s3`) tiers partitions > 6m to S3
+#   * Exposes HTTP (:8123), Native (:9000), and Prometheus (:9363)
+# =============================================================================
+---
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: jeopardy
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/part-of: jeopardy-management
+spec:
+  configuration:
+    zookeeper:
+      nodes:
+        - host: chk-chk-jeopardy-chk-jeopardy-0-0.jeopardy.svc.cluster.local
+          port: 2181
+        - host: chk-chk-jeopardy-chk-jeopardy-0-1.jeopardy.svc.cluster.local
+          port: 2181
+        - host: chk-chk-jeopardy-chk-jeopardy-0-2.jeopardy.svc.cluster.local
+          port: 2181
+
+    users:
+      jeopardy/password:
+        valueFrom:
+          secretKeyRef:
+            name: jeopardy-db-credentials
+            key: clickhouse-password
+      jeopardy/networks/ip:
+        - "0.0.0.0/0"
+      jeopardy/profile: default
+      jeopardy/quota: default
+      jeopardy/access_management: 1
+
+    profiles:
+      default/max_memory_usage: 24000000000
+      default/max_threads: 8
+      default/async_insert: 0
+
+    settings:
+      compression/case/method: zstd
+      compression/case/level: 3
+      prometheus/endpoint: /metrics
+      prometheus/port: 9363
+      prometheus/metrics: true
+      prometheus/events: true
+      prometheus/asynchronous_metrics: true
+
+    # S3 Cold Storage Disk & Hot/Cold Tiering Policy (zero ClickHouse Cloud)
+    files:
+      config.d/storage-policy-s3.xml: |
+        <clickhouse>
+          <storage_configuration>
+            <disks>
+              <default>
+                <keep_free_space_bytes>10737418240</keep_free_space_bytes>
+              </default>
+              <s3_cold>
+                <type>s3</type>
+                <endpoint>https://s3.us-east-1.amazonaws.com/jeopardy-clickhouse-cold/{shard}/{replica}/</endpoint>
+                <use_environment_credentials>true</use_environment_credentials>
+                <cache_enabled>true</cache_enabled>
+                <cache_path>/var/lib/clickhouse/disks/s3_cold/cache/</cache_path>
+                <max_cache_size>21474836480</max_cache_size>
+              </s3_cold>
+            </disks>
+            <policies>
+              <hot_cold_s3>
+                <volumes>
+                  <hot>
+                    <disk>default</disk>
+                  </hot>
+                  <cold>
+                    <disk>s3_cold</disk>
+                    <prefer_not_to_merge>true</prefer_not_to_merge>
+                  </cold>
+                </volumes>
+                <move_factor>0.2</move_factor>
+              </hot_cold_s3>
+            </policies>
+          </storage_configuration>
+        </clickhouse>
+      config.d/replicated-defaults.xml: |
+        <clickhouse>
+          <default_replica_path>/clickhouse/tables/{shard}/{database}/{table}</default_replica_path>
+          <default_replica_name>{replica}</default_replica_name>
+        </clickhouse>
+
+    clusters:
+      - name: jeopardy-olap
+        layout:
+          shardsCount: 1
+          replicasCount: 2
+
+  defaults:
+    templates:
+      podTemplate: ch-pod-template
+      dataVolumeClaimTemplate: ch-data-pvc
+      logVolumeClaimTemplate: ch-log-pvc
+      serviceTemplate: ch-service-template
+
+  templates:
+    serviceTemplates:
+      - name: ch-service-template
+        metadata:
+          labels:
+            app.kubernetes.io/name: clickhouse
+            app.kubernetes.io/part-of: jeopardy-management
+        spec:
+          type: ClusterIP
+          ports:
+            - name: http
+              port: 8123
+            - name: tcp
+              port: 9000
+            - name: metrics
+              port: 9363
+
+    podTemplates:
+      - name: ch-pod-template
+        metadata:
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "9363"
+        spec:
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                      - key: clickhouse.altinity.com/chi
+                        operator: In
+                        values:
+                          - jeopardy
+                  topologyKey: topology.kubernetes.io/zone
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:24.8-alpine
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-s3-credentials
+                      key: ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-s3-credentials
+                      key: ACCESS_SECRET_KEY
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: "16Gi"
+                limits:
+                  cpu: "8"
+                  memory: "32Gi"
+              # BusyBox wget resolves localhost to ::1 on Alpine; always probe 127.0.0.1
+              readinessProbe:
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - "wget --spider -q http://127.0.0.1:8123/ping"
+                initialDelaySeconds: 15
+                periodSeconds: 10
+              livenessProbe:
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - "wget --spider -q http://127.0.0.1:8123/ping"
+                initialDelaySeconds: 30
+                periodSeconds: 15
+
+    volumeClaimTemplates:
+      - name: ch-data-pvc
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: gp3
+          resources:
+            requests:
+              storage: 500Gi
+      - name: ch-log-pvc
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: gp3
+          resources:
+            requests:
+              storage: 20Gi

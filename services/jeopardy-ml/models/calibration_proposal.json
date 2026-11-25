@@ -1,0 +1,951 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-11-25T00:32:34.637653+00:00",
+  "clickhouse_source": "http://localhost:8123",
+  "governance_policy": {
+    "max_step_change_pct": 15.0,
+    "min_sample_size": 30,
+    "tier1_hard_bounds_immutable": true,
+    "requires_human_approval": true
+  },
+  "outage_filter_stats": {
+    "raw_rows": 111,
+    "window_excluded_rows": 0,
+    "anomaly_excluded_rows": 0,
+    "clean_rows": 111,
+    "excluded_windows": []
+  },
+  "summary": {
+    "total_segments_evaluated": 28,
+    "proposals_pending_approval": 15,
+    "segments_skipped_low_samples": 13,
+    "segments_capped_at_max_step": 15,
+    "tier1_modifications_attempted": 0
+  },
+  "proposals": [
+    {
+      "segment": {
+        "template_id": "TMPL_ESIM_ACTIVATION",
+        "order_type": "ENTERPRISE_PORT_IN",
+        "account_type": "ENTERPRISE",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 100,
+      "completed_count": 97,
+      "right_censored_count": 3,
+      "current_tier2": {
+        "expected_ms": 180000,
+        "warning_ms": 600000,
+        "jeopardy_ms": 1200000,
+        "expected_human": "3.0m",
+        "warning_human": "10.0m",
+        "jeopardy_human": "20.0m"
+      },
+      "observed_clean": {
+        "p50_ms": 232940,
+        "p75_ms": 397433,
+        "p90_ms": 707330
+      },
+      "proposed_tier2": {
+        "expected_ms": 207000,
+        "warning_ms": 510000,
+        "jeopardy_ms": 1020000,
+        "expected_human": "3.5m",
+        "warning_human": "8.5m",
+        "jeopardy_human": "17.0m"
+      },
+      "delta_pct": {
+        "expected": 15.0,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 10000,
+        "hard_max_ms": 7200000,
+        "hard_min_human": "10.0s",
+        "hard_max_human": "2.00h",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_ESIM_ACTIVATION",
+        "order_type": "ENTERPRISE_PORT_IN",
+        "account_type": "ENTERPRISE",
+        "donor_carrier": "GOOGLE_VOICE"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 10,
+      "completed_count": 9,
+      "right_censored_count": 1,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 10000,
+        "hard_max_ms": 7200000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_ESIM_ACTIVATION",
+        "order_type": "ENTERPRISE_PORT_IN",
+        "account_type": "ENTERPRISE",
+        "donor_carrier": "VERIZON"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 2,
+      "completed_count": 2,
+      "right_censored_count": 0,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 10000,
+        "hard_max_ms": 7200000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_ESIM_ACTIVATION",
+        "order_type": "ENTERPRISE_PORT_IN",
+        "account_type": "RESIDENTIAL",
+        "donor_carrier": "GOOGLE_VOICE"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 22,
+      "completed_count": 18,
+      "right_censored_count": 4,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 10000,
+        "hard_max_ms": 7200000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_ESIM_ACTIVATION",
+        "order_type": "SALES_UPGRADE",
+        "account_type": "RESIDENTIAL",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 338,
+      "completed_count": 323,
+      "right_censored_count": 15,
+      "current_tier2": {
+        "expected_ms": 180000,
+        "warning_ms": 600000,
+        "jeopardy_ms": 1200000,
+        "expected_human": "3.0m",
+        "warning_human": "10.0m",
+        "jeopardy_human": "20.0m"
+      },
+      "observed_clean": {
+        "p50_ms": 254095,
+        "p75_ms": 470045,
+        "p90_ms": 832774
+      },
+      "proposed_tier2": {
+        "expected_ms": 207000,
+        "warning_ms": 510000,
+        "jeopardy_ms": 1020000,
+        "expected_human": "3.5m",
+        "warning_human": "8.5m",
+        "jeopardy_human": "17.0m"
+      },
+      "delta_pct": {
+        "expected": 15.0,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 10000,
+        "hard_max_ms": 7200000,
+        "hard_min_human": "10.0s",
+        "hard_max_human": "2.00h",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_ESIM_ACTIVATION",
+        "order_type": "SALES_UPGRADE",
+        "account_type": "VIP",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 128,
+      "completed_count": 121,
+      "right_censored_count": 7,
+      "current_tier2": {
+        "expected_ms": 180000,
+        "warning_ms": 600000,
+        "jeopardy_ms": 1200000,
+        "expected_human": "3.0m",
+        "warning_human": "10.0m",
+        "jeopardy_human": "20.0m"
+      },
+      "observed_clean": {
+        "p50_ms": 216975,
+        "p75_ms": 352376,
+        "p90_ms": 671519
+      },
+      "proposed_tier2": {
+        "expected_ms": 207000,
+        "warning_ms": 510000,
+        "jeopardy_ms": 1020000,
+        "expected_human": "3.5m",
+        "warning_human": "8.5m",
+        "jeopardy_human": "17.0m"
+      },
+      "delta_pct": {
+        "expected": 15.0,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 10000,
+        "hard_max_ms": 7200000,
+        "hard_min_human": "10.0s",
+        "hard_max_human": "2.00h",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_FRAUD_CHECK",
+        "order_type": "SALES_UPGRADE",
+        "account_type": "VIP",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 15,
+      "completed_count": 15,
+      "right_censored_count": 0,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 2000,
+        "hard_max_ms": 14400000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_FULFILLMENT_SHIP",
+        "order_type": "SALES_UPGRADE",
+        "account_type": "ENTERPRISE",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 105,
+      "completed_count": 94,
+      "right_censored_count": 11,
+      "current_tier2": {
+        "expected_ms": 172800000,
+        "warning_ms": 259200000,
+        "jeopardy_ms": 345600000,
+        "expected_human": "2d",
+        "warning_human": "3d",
+        "jeopardy_human": "4d"
+      },
+      "observed_clean": {
+        "p50_ms": 170773697,
+        "p75_ms": 203858609,
+        "p90_ms": 231421302
+      },
+      "proposed_tier2": {
+        "expected_ms": 170773697,
+        "warning_ms": 220320000,
+        "jeopardy_ms": 293760000,
+        "expected_human": "47.44h",
+        "warning_human": "61.20h",
+        "jeopardy_human": "81.60h"
+      },
+      "delta_pct": {
+        "expected": -1.17,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 14400000,
+        "hard_max_ms": 604800000,
+        "hard_min_human": "4.00h",
+        "hard_max_human": "7d",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_FULFILLMENT_SHIP",
+        "order_type": "SALES_UPGRADE",
+        "account_type": "RESIDENTIAL",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 399,
+      "completed_count": 367,
+      "right_censored_count": 32,
+      "current_tier2": {
+        "expected_ms": 172800000,
+        "warning_ms": 259200000,
+        "jeopardy_ms": 345600000,
+        "expected_human": "2d",
+        "warning_human": "3d",
+        "jeopardy_human": "4d"
+      },
+      "observed_clean": {
+        "p50_ms": 178575661,
+        "p75_ms": 224019113,
+        "p90_ms": 271278920
+      },
+      "proposed_tier2": {
+        "expected_ms": 178575661,
+        "warning_ms": 224019113,
+        "jeopardy_ms": 293760000,
+        "expected_human": "49.60h",
+        "warning_human": "62.23h",
+        "jeopardy_human": "81.60h"
+      },
+      "delta_pct": {
+        "expected": 3.34,
+        "warning": -13.57,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 14400000,
+        "hard_max_ms": 604800000,
+        "hard_min_human": "4.00h",
+        "hard_max_human": "7d",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_FULFILLMENT_SHIP",
+        "order_type": "SALES_UPGRADE",
+        "account_type": "VIP",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 96,
+      "completed_count": 95,
+      "right_censored_count": 1,
+      "current_tier2": {
+        "expected_ms": 172800000,
+        "warning_ms": 259200000,
+        "jeopardy_ms": 345600000,
+        "expected_human": "2d",
+        "warning_human": "3d",
+        "jeopardy_human": "4d"
+      },
+      "observed_clean": {
+        "p50_ms": 148639095,
+        "p75_ms": 169570381,
+        "p90_ms": 222496633
+      },
+      "proposed_tier2": {
+        "expected_ms": 148639095,
+        "warning_ms": 220320000,
+        "jeopardy_ms": 293760000,
+        "expected_human": "41.29h",
+        "warning_human": "61.20h",
+        "jeopardy_human": "81.60h"
+      },
+      "delta_pct": {
+        "expected": -13.98,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 14400000,
+        "hard_max_ms": 604800000,
+        "hard_min_human": "4.00h",
+        "hard_max_human": "7d",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_INSPECTION",
+        "order_type": "DEVICE_TRADE_IN",
+        "account_type": "VIP",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 3,
+      "completed_count": 1,
+      "right_censored_count": 2,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 3600000,
+        "hard_max_ms": 432000000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_ORDER_RECEIVED",
+        "order_type": "SALES_UPGRADE",
+        "account_type": "VIP",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 2,
+      "completed_count": 2,
+      "right_censored_count": 0,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 5000,
+        "hard_max_ms": 900000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PARTNER_ENROLL",
+        "order_type": "INTERNAL_PROMO_PROVISIONING",
+        "account_type": "VIP",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 18,
+      "completed_count": 18,
+      "right_censored_count": 0,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 5000,
+        "hard_max_ms": 7200000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PAYMENT_AUTH",
+        "order_type": "SALES_UPGRADE",
+        "account_type": "VIP",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 16,
+      "completed_count": 15,
+      "right_censored_count": 1,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 2000,
+        "hard_max_ms": 86400000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "ENTERPRISE_PORT_IN",
+        "account_type": "ENTERPRISE",
+        "donor_carrier": "AT&T"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 39,
+      "completed_count": 39,
+      "right_censored_count": 0,
+      "current_tier2": {
+        "expected_ms": 720000,
+        "warning_ms": 1500000,
+        "jeopardy_ms": 2700000,
+        "expected_human": "12.0m",
+        "warning_human": "25.0m",
+        "jeopardy_human": "45.0m"
+      },
+      "observed_clean": {
+        "p50_ms": 816210,
+        "p75_ms": 898708,
+        "p90_ms": 1037418
+      },
+      "proposed_tier2": {
+        "expected_ms": 816210,
+        "warning_ms": 1275000,
+        "jeopardy_ms": 2295000,
+        "expected_human": "13.6m",
+        "warning_human": "21.2m",
+        "jeopardy_human": "38.2m"
+      },
+      "delta_pct": {
+        "expected": 13.36,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 120000,
+        "hard_max_ms": 14400000,
+        "hard_min_human": "2.0m",
+        "hard_max_human": "4.00h",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "ENTERPRISE_PORT_IN",
+        "account_type": "ENTERPRISE",
+        "donor_carrier": "GOOGLE_VOICE"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 55,
+      "completed_count": 51,
+      "right_censored_count": 4,
+      "current_tier2": {
+        "expected_ms": 86400000,
+        "warning_ms": 172800000,
+        "jeopardy_ms": 216000000,
+        "expected_human": "1d",
+        "warning_human": "2d",
+        "jeopardy_human": "2.5d"
+      },
+      "observed_clean": {
+        "p50_ms": 112944386,
+        "p75_ms": 131251502,
+        "p90_ms": 145737107
+      },
+      "proposed_tier2": {
+        "expected_ms": 99360000,
+        "warning_ms": 146880000,
+        "jeopardy_ms": 183600000,
+        "expected_human": "27.60h",
+        "warning_human": "40.80h",
+        "jeopardy_human": "2.1d"
+      },
+      "delta_pct": {
+        "expected": 15.0,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 14400000,
+        "hard_max_ms": 259200000,
+        "hard_min_human": "4.00h",
+        "hard_max_human": "3d",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "ENTERPRISE_PORT_IN",
+        "account_type": "ENTERPRISE",
+        "donor_carrier": "T_MOBILE"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 19,
+      "completed_count": 19,
+      "right_censored_count": 0,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 120000,
+        "hard_max_ms": 259200000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "ENTERPRISE_PORT_IN",
+        "account_type": "ENTERPRISE",
+        "donor_carrier": "VERIZON"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 65,
+      "completed_count": 65,
+      "right_censored_count": 0,
+      "current_tier2": {
+        "expected_ms": 300000,
+        "warning_ms": 600000,
+        "jeopardy_ms": 900000,
+        "expected_human": "5.0m",
+        "warning_human": "10.0m",
+        "jeopardy_human": "15.0m"
+      },
+      "observed_clean": {
+        "p50_ms": 329326,
+        "p75_ms": 401773,
+        "p90_ms": 529563
+      },
+      "proposed_tier2": {
+        "expected_ms": 329326,
+        "warning_ms": 510000,
+        "jeopardy_ms": 765000,
+        "expected_human": "5.5m",
+        "warning_human": "8.5m",
+        "jeopardy_human": "12.8m"
+      },
+      "delta_pct": {
+        "expected": 9.78,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 60000,
+        "hard_max_ms": 7200000,
+        "hard_min_human": "1.0m",
+        "hard_max_human": "2.00h",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "MOBILE_PORT_IN",
+        "account_type": "RESIDENTIAL",
+        "donor_carrier": "AT&T"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 83,
+      "completed_count": 80,
+      "right_censored_count": 3,
+      "current_tier2": {
+        "expected_ms": 720000,
+        "warning_ms": 1500000,
+        "jeopardy_ms": 2700000,
+        "expected_human": "12.0m",
+        "warning_human": "25.0m",
+        "jeopardy_human": "45.0m"
+      },
+      "observed_clean": {
+        "p50_ms": 777415,
+        "p75_ms": 951769,
+        "p90_ms": 1168476
+      },
+      "proposed_tier2": {
+        "expected_ms": 777415,
+        "warning_ms": 1275000,
+        "jeopardy_ms": 2295000,
+        "expected_human": "13.0m",
+        "warning_human": "21.2m",
+        "jeopardy_human": "38.2m"
+      },
+      "delta_pct": {
+        "expected": 7.97,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 120000,
+        "hard_max_ms": 14400000,
+        "hard_min_human": "2.0m",
+        "hard_max_human": "4.00h",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "MOBILE_PORT_IN",
+        "account_type": "RESIDENTIAL",
+        "donor_carrier": "GOOGLE_VOICE"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 83,
+      "completed_count": 73,
+      "right_censored_count": 10,
+      "current_tier2": {
+        "expected_ms": 86400000,
+        "warning_ms": 172800000,
+        "jeopardy_ms": 216000000,
+        "expected_human": "1d",
+        "warning_human": "2d",
+        "jeopardy_human": "2.5d"
+      },
+      "observed_clean": {
+        "p50_ms": 118097612,
+        "p75_ms": 143963361,
+        "p90_ms": 154832815
+      },
+      "proposed_tier2": {
+        "expected_ms": 99360000,
+        "warning_ms": 146880000,
+        "jeopardy_ms": 183600000,
+        "expected_human": "27.60h",
+        "warning_human": "40.80h",
+        "jeopardy_human": "2.1d"
+      },
+      "delta_pct": {
+        "expected": 15.0,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 14400000,
+        "hard_max_ms": 259200000,
+        "hard_min_human": "4.00h",
+        "hard_max_human": "3d",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "MOBILE_PORT_IN",
+        "account_type": "RESIDENTIAL",
+        "donor_carrier": "T_MOBILE"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 60,
+      "completed_count": 58,
+      "right_censored_count": 2,
+      "current_tier2": {
+        "expected_ms": 1800000,
+        "warning_ms": 3600000,
+        "jeopardy_ms": 7200000,
+        "expected_human": "30.0m",
+        "warning_human": "1.00h",
+        "jeopardy_human": "2.00h"
+      },
+      "observed_clean": {
+        "p50_ms": 1365970,
+        "p75_ms": 1687032,
+        "p90_ms": 2091115
+      },
+      "proposed_tier2": {
+        "expected_ms": 1530000,
+        "warning_ms": 3060000,
+        "jeopardy_ms": 6120000,
+        "expected_human": "25.5m",
+        "warning_human": "51.0m",
+        "jeopardy_human": "1.70h"
+      },
+      "delta_pct": {
+        "expected": -15.0,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 120000,
+        "hard_max_ms": 259200000,
+        "hard_min_human": "2.0m",
+        "hard_max_human": "3d",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "MOBILE_PORT_IN",
+        "account_type": "RESIDENTIAL",
+        "donor_carrier": "VERIZON"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 111,
+      "completed_count": 109,
+      "right_censored_count": 2,
+      "current_tier2": {
+        "expected_ms": 300000,
+        "warning_ms": 600000,
+        "jeopardy_ms": 900000,
+        "expected_human": "5.0m",
+        "warning_human": "10.0m",
+        "jeopardy_human": "15.0m"
+      },
+      "observed_clean": {
+        "p50_ms": 331041,
+        "p75_ms": 415162,
+        "p90_ms": 529981
+      },
+      "proposed_tier2": {
+        "expected_ms": 331041,
+        "warning_ms": 510000,
+        "jeopardy_ms": 765000,
+        "expected_human": "5.5m",
+        "warning_human": "8.5m",
+        "jeopardy_human": "12.8m"
+      },
+      "delta_pct": {
+        "expected": 10.35,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 60000,
+        "hard_max_ms": 7200000,
+        "hard_min_human": "1.0m",
+        "hard_max_human": "2.00h",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "MOBILE_PORT_IN",
+        "account_type": "VIP",
+        "donor_carrier": "AT&T"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 15,
+      "completed_count": 14,
+      "right_censored_count": 1,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 120000,
+        "hard_max_ms": 14400000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "MOBILE_PORT_IN",
+        "account_type": "VIP",
+        "donor_carrier": "GOOGLE_VOICE"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 29,
+      "completed_count": 25,
+      "right_censored_count": 4,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 14400000,
+        "hard_max_ms": 259200000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "MOBILE_PORT_IN",
+        "account_type": "VIP",
+        "donor_carrier": "T_MOBILE"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 12,
+      "completed_count": 12,
+      "right_censored_count": 0,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 120000,
+        "hard_max_ms": 259200000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_PORT_FOC",
+        "order_type": "MOBILE_PORT_IN",
+        "account_type": "VIP",
+        "donor_carrier": "VERIZON"
+      },
+      "status": "SKIPPED_INSUFFICIENT_SAMPLES",
+      "sample_size": 29,
+      "completed_count": 28,
+      "right_censored_count": 1,
+      "min_required_samples": 30,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 60000,
+        "hard_max_ms": 7200000,
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_WAREHOUSE_RCV",
+        "order_type": "DEVICE_TRADE_IN",
+        "account_type": "RESIDENTIAL",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 510,
+      "completed_count": 375,
+      "right_censored_count": 135,
+      "current_tier2": {
+        "expected_ms": 1209600000,
+        "warning_ms": 1814400000,
+        "jeopardy_ms": 2419200000,
+        "expected_human": "14d",
+        "warning_human": "21d",
+        "jeopardy_human": "28d"
+      },
+      "observed_clean": {
+        "p50_ms": 1280211157,
+        "p75_ms": 1629075729,
+        "p90_ms": 2002709147
+      },
+      "proposed_tier2": {
+        "expected_ms": 1280211157,
+        "warning_ms": 1629075729,
+        "jeopardy_ms": 2056320000,
+        "expected_human": "355.61h",
+        "warning_human": "452.52h",
+        "jeopardy_human": "571.20h"
+      },
+      "delta_pct": {
+        "expected": 5.84,
+        "warning": -10.21,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 172800000,
+        "hard_max_ms": 3024000000,
+        "hard_min_human": "2d",
+        "hard_max_human": "35d",
+        "tier1_modified": false
+      }
+    },
+    {
+      "segment": {
+        "template_id": "TMPL_WAREHOUSE_RCV",
+        "order_type": "DEVICE_TRADE_IN",
+        "account_type": "VIP",
+        "donor_carrier": "DEFAULT"
+      },
+      "status": "PENDING_HUMAN_APPROVAL",
+      "sample_size": 90,
+      "completed_count": 71,
+      "right_censored_count": 19,
+      "current_tier2": {
+        "expected_ms": 1209600000,
+        "warning_ms": 1814400000,
+        "jeopardy_ms": 2419200000,
+        "expected_human": "14d",
+        "warning_human": "21d",
+        "jeopardy_human": "28d"
+      },
+      "observed_clean": {
+        "p50_ms": 1101249009,
+        "p75_ms": 1532618633,
+        "p90_ms": 1917933860
+      },
+      "proposed_tier2": {
+        "expected_ms": 1101249009,
+        "warning_ms": 1542240000,
+        "jeopardy_ms": 2056320000,
+        "expected_human": "305.90h",
+        "warning_human": "428.40h",
+        "jeopardy_human": "571.20h"
+      },
+      "delta_pct": {
+        "expected": -8.96,
+        "warning": -15.0,
+        "jeopardy": -15.0
+      },
+      "step_capped_at_max_pct": true,
+      "tier1_guardrails_immutable": {
+        "hard_min_ms": 172800000,
+        "hard_max_ms": 3024000000,
+        "hard_min_human": "2d",
+        "hard_max_human": "35d",
+        "tier1_modified": false
+      }
+    }
+  ]
+}

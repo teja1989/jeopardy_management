@@ -1,0 +1,27 @@
+# Python & Simulator
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local env overrides & logs
+.env
+*.log
+
+# Java / Maven / Gradle
+target/
+build/
+.gradle/
+*.jar
+*.class
+
+# Node / React UI
+node_modules/
+dist/
+.vite/
+
+# IDE & OS
+.DS_Store
+.idea/
+*.iml
+.vscode/

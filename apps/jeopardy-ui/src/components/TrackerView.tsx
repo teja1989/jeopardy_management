@@ -1,0 +1,1473 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ClipboardCheck,
+  Clock,
+  Code2,
+  Copy,
+  Layers,
+  List,
+  PauseCircle,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  Sparkles,
+  User,
+  X,
+} from 'lucide-react';
+import {
+  getCustomerJourneys,
+  getEntityTimeline,
+  listPublicTrackerBlueprints,
+  searchTrackerQueue,
+  subscribeCustomer,
+} from '../api/client';
+import type {
+  BlueprintStepDefinition,
+  CustomerJourneyResponse,
+  EntitySummaryDto,
+  EntityTimelineResponse,
+  FalloutDto,
+  JourneyBlueprintRecord,
+  MilestoneDto,
+  SseConnectionState,
+  UiDeltaEvent,
+} from '../api/types';
+import {
+  formatDurationMs,
+  formatElapsedBetween,
+  formatShortTime,
+  formatTimestamp,
+} from '../utils/format';
+import type { DashboardDrilldownTarget } from './DashboardsView';
+
+interface TrackerViewProps {
+  initialFilter: DashboardDrilldownTarget | null;
+  onClearInitialFilter: () => void;
+}
+
+interface UnifiedStage {
+  stepNumber: number;
+  templateId: string;
+  title: string;
+  status:
+    | 'COMPLETED'
+    | 'IN_PROGRESS'
+    | 'WARNING'
+    | 'JEOPARDY'
+    | 'IN_FALLOUT'
+    | 'BREACHED'
+    | 'PAUSED'
+    | 'UPCOMING';
+  milestone: MilestoneDto | null;
+  fallouts: FalloutDto[];
+  internalStepId?: string;
+}
+
+const FALLOUT_STAGES = [
+  { key: 'OPEN', label: 'Issue Detected' },
+  { key: 'IN_QUEUE', label: 'Assigned to Ops' },
+  { key: 'RETRYING', label: 'Retrying Step' },
+  { key: 'RESOLVED', label: 'Resolved' },
+] as const;
+
+function prettifyName(raw: string | null | undefined): string {
+  if (!raw) return 'Order';
+  return raw
+    .replace(/^(SALES_|CHANGE_|TMPL_|SUPP_)/, '')
+    .replace(/_/g, ' ')
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function friendlyEntityTitle(ent: EntitySummaryDto): string {
+  if (ent.itemType && ent.itemType !== 'ROOT_ORDER') {
+    return prettifyName(ent.itemType);
+  }
+  if (ent.orderType) {
+    return prettifyName(ent.orderType);
+  }
+  return ent.entityKey;
+}
+
+function humanStatusLabel(status: string, hasActiveFallout?: boolean): {
+  label: string;
+  badgeClass: string;
+  dotClass: string;
+} {
+  const s = (status || '').toUpperCase();
+  if (hasActiveFallout || s === 'IN_FALLOUT') {
+    return {
+      label: 'Action Needed',
+      badgeClass:
+        'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-500/30',
+      dotClass: 'bg-rose-500',
+    };
+  }
+  if (s === 'BREACHED') {
+    return {
+      label: 'SLA Overdue',
+      badgeClass:
+        'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-500/30',
+      dotClass: 'bg-rose-500',
+    };
+  }
+  if (s === 'JEOPARDY' || s === 'WARNING') {
+    return {
+      label: 'Delayed',
+      badgeClass:
+        'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-500/30',
+      dotClass: 'bg-amber-500',
+    };
+  }
+  if (s === 'PAUSED') {
+    return {
+      label: 'On Hold',
+      badgeClass:
+        'bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950/50 dark:text-violet-300 dark:border-violet-500/30',
+      dotClass: 'bg-violet-500',
+    };
+  }
+  if (s === 'COMPLETED') {
+    return {
+      label: 'Completed',
+      badgeClass:
+        'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-500/30',
+      dotClass: 'bg-emerald-500',
+    };
+  }
+  return {
+    label: 'In Progress',
+    badgeClass:
+      'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-500/30',
+    dotClass: 'bg-blue-500',
+  };
+}
+
+function falloutStageIndex(status: string): number {
+  const s = (status || '').toUpperCase();
+  if (s === 'RESOLVED') return 3;
+  if (s === 'RETRYING') return 2;
+  if (s === 'IN_QUEUE' || s === 'ASSIGNED' || s === 'ESCALATED') return 1;
+  return 0;
+}
+
+export const TrackerView: React.FC<TrackerViewProps> = ({
+  initialFilter,
+  onClearInitialFilter,
+}) => {
+  // Search & filter state
+  const [searchText, setSearchText] = useState('');
+  const [orderTypeFilter, setOrderTypeFilter] = useState<string | undefined>(
+    initialFilter?.orderType,
+  );
+  const [orderFamilyFilter, setOrderFamilyFilter] = useState<string | undefined>(
+    initialFilter?.orderFamily,
+  );
+  const [statusQuickFilter, setStatusQuickFilter] = useState<'ALL' | 'ATTENTION' | 'FALLOUT'>(
+    'ALL',
+  );
+
+  // Queue + Blueprints cache (used to render upcoming Domino's/BMW steps cleanly)
+  const [queueItems, setQueueItems] = useState<EntitySummaryDto[]>([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [blueprintsById, setBlueprintsById] = useState<Map<string, JourneyBlueprintRecord>>(
+    new Map(),
+  );
+
+  // Selected entity & customer
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>(
+    initialFilter?.customerId || 'ACC-88412',
+  );
+  const [selectedEntityKey, setSelectedEntityKey] = useState<string | null>(
+    initialFilter?.entityKey || null,
+  );
+
+  // Journey & Timeline state
+  const [journeyData, setJourneyData] = useState<CustomerJourneyResponse | null>(null);
+  const [timelineData, setTimelineData] = useState<EntityTimelineResponse | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
+
+  // Selected stage on the Domino's/BMW horizontal track
+  const [selectedStageIndex, setSelectedStageIndex] = useState<number | null>(null);
+
+  // Progressive disclosure for Technical & Raw Event Audit Log
+  const [showTechAudit, setShowTechAudit] = useState(false);
+  const [includeNoise, setIncludeNoise] = useState(false);
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
+
+  // Queue grouping & copy feedback state (Clean UX upgrades)
+  const [groupByOrder, setGroupByOrder] = useState(true);
+  const [collapsedOrders, setCollapsedOrders] = useState<Record<string, boolean>>({});
+  const [copiedAction, setCopiedAction] = useState<'id' | 'summary' | 'api' | null>(null);
+
+  // Live SSE indicator & refs (prevents tearing down SSE or re-fetching queue on item click!)
+  const [sseState, setSseState] = useState<SseConnectionState>('CONNECTING');
+  const [lastLiveUpdate, setLastLiveUpdate] = useState<UiDeltaEvent | null>(null);
+  const reloadDebounceRef = useRef<number | null>(null);
+  const selectedEntityKeyRef = useRef<string | null>(selectedEntityKey);
+  const showTechAuditRef = useRef<boolean>(showTechAudit);
+  const includeNoiseRef = useRef<boolean>(includeNoise);
+  const timelineReqSeqRef = useRef<number>(0);
+
+  useEffect(() => {
+    selectedEntityKeyRef.current = selectedEntityKey;
+  }, [selectedEntityKey]);
+
+  useEffect(() => {
+    showTechAuditRef.current = showTechAudit;
+    includeNoiseRef.current = includeNoise;
+  }, [showTechAudit, includeNoise]);
+
+  // Load active blueprints from public read-only tracker endpoint (no Admin auth required!)
+  useEffect(() => {
+    void listPublicTrackerBlueprints()
+      .then((bps) => {
+        setBlueprintsById(new Map(bps.map((b) => [b.blueprintId, b])));
+      })
+      .catch(() => {
+        // Non-fatal; tracker falls back to recorded milestones
+      });
+  }, []);
+
+  // Sync incoming drill-down filters from Overview
+  useEffect(() => {
+    if (!initialFilter) return;
+    if (initialFilter.orderFamily) setOrderFamilyFilter(initialFilter.orderFamily);
+    if (initialFilter.orderType) setOrderTypeFilter(initialFilter.orderType);
+    if (initialFilter.customerId) setSelectedCustomerId(initialFilter.customerId);
+    if (initialFilter.entityKey) setSelectedEntityKey(initialFilter.entityKey);
+  }, [initialFilter]);
+
+  const loadQueue = useCallback(async () => {
+    setQueueLoading(true);
+    try {
+      const res = await searchTrackerQueue({
+        q: searchText || undefined,
+        orderFamily: orderFamilyFilter,
+        orderType: orderTypeFilter,
+        hasActiveFallout: statusQuickFilter === 'FALLOUT' ? true : undefined,
+        status: statusQuickFilter === 'ATTENTION' ? 'JEOPARDY' : undefined,
+        limit: 50,
+      });
+      // Defensive client dedupe by entityKey
+      const seen = new Set<string>();
+      const unique = res.items.filter((it) => {
+        if (seen.has(it.entityKey)) return false;
+        seen.add(it.entityKey);
+        return true;
+      });
+      setQueueItems(unique);
+
+      if (!selectedEntityKeyRef.current && unique.length > 0) {
+        const preferred =
+          unique.find((x) => x.hasActiveFallout) ||
+          unique.find((x) => x.itemType && x.itemType !== 'ROOT_ORDER') ||
+          unique[0];
+        setSelectedEntityKey(preferred.entityKey);
+        if (preferred.customerId) {
+          setSelectedCustomerId(preferred.customerId);
+        }
+      }
+    } catch {
+      // handled silently
+    } finally {
+      setQueueLoading(false);
+    }
+  }, [searchText, orderFamilyFilter, orderTypeFilter, statusQuickFilter]);
+
+  const loadCustomerJourneys = useCallback(async (cid: string) => {
+    if (!cid) return;
+    try {
+      const res = await getCustomerJourneys(cid);
+      setJourneyData(res);
+    } catch {
+      setJourneyData(null);
+    }
+  }, []);
+
+  // Fast path: rawLimit=0 skips ClickHouse (<10ms pure PG) until user expands Technical Audit!
+  const loadTimeline = useCallback(async (key: string, loadRawAudit: boolean, noise: boolean) => {
+    if (!key) return;
+    const reqSeq = ++timelineReqSeqRef.current;
+    setTimelineLoading(true);
+    setTimelineError(null);
+    try {
+      const res = await getEntityTimeline(key, noise, loadRawAudit ? 100 : 0);
+      if (reqSeq !== timelineReqSeqRef.current) return; // Ignore stale response on rapid clicks
+      setTimelineData(res);
+      setSelectedStageIndex(null);
+    } catch (err) {
+      if (reqSeq !== timelineReqSeqRef.current) return;
+      setTimelineError(err instanceof Error ? err.message : 'Failed to load order timeline');
+    } finally {
+      if (reqSeq === timelineReqSeqRef.current) {
+        setTimelineLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => void loadQueue(), 180);
+    return () => window.clearTimeout(id);
+  }, [loadQueue]);
+
+  useEffect(() => {
+    void loadCustomerJourneys(selectedCustomerId);
+  }, [selectedCustomerId, loadCustomerJourneys]);
+
+  useEffect(() => {
+    if (selectedEntityKey) {
+      void loadTimeline(selectedEntityKey, showTechAudit, includeNoise);
+    }
+  }, [selectedEntityKey, showTechAudit, includeNoise, loadTimeline]);
+
+  // Live SSE auto-sync: ONLY reconnects when selectedCustomerId actually changes!
+  useEffect(() => {
+    if (!selectedCustomerId) return undefined;
+    const sub = subscribeCustomer(
+      selectedCustomerId,
+      (delta) => {
+        setLastLiveUpdate(delta);
+        if (reloadDebounceRef.current) window.clearTimeout(reloadDebounceRef.current);
+        reloadDebounceRef.current = window.setTimeout(() => {
+          void loadCustomerJourneys(selectedCustomerId);
+          if (selectedEntityKeyRef.current) {
+            void loadTimeline(
+              selectedEntityKeyRef.current,
+              showTechAuditRef.current,
+              includeNoiseRef.current,
+            );
+          }
+        }, 400);
+      },
+      (state) => setSseState(state),
+    );
+    return () => {
+      sub.close();
+      if (reloadDebounceRef.current) window.clearTimeout(reloadDebounceRef.current);
+    };
+  }, [selectedCustomerId, loadCustomerJourneys, loadTimeline]);
+
+  // Build deduplicated, clean Domino's / BMW style stage list!
+  const stages = useMemo<UnifiedStage[]>(() => {
+    if (!timelineData) return [];
+
+    // 1. Deduplicate recorded milestones by templateId (latest updatedAt/createdAt wins)
+    const latestByTemplate = new Map<string, MilestoneDto>();
+    for (const m of timelineData.milestones) {
+      const prev = latestByTemplate.get(m.templateId);
+      if (!prev) {
+        latestByTemplate.set(m.templateId, m);
+      } else {
+        const prevTs = new Date(prev.updatedAt || prev.createdAt || 0).getTime();
+        const currTs = new Date(m.updatedAt || m.createdAt || 0).getTime();
+        if (currTs >= prevTs) {
+          latestByTemplate.set(m.templateId, m);
+        }
+      }
+    }
+
+    // Group fallouts by templateId or milestoneId
+    const falloutsFor = (templateId: string, milestoneId?: string): FalloutDto[] =>
+      (timelineData.fallouts ?? []).filter(
+        (f) =>
+          (f.templateId && f.templateId === templateId) ||
+          (milestoneId && f.milestoneId === milestoneId),
+      );
+
+    // 2. If we have the entity's pinned blueprint, use its clean step sequence so UPCOMING steps appear too!
+    const bp = timelineData.entity.blueprintId
+      ? blueprintsById.get(timelineData.entity.blueprintId)
+      : undefined;
+    const bpSteps = Array.isArray((bp?.definition as Record<string, unknown> | undefined)?.steps)
+      ? (((bp?.definition as Record<string, unknown>).steps as BlueprintStepDefinition[]) ?? [])
+      : [];
+
+    if (bpSteps.length > 0) {
+      const usedTemplates = new Set<string>();
+      const list: UnifiedStage[] = bpSteps.map((step, idx) => {
+        const tid = step.useTemplate || String((step as Record<string, unknown>).templateId || '');
+        usedTemplates.add(tid);
+        const rec = latestByTemplate.get(tid) ?? null;
+        const flts = falloutsFor(tid, rec?.milestoneId ?? step.stepId);
+        const hasOpenFallout = flts.some((f) => f.falloutStatus !== 'RESOLVED');
+
+        let status: UnifiedStage['status'] = 'UPCOMING';
+        if (hasOpenFallout) {
+          status = 'IN_FALLOUT';
+        } else if (rec) {
+          const st = rec.status.toUpperCase();
+          if (st === 'COMPLETED') status = 'COMPLETED';
+          else if (st === 'BREACHED') status = 'BREACHED';
+          else if (st === 'JEOPARDY') status = 'JEOPARDY';
+          else if (st === 'WARNING') status = 'WARNING';
+          else if (st === 'PAUSED') status = 'PAUSED';
+          else if (st === 'IN_FALLOUT') status = 'IN_FALLOUT';
+          else status = 'IN_PROGRESS';
+        } else if (timelineData.entity.status === 'COMPLETED') {
+          status = 'COMPLETED';
+        }
+
+        return {
+          stepNumber: idx + 1,
+          templateId: tid,
+          title: rec?.displayName || step.displayName || prettifyName(tid),
+          status,
+          milestone: rec,
+          fallouts: flts,
+          internalStepId: rec?.milestoneId || step.stepId,
+        };
+      });
+
+      // Mark first upcoming step right after last completed step as "In Progress" if order is still open
+      const hasActive = list.some(
+        (s) =>
+          s.status === 'IN_PROGRESS' ||
+          s.status === 'IN_FALLOUT' ||
+          s.status === 'JEOPARDY' ||
+          s.status === 'WARNING' ||
+          s.status === 'BREACHED' ||
+          s.status === 'PAUSED',
+      );
+      if (!hasActive && timelineData.entity.status !== 'COMPLETED') {
+        const firstUpcoming = list.findIndex((s) => s.status === 'UPCOMING');
+        if (firstUpcoming >= 0) {
+          list[firstUpcoming] = { ...list[firstUpcoming], status: 'IN_PROGRESS' };
+        }
+      }
+      return list;
+    }
+
+    // Fallback when blueprint isn't loaded: deduplicated recorded milestones in sequence order
+    return Array.from(latestByTemplate.values())
+      .sort((a, b) => a.sequenceNo - b.sequenceNo)
+      .map((m, idx) => {
+        const flts = falloutsFor(m.templateId, m.milestoneId);
+        const hasOpenFallout = flts.some((f) => f.falloutStatus !== 'RESOLVED');
+        const st = hasOpenFallout ? 'IN_FALLOUT' : (m.status.toUpperCase() as UnifiedStage['status']);
+        return {
+          stepNumber: idx + 1,
+          templateId: m.templateId,
+          title: m.displayName || prettifyName(m.templateId),
+          status: st,
+          milestone: m,
+          fallouts: flts,
+          internalStepId: m.milestoneId,
+        };
+      });
+  }, [timelineData, blueprintsById]);
+
+  // Determine the current headline stage (for the Domino's / BMW Hero Status Banner)
+  const currentStageIndex = useMemo(() => {
+    if (stages.length === 0) return -1;
+    const blocked = stages.findIndex(
+      (s) =>
+        s.status === 'IN_FALLOUT' ||
+        s.status === 'BREACHED' ||
+        s.status === 'JEOPARDY' ||
+        s.status === 'WARNING',
+    );
+    if (blocked >= 0) return blocked;
+    const active = stages.findIndex((s) => s.status === 'IN_PROGRESS' || s.status === 'PAUSED');
+    if (active >= 0) return active;
+    if (stages.every((s) => s.status === 'COMPLETED')) return stages.length - 1;
+    return Math.max(0, stages.findIndex((s) => s.status !== 'COMPLETED'));
+  }, [stages]);
+
+  const inspectedStage =
+    selectedStageIndex !== null && stages[selectedStageIndex]
+      ? stages[selectedStageIndex]
+      : currentStageIndex >= 0
+        ? stages[currentStageIndex]
+        : null;
+
+  const completedCount = stages.filter((s) => s.status === 'COMPLETED').length;
+  const progressPct =
+    stages.length > 1
+      ? Math.round((Math.max(0, currentStageIndex) / (stages.length - 1)) * 100)
+      : completedCount > 0
+        ? 100
+        : 0;
+
+  // Flatten sibling entities for this customer (deduped)
+  const customerEntities = useMemo(() => {
+    const seen = new Set<string>();
+    const all: EntitySummaryDto[] = [];
+    for (const grp of journeyData?.journeys ?? []) {
+      for (const e of grp.entities) {
+        if (!seen.has(e.entityKey)) {
+          seen.add(e.entityKey);
+          all.push(e);
+        }
+      }
+    }
+    return all;
+  }, [journeyData]);
+
+  const activeFallouts = useMemo(
+    () => (timelineData?.fallouts ?? []).filter((f) => f.falloutStatus !== 'RESOLVED'),
+    [timelineData],
+  );
+
+  // Clean Order-Grouped Hierarchy for Left Queue (groups ORD-100, ORD-100:ITM-1, ORD-100:ITM-2 cleanly)
+  const groupedOrders = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        orderId: string;
+        root: EntitySummaryDto | null;
+        children: EntitySummaryDto[];
+        customerId: string | null;
+        worstStatus: string;
+        hasFallout: boolean;
+      }
+    >();
+
+    const severityRank = (status: string, hasFallout: boolean) => {
+      if (hasFallout || status === 'IN_FALLOUT') return 5;
+      if (status === 'BREACHED') return 4;
+      if (status === 'JEOPARDY' || status === 'WARNING') return 3;
+      if (status === 'PAUSED') return 2;
+      if (status === 'IN_PROGRESS') return 1;
+      return 0;
+    };
+
+    for (const item of queueItems) {
+      const rootId = item.entityKey.includes(':')
+        ? item.entityKey.split(':')[0]
+        : item.entityKey;
+      let grp = groups.get(rootId);
+      if (!grp) {
+        grp = {
+          orderId: rootId,
+          root: null,
+          children: [],
+          customerId: item.customerId,
+          worstStatus: item.status,
+          hasFallout: item.hasActiveFallout,
+        };
+        groups.set(rootId, grp);
+      }
+      if (!item.entityKey.includes(':')) {
+        grp.root = item;
+      } else {
+        grp.children.push(item);
+      }
+      if (!grp.customerId && item.customerId) {
+        grp.customerId = item.customerId;
+      }
+      if (
+        severityRank(item.status, item.hasActiveFallout) >
+        severityRank(grp.worstStatus, grp.hasFallout)
+      ) {
+        grp.worstStatus = item.status;
+        grp.hasFallout = item.hasActiveFallout;
+      }
+    }
+
+    return Array.from(groups.values());
+  }, [queueItems]);
+
+  const entity = timelineData?.entity;
+  const heroStatus = entity ? humanStatusLabel(entity.status, entity.hasActiveFallout) : null;
+
+  const copyWithFeedback = useCallback(
+    (kind: 'id' | 'summary' | 'api', text: string) => {
+      if (navigator.clipboard) {
+        void navigator.clipboard.writeText(text);
+      }
+      setCopiedAction(kind);
+      window.setTimeout(() => {
+        setCopiedAction((cur) => (cur === kind ? null : cur));
+      }, 1800);
+    },
+    [],
+  );
+
+  const buildSupportSummary = useCallback(() => {
+    if (!entity) return '';
+    const title = friendlyEntityTitle(entity);
+    const step =
+      currentStageIndex >= 0 && stages[currentStageIndex]
+        ? `Step ${currentStageIndex + 1} of ${stages.length} (${stages[currentStageIndex].title})`
+        : entity.status;
+    const falloutLine =
+      activeFallouts.length > 0
+        ? ` | Blocking Issue: ${activeFallouts[0].errorCode || 'Fallout'} (${activeFallouts[0].falloutStatus}${
+            activeFallouts[0].assignedGroup ? `, Queue: ${activeFallouts[0].assignedGroup}` : ''
+          })`
+        : '';
+    const etaLine = entity.closedAt
+      ? ` | Completed: ${formatShortTime(entity.closedAt)}`
+      : entity.predictedP50At
+        ? ` | Est. Completion: ${formatShortTime(entity.predictedP50At)}`
+        : '';
+    return `Order ${entity.entityKey} (${title}) | Customer: ${entity.customerId || 'N/A'} | Status: ${heroStatus?.label || entity.status} | Progress: ${step}${falloutLine}${etaLine}`;
+  }, [entity, currentStageIndex, stages, activeFallouts, heroStatus]);
+
+  return (
+    <div className="space-y-5">
+      {/* Page Title + Quick Order Type Pills */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+            Order Tracker
+          </h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            See exactly where any customer order stands, step by step — updated live with zero page refresh.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+              sseState === 'LIVE'
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+            }`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                sseState === 'LIVE' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+              }`}
+            />
+            {lastLiveUpdate
+              ? `Live · ${formatShortTime(lastLiveUpdate.timestamp)}`
+              : sseState === 'LIVE'
+                ? 'Live Sync On'
+                : 'Connecting'}
+          </span>
+
+          <div className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-0.5">
+            {(['ALL', 'SALES', 'CHANGE'] as const).map((ot) => {
+              const active = (orderTypeFilter ?? 'ALL') === ot;
+              return (
+                <button
+                  key={ot}
+                  type="button"
+                  onClick={() => {
+                    setOrderTypeFilter(ot === 'ALL' ? undefined : ot);
+                    if (ot === 'ALL') onClearInitialFilter();
+                  }}
+                  className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+                    active
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  {ot === 'ALL' ? 'All Orders' : ot}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Main 2-Column Layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+        {/* LEFT RAIL: Clean Order & Customer Queue */}
+        <div className="lg:col-span-4 xl:col-span-3 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden flex flex-col max-h-[780px]">
+          <div className="p-3.5 border-b border-slate-100 dark:border-slate-800 space-y-2.5">
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                <input
+                  type="text"
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  placeholder="Order ID, Customer, CHANGE_ESIM..."
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadQueue()}
+                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500"
+                title="Refresh list"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${queueLoading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1 flex-1">
+                {[
+                  { id: 'ALL', label: 'All' },
+                  { id: 'FALLOUT', label: 'Action Needed' },
+                  { id: 'ATTENTION', label: 'Delayed' },
+                ].map((pill) => (
+                  <button
+                    key={pill.id}
+                    type="button"
+                    onClick={() => setStatusQuickFilter(pill.id as typeof statusQuickFilter)}
+                    className={`flex-1 rounded-md py-1 text-[11px] font-medium transition ${
+                      statusQuickFilter === pill.id
+                        ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {pill.label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setGroupByOrder((v) => !v)}
+                className={`p-1.5 rounded-md border text-[11px] transition shrink-0 ${
+                  groupByOrder
+                    ? 'border-blue-500/40 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
+                    : 'border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+                title={groupByOrder ? 'Grouped by Order (click for flat list)' : 'Flat item list (click to group by Order)'}
+              >
+                {groupByOrder ? <Layers className="w-3.5 h-3.5" /> : <List className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+
+            {(orderFamilyFilter || orderTypeFilter) && (
+              <div className="flex items-center justify-between rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-500/30 px-2.5 py-1 text-[11px] text-blue-700 dark:text-blue-300">
+                <span className="truncate">Filtered: {orderTypeFilter || orderFamilyFilter}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrderFamilyFilter(undefined);
+                    setOrderTypeFilter(undefined);
+                    onClearInitialFilter();
+                  }}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/70">
+            {queueItems.length === 0 ? (
+              <div className="py-12 px-4 text-center text-xs text-slate-400">
+                {queueLoading ? 'Loading live orders...' : 'No orders match your filter.'}
+              </div>
+            ) : groupByOrder ? (
+              groupedOrders.map((grp) => {
+                const isCollapsed = Boolean(collapsedOrders[grp.orderId]);
+                const grpStatus = humanStatusLabel(grp.worstStatus, grp.hasFallout);
+                const primaryEntity = grp.root ?? grp.children[0];
+                const isRootSelected = primaryEntity && primaryEntity.entityKey === selectedEntityKey;
+                const hasMultiple = grp.children.length > 0 && grp.root !== null;
+
+                return (
+                  <div key={grp.orderId} className="bg-white dark:bg-slate-900">
+                    <div
+                      className={`flex items-start gap-1.5 px-3 py-2.5 transition ${
+                        isRootSelected
+                          ? 'bg-blue-50/80 dark:bg-blue-950/40 border-l-2 border-l-blue-600'
+                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                      }`}
+                    >
+                      {grp.children.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCollapsedOrders((prev) => ({
+                              ...prev,
+                              [grp.orderId]: !prev[grp.orderId],
+                            }))
+                          }
+                          className="mt-0.5 p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                          aria-label="Toggle order items"
+                        >
+                          {isCollapsed ? (
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          ) : (
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!primaryEntity) return;
+                          setSelectedEntityKey(primaryEntity.entityKey);
+                          if (primaryEntity.customerId) setSelectedCustomerId(primaryEntity.customerId);
+                        }}
+                        className="flex-1 text-left min-w-0"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                            {primaryEntity ? friendlyEntityTitle(primaryEntity) : grp.orderId}
+                          </span>
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0 ${grpStatus.badgeClass}`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full ${grpStatus.dotClass}`} />
+                            {grpStatus.label}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+                          <span className="font-mono truncate">{grp.orderId}</span>
+                          <span className="shrink-0">
+                            {grp.children.length > 0
+                              ? `${grp.children.length} ${grp.children.length === 1 ? 'item' : 'items'}`
+                              : grp.customerId || '—'}
+                          </span>
+                        </div>
+                      </button>
+                    </div>
+
+                    {!isCollapsed && grp.children.length > 0 && (
+                      <div className="pb-1.5 pl-6 pr-2 space-y-0.5 bg-slate-50/50 dark:bg-slate-950/30">
+                        {grp.children.map((child) => {
+                          if (!hasMultiple && child.entityKey === primaryEntity?.entityKey) {
+                            return null;
+                          }
+                          const selected = child.entityKey === selectedEntityKey;
+                          const st = humanStatusLabel(child.status, child.hasActiveFallout);
+                          return (
+                            <button
+                              key={child.entityKey}
+                              type="button"
+                              onClick={() => {
+                                setSelectedEntityKey(child.entityKey);
+                                if (child.customerId) setSelectedCustomerId(child.customerId);
+                              }}
+                              className={`w-full text-left rounded-lg px-2.5 py-1.5 transition flex items-center justify-between gap-2 ${
+                                selected
+                                  ? 'bg-blue-100/80 dark:bg-blue-950/60 text-blue-900 dark:text-blue-100 font-medium'
+                                  : 'hover:bg-slate-100 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300'
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <div className="text-[11px] font-medium truncate">
+                                  {friendlyEntityTitle(child)}
+                                </div>
+                                <div className="text-[10px] font-mono text-slate-400 truncate">
+                                  {child.entityKey.split(':')[1] || child.entityKey}
+                                </div>
+                              </div>
+                              <span
+                                className={`w-2 h-2 rounded-full shrink-0 ${st.dotClass}`}
+                                title={st.label}
+                              />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            ) : (
+              queueItems.map((item) => {
+                const selected = item.entityKey === selectedEntityKey;
+                const st = humanStatusLabel(item.status, item.hasActiveFallout);
+                return (
+                  <button
+                    key={item.entityKey}
+                    type="button"
+                    onClick={() => {
+                      setSelectedEntityKey(item.entityKey);
+                      if (item.customerId) setSelectedCustomerId(item.customerId);
+                    }}
+                    className={`w-full text-left px-3.5 py-3 transition ${
+                      selected
+                        ? 'bg-blue-50/80 dark:bg-blue-950/40 border-l-2 border-l-blue-600'
+                        : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                        {friendlyEntityTitle(item)}
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0 ${st.badgeClass}`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${st.dotClass}`} />
+                        {st.label}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+                      <span className="font-mono truncate">{item.entityKey}</span>
+                      <span className="font-mono shrink-0">{item.customerId || '—'}</span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT MAIN AREA: Domino's / BMW Style Order Progress Tracker */}
+        <div className="lg:col-span-8 xl:col-span-9 space-y-5">
+          {timelineError && (
+            <div className="rounded-xl border border-rose-200 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-950/30 px-4 py-3 text-xs text-rose-700 dark:text-rose-200">
+              {timelineError}
+            </div>
+          )}
+
+          {timelineLoading && !entity ? (
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-12 text-center text-xs text-slate-400">
+              Loading order progress...
+            </div>
+          ) : !entity ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 bg-white/60 dark:bg-slate-900/50 p-12 text-center text-xs text-slate-500">
+              Select any order on the left to view its step-by-step tracker.
+            </div>
+          ) : (
+            <>
+              {/* HERO TRACKER CARD (Domino's / BMW My Garage Style) */}
+              <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                {/* 1. Plain-English Status Hero Banner */}
+                <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-start justify-between gap-4">
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {heroStatus && (
+                        <span
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${heroStatus.badgeClass}`}
+                        >
+                          <span className={`w-2 h-2 rounded-full ${heroStatus.dotClass}`} />
+                          {heroStatus.label}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => copyWithFeedback('id', entity.entityKey)}
+                        className="inline-flex items-center gap-1 text-xs font-mono text-slate-500 hover:text-slate-900 dark:hover:text-white transition"
+                        title="Copy Order/Item ID"
+                      >
+                        {entity.entityKey}
+                        {copiedAction === 'id' ? (
+                          <Check className="w-3 h-3 text-emerald-500" />
+                        ) : (
+                          <Copy className="w-3 h-3 opacity-60" />
+                        )}
+                      </button>
+                      {entity.customerId && (
+                        <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                          <User className="w-3.5 h-3.5" />
+                          {entity.customerId}
+                        </span>
+                      )}
+                    </div>
+
+                    <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+                      {friendlyEntityTitle(entity)}
+                    </h2>
+
+                    <p className="text-xs text-slate-600 dark:text-slate-300">
+                      {entity.status === 'COMPLETED' ? (
+                        <>All {stages.length} steps completed.</>
+                      ) : currentStageIndex >= 0 && stages[currentStageIndex] ? (
+                        <>
+                          <strong>
+                            Step {currentStageIndex + 1} of {stages.length}:
+                          </strong>{' '}
+                          Currently on{' '}
+                          <span className="font-semibold text-slate-900 dark:text-white">
+                            {stages[currentStageIndex].title}
+                          </span>
+                          {activeFallouts.length > 0 && activeFallouts[0].assignedGroup && (
+                            <span className="text-rose-600 dark:text-rose-400">
+                              {' '}
+                              · With {prettifyName(activeFallouts[0].assignedGroup)}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <>Order tracking initialized.</>
+                      )}
+                    </p>
+
+                    {/* 1-Click Care Agent & Integrator Utilities */}
+                    <div className="pt-1.5 flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => copyWithFeedback('summary', buildSupportSummary())}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 px-2.5 py-1 text-[11px] font-medium text-slate-700 dark:text-slate-300 transition"
+                      >
+                        {copiedAction === 'summary' ? (
+                          <ClipboardCheck className="w-3.5 h-3.5 text-emerald-500" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5 text-slate-400" />
+                        )}
+                        {copiedAction === 'summary' ? 'Copied Summary!' : 'Copy Support Summary'}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const rootOrderId = entity.entityKey.includes(':')
+                            ? entity.entityKey.split(':')[0]
+                            : entity.entityKey;
+                          copyWithFeedback(
+                            'api',
+                            `${window.location.origin}/api/v1/orders/${encodeURIComponent(rootOrderId)}/status`,
+                          );
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 px-2.5 py-1 text-[11px] font-medium text-slate-600 dark:text-slate-400 transition"
+                        title="Copy lightweight Consumer Order Status API URL"
+                      >
+                        {copiedAction === 'api' ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-500" />
+                        ) : (
+                          <Code2 className="w-3.5 h-3.5 text-slate-400" />
+                        )}
+                        {copiedAction === 'api' ? 'Copied API URL!' : 'Copy Status API'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Right Summary Box: ETA & Last Activity */}
+                  <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 px-4 py-3 min-w-[200px]">
+                    <div className="text-[11px] font-medium text-slate-500">
+                      {entity.status === 'COMPLETED' ? 'Completed At' : 'Estimated Completion'}
+                    </div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-white mt-0.5 flex items-center gap-1.5">
+                      <Clock className="w-4 h-4 text-blue-500" />
+                      {entity.closedAt
+                        ? formatShortTime(entity.closedAt)
+                        : entity.predictedP50At
+                          ? formatShortTime(entity.predictedP50At)
+                          : 'Calculating...'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">
+                      {entity.channel ? `${prettifyName(entity.channel)} · ` : ''}
+                      {entity.accountType || 'Standard'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. DOMINO'S / BMW HORIZONTAL PROGRESS BAR */}
+                <div className="px-6 py-7">
+                  {stages.length === 0 ? (
+                    <div className="text-center text-xs text-slate-400 py-4">
+                      Waiting for first milestone event...
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      {/* Background Track Line */}
+                      <div className="hidden sm:block absolute top-5 left-8 right-8 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            activeFallouts.length > 0 || entity.status === 'BREACHED'
+                              ? 'bg-gradient-to-r from-emerald-500 via-amber-500 to-rose-500'
+                              : entity.status === 'COMPLETED'
+                                ? 'bg-emerald-500'
+                                : 'bg-gradient-to-r from-emerald-500 to-blue-600'
+                          }`}
+                          style={{ width: `${progressPct}%` }}
+                        />
+                      </div>
+
+                      {/* Numbered Step Nodes */}
+                      <div
+                        className="relative grid gap-3"
+                        style={{
+                          gridTemplateColumns: `repeat(${stages.length}, minmax(0, 1fr))`,
+                        }}
+                      >
+                        {stages.map((st, idx) => {
+                          const isSelected = inspectedStage?.stepNumber === st.stepNumber;
+                          const isDone = st.status === 'COMPLETED';
+                          const isBlocked =
+                            st.status === 'IN_FALLOUT' || st.status === 'BREACHED';
+                          const isWarn = st.status === 'JEOPARDY' || st.status === 'WARNING';
+                          const isActive = st.status === 'IN_PROGRESS';
+                          const isPaused = st.status === 'PAUSED';
+
+                          const circleClasses = isDone
+                            ? 'bg-emerald-500 text-white border-emerald-500 shadow-sm'
+                            : isBlocked
+                              ? 'bg-rose-600 text-white border-rose-600 ring-4 ring-rose-500/20'
+                              : isWarn
+                                ? 'bg-amber-500 text-white border-amber-500 ring-4 ring-amber-500/20'
+                                : isPaused
+                                  ? 'bg-violet-600 text-white border-violet-600 ring-4 ring-violet-500/20'
+                                  : isActive
+                                    ? 'bg-blue-600 text-white border-blue-600 ring-4 ring-blue-500/25'
+                                    : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-300 dark:border-slate-700';
+
+                          const statusSubtext = isDone
+                            ? st.milestone?.startedAt && st.milestone?.completedAt
+                              ? `Done · ${formatElapsedBetween(st.milestone.startedAt, st.milestone.completedAt)}`
+                              : 'Done'
+                            : isBlocked
+                              ? 'Blocked'
+                              : isWarn
+                                ? 'Delayed'
+                                : isPaused
+                                  ? 'Paused'
+                                  : isActive
+                                    ? 'In progress'
+                                    : 'Up next';
+
+                          return (
+                            <button
+                              key={`${st.templateId}-${st.stepNumber}`}
+                              type="button"
+                              onClick={() => setSelectedStageIndex(idx)}
+                              className={`flex flex-col items-center text-center group rounded-xl p-2 -m-2 transition ${
+                                isSelected
+                                  ? 'bg-slate-100/80 dark:bg-slate-800/60'
+                                  : 'hover:bg-slate-50 dark:hover:bg-slate-800/30'
+                              }`}
+                            >
+                              <div
+                                className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-xs font-bold transition ${circleClasses}`}
+                              >
+                                {isDone ? (
+                                  <Check className="w-5 h-5 stroke-[2.5]" />
+                                ) : isBlocked || isWarn ? (
+                                  <AlertTriangle className="w-4 h-4" />
+                                ) : isPaused ? (
+                                  <PauseCircle className="w-4 h-4" />
+                                ) : (
+                                  st.stepNumber
+                                )}
+                              </div>
+
+                              <div className="mt-2.5 text-xs font-semibold text-slate-900 dark:text-white leading-snug line-clamp-2">
+                                {st.title}
+                              </div>
+                              <div
+                                className={`mt-0.5 text-[11px] font-medium ${
+                                  isBlocked
+                                    ? 'text-rose-600 dark:text-rose-400'
+                                    : isWarn
+                                      ? 'text-amber-600 dark:text-amber-400'
+                                      : isActive
+                                        ? 'text-blue-600 dark:text-blue-400'
+                                        : isDone
+                                          ? 'text-emerald-600 dark:text-emerald-400'
+                                          : 'text-slate-400'
+                                }`}
+                              >
+                                {statusSubtext}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Selected Step Simple Detail Bar */}
+                  {inspectedStage && (
+                    <div className="mt-6 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-4 flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <div className="text-[11px] font-medium text-slate-500">
+                          Step {inspectedStage.stepNumber} of {stages.length}
+                        </div>
+                        <div className="text-sm font-semibold text-slate-900 dark:text-white">
+                          {inspectedStage.title}
+                        </div>
+                        {inspectedStage.milestone?.lastErrorCode && (
+                          <div className="mt-1 inline-flex items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400 font-medium">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            Last issue: {inspectedStage.milestone.lastErrorCode}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-5 text-xs">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-slate-400">
+                            Started
+                          </div>
+                          <div className="font-medium text-slate-800 dark:text-slate-200">
+                            {inspectedStage.milestone?.startedAt
+                              ? formatShortTime(inspectedStage.milestone.startedAt)
+                              : 'Not started'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-slate-400">
+                            Completed
+                          </div>
+                          <div className="font-medium text-slate-800 dark:text-slate-200">
+                            {inspectedStage.milestone?.completedAt
+                              ? formatShortTime(inspectedStage.milestone.completedAt)
+                              : inspectedStage.status === 'UPCOMING'
+                                ? 'Pending'
+                                : 'In progress'}
+                          </div>
+                        </div>
+                        {inspectedStage.milestone?.hardMaxMs && (
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wide text-slate-400">
+                              SLA Limit
+                            </div>
+                            <div className="font-medium text-slate-800 dark:text-slate-200">
+                              {formatDurationMs(inspectedStage.milestone.hardMaxMs)}
+                            </div>
+                          </div>
+                        )}
+                        {(inspectedStage.milestone?.retryCount ?? 0) > 0 && (
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wide text-slate-400">
+                              Retries
+                            </div>
+                            <div className="font-semibold text-amber-600 dark:text-amber-400">
+                              {inspectedStage.milestone?.retryCount}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Plain-English Fallout / Resolution Tracker (Only shown when Fallouts exist) */}
+                {(timelineData?.fallouts ?? []).length > 0 && (
+                  <div className="px-6 pb-6 space-y-3">
+                    {(timelineData?.fallouts ?? []).map((flt) => {
+                      const activeIdx = falloutStageIndex(flt.falloutStatus);
+                      const resolved = flt.falloutStatus === 'RESOLVED';
+                      return (
+                        <div
+                          key={flt.falloutId}
+                          className={`rounded-xl border p-4 space-y-3 ${
+                            resolved
+                              ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-950/20'
+                              : 'border-rose-200 dark:border-rose-500/40 bg-rose-50/60 dark:bg-rose-950/25'
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="flex items-start gap-2.5">
+                              <ShieldAlert
+                                className={`w-5 h-5 mt-0.5 shrink-0 ${
+                                  resolved ? 'text-emerald-600' : 'text-rose-600'
+                                }`}
+                              />
+                              <div>
+                                <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                                  {resolved ? 'Issue Resolved' : 'Action Required — Order Blocked'}
+                                  {flt.errorCode ? ` · ${flt.errorCode}` : ''}
+                                </div>
+                                <div className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                                  Assigned team:{' '}
+                                  <strong>{prettifyName(flt.assignedGroup || 'Operations')}</strong>
+                                  {flt.resolutionAction && (
+                                    <> · Resolution: {prettifyName(flt.resolutionAction)}</>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {flt.mttrMs !== null && (
+                              <span className="rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-2.5 py-0.5 text-[11px] font-medium">
+                                Resolved in {formatDurationMs(flt.mttrMs)}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* 4-Stage Mini Resolution Track */}
+                          <div className="grid grid-cols-4 gap-2">
+                            {FALLOUT_STAGES.map((fs, i) => {
+                              const done = i <= activeIdx;
+                              return (
+                                <div key={fs.key} className="space-y-1">
+                                  <div
+                                    className={`h-1.5 rounded-full ${
+                                      done
+                                        ? resolved
+                                          ? 'bg-emerald-500'
+                                          : 'bg-rose-500'
+                                        : 'bg-slate-200 dark:bg-slate-800'
+                                    }`}
+                                  />
+                                  <div
+                                    className={`text-[11px] font-medium ${
+                                      done
+                                        ? 'text-slate-900 dark:text-white'
+                                        : 'text-slate-400'
+                                    }`}
+                                  >
+                                    {fs.label}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* RELATED ITEMS IN CUSTOMER'S ORDER (Clean Horizontal Cards) */}
+              {customerEntities.length > 1 && (
+                <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      All Items for Customer {selectedCustomerId} ({customerEntities.length})
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                    {customerEntities.map((sib) => {
+                      const active = sib.entityKey === entity.entityKey;
+                      const st = humanStatusLabel(sib.status, sib.hasActiveFallout);
+                      return (
+                        <button
+                          key={sib.entityKey}
+                          type="button"
+                          onClick={() => setSelectedEntityKey(sib.entityKey)}
+                          className={`text-left rounded-xl border p-3 transition ${
+                            active
+                              ? 'border-blue-500 bg-blue-50/70 dark:bg-blue-950/40 ring-1 ring-blue-500/30'
+                              : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                              {friendlyEntityTitle(sib)}
+                            </span>
+                            <span
+                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0 ${st.badgeClass}`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${st.dotClass}`} />
+                              {st.label}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-[11px] font-mono text-slate-500 truncate">
+                            {sib.entityKey}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* PROGRESSIVE DISCLOSURE: Technical Details & Raw Event Audit Log */}
+              <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowTechAudit((v) => !v)}
+                  className="w-full px-5 py-3.5 flex items-center justify-between text-left hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition"
+                >
+                  <div className="flex items-center gap-2">
+                    {showTechAudit ? (
+                      <ChevronDown className="w-4 h-4 text-slate-400" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-slate-400" />
+                    )}
+                    <Code2 className="w-4 h-4 text-slate-500" />
+                    <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                      Technical Details &amp; Raw Event Audit Log
+                    </span>
+                    <span className="rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[10px] text-slate-500">
+                      {(timelineData?.rawEvents ?? []).length} events
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-slate-400">
+                    For Support &amp; SRE Engineers
+                  </span>
+                </button>
+
+                {showTechAudit && (
+                  <div className="px-5 pb-5 pt-2 border-t border-slate-100 dark:border-slate-800 space-y-4">
+                    {/* Compact Technical Metadata Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-xl bg-slate-50 dark:bg-slate-950 p-3 text-[11px] font-mono">
+                      <div>
+                        <span className="text-slate-400 block">Blueprint</span>
+                        <span>
+                          {entity.blueprintId || '—'} @ v{entity.blueprintVersion ?? 1}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">Order / Item Type</span>
+                        <span>
+                          {entity.orderType || '—'} / {entity.itemType || '—'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">Order Family</span>
+                        <span>{entity.orderFamily || '—'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">Last Event</span>
+                        <span>
+                          {entity.lastEventTime ? formatShortTime(entity.lastEventTime) : '—'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Raw Events Stream + BPMN Noise Toggle */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-blue-500" />
+                        Kafka &amp; Flowable Events (ClickHouse Audit)
+                      </span>
+                      <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={includeNoise}
+                          onChange={(e) => setIncludeNoise(e.target.checked)}
+                          className="rounded border-slate-300 text-blue-600"
+                        />
+                        Include BPMN Noise (~95%)
+                      </label>
+                    </div>
+
+                    <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                      {(timelineData?.rawEvents ?? []).length === 0 ? (
+                        <div className="text-xs text-slate-400 py-4 text-center">
+                          No raw audit events recorded for this order yet.
+                        </div>
+                      ) : (
+                        (timelineData?.rawEvents ?? []).map((ev) => {
+                          const expanded = expandedEventId === ev.eventId;
+                          return (
+                            <div
+                              key={ev.eventId}
+                              className="rounded-lg border border-slate-200 dark:border-slate-800 px-3 py-2 text-[11px] font-mono"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => setExpandedEventId(expanded ? null : ev.eventId)}
+                                className="w-full text-left flex flex-wrap items-center justify-between gap-2"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="text-slate-400">
+                                    {formatTimestamp(ev.eventTime)}
+                                  </span>
+                                  <span className="font-semibold text-slate-900 dark:text-white">
+                                    {ev.eventType || 'EVENT'}
+                                  </span>
+                                  <span className="text-blue-600 dark:text-blue-400">
+                                    {ev.sourceTopic || ev.sourceDomain}
+                                  </span>
+                                </div>
+                                <span className="text-slate-400">
+                                  {ev.processInstanceId
+                                    ? `${ev.processInstanceId}${ev.parentProcessInstanceId ? ` ← ${ev.parentProcessInstanceId}` : ''}`
+                                    : ev.eventId}
+                                </span>
+                              </button>
+                              {expanded && ev.payloadJson && (
+                                <pre className="mt-2 rounded bg-slate-950 text-slate-200 p-2.5 overflow-x-auto text-[10px] max-h-48">
+                                  {ev.payloadJson}
+                                </pre>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};

@@ -1,0 +1,11 @@
+numpy>=1.26,<3.0
+pandas>=2.2,<3.0
+scikit-learn>=1.5,<2.0
+lightgbm>=4.5,<5.0
+skl2onnx>=1.17,<2.0
+onnxmltools>=1.12,<2.0
+onnx>=1.16,<2.0
+onnxruntime>=1.19,<2.0
+requests>=2.32,<3.0
+pyyaml>=6.0,<7.0
+pytest>=8.3,<9.0

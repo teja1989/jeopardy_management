@@ -1,0 +1,105 @@
+# =============================================================================
+# Zero-ETL Open-Source BI & Observability — Apache Superset + Grafana OSS
+# =============================================================================
+# 100% Open-Source (Apache 2.0 / AGPLv3 OSS) — Connects directly to ClickHouse
+# 24.8 OSS Materialized Views (`mv_exec_summary_hourly`, `mv_devops_bottlenecks_5m`)
+# and CloudNativePG Read Replicas (`jeopardy-pg-ro`) with zero ETL pipelines.
+#
+# Install with Helm (extract each top-level section via yq):
+#   yq '.superset' deploy/k8s/bi/superset-grafana-values.yaml | \
+#     helm upgrade --install jeopardy-superset superset/superset -n jeopardy -f -
+#   yq '.grafana' deploy/k8s/bi/superset-grafana-values.yaml | \
+#     helm upgrade --install jeopardy-grafana grafana/grafana -n jeopardy -f -
+# =============================================================================
+superset:
+  image:
+    repository: apache/superset
+    tag: "4.1.1"
+  replicaCount: 2
+  # Install open-source ClickHouse SQLAlchemy + PostgreSQL drivers at startup
+  bootstrapScript: |
+    #!/bin/bash
+    pip install --no-cache-dir clickhouse-connect==0.8.6 psycopg2-binary==2.9.9
+    if [ ! -f ~/bootstrap ]; then
+      echo "Bootstrapping Jeopardy Superset drivers..." > ~/bootstrap
+    fi
+  configOverrides:
+    jeopardy_bi: |
+      ENABLE_PROXY_FIX = True
+      FEATURE_FLAGS = {
+          "DASHBOARD_CROSS_FILTERS": True,
+          "DASHBOARD_NATIVE_FILTERS": True,
+          "ENABLE_TEMPLATE_PROCESSING": True,
+      }
+      # Pre-configure ClickHouse OSS & PostgreSQL Read Replica SQLAlchemy URIs
+      # ClickHouse: clickhousedb+connect://jeopardy:<pwd>@clickhouse-jeopardy.jeopardy.svc.cluster.local:8123/jeopardy
+      # PostgreSQL: postgresql+psycopg2://jeopardy:<pwd>@jeopardy-pg-ro.jeopardy.svc.cluster.local:5432/jeopardy
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+
+grafana:
+  image:
+    repository: grafana/grafana-oss
+    tag: "11.3.0"
+  replicas: 2
+  plugins:
+    - grafana-clickhouse-datasource
+  env:
+    GF_USERS_ALLOW_SIGN_UP: "false"
+    GF_SECURITY_DISABLE_GRAVATAR: "true"
+  envValueFrom:
+    CLICKHOUSE_PASSWORD:
+      secretKeyRef:
+        name: jeopardy-db-credentials
+        key: clickhouse-password
+    POSTGRES_PASSWORD:
+      secretKeyRef:
+        name: jeopardy-db-credentials
+        key: postgres-password
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: ClickHouse-Jeopardy-OSS
+          type: grafana-clickhouse-datasource
+          uid: clickhouse-jeopardy
+          access: proxy
+          isDefault: true
+          jsonData:
+            defaultDatabase: jeopardy
+            protocol: http
+            server: clickhouse-jeopardy.jeopardy.svc.cluster.local
+            port: 8123
+            username: jeopardy
+            tlsSkipVerify: true
+          secureJsonData:
+            password: "$CLICKHOUSE_PASSWORD"
+        - name: PostgreSQL-Jeopardy-RO
+          type: postgres
+          uid: postgres-jeopardy-ro
+          access: proxy
+          url: jeopardy-pg-ro.jeopardy.svc.cluster.local:5432
+          user: jeopardy
+          jsonData:
+            database: jeopardy
+            sslmode: prefer
+            postgresVersion: 1600
+          secureJsonData:
+            password: "$POSTGRES_PASSWORD"
+        - name: Prometheus-Jeopardy
+          type: prometheus
+          uid: prometheus-jeopardy
+          access: proxy
+          url: http://prometheus-operated.monitoring.svc.cluster.local:9090
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"

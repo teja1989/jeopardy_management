@@ -1,0 +1,238 @@
+# =============================================================================
+# Block 1: Event Adapters — Downstream Domain Systems
+# Covers: Fraud, Payment, Fulfillment, Provisioning, and Billing Kafka topics.
+# All JSONPath expressions are pre-compiled once in Flink BroadcastState.
+# =============================================================================
+schemaVersion: "1.0"
+configType: "EVENT_ADAPTER_BUNDLE"
+version: 1
+
+adapters:
+  # ---------------------------------------------------------------------------
+  # 1. Fraud Domain Adapter
+  # ---------------------------------------------------------------------------
+  - adapterId: "adapter-domain-fraud"
+    version: 1
+    enabled: true
+    sourceTopic: "domain.fraud.events"
+    domain: "FRAUD"
+    includeFilter:
+      eventTypePath: "$.eventType"
+      allowedValues:
+        - "FRAUD_CHECK_STARTED"
+        - "FRAUD_CHECK_APPROVED"
+        - "FRAUD_MANUAL_REVIEW"
+        - "FRAUD_CHECK_REJECTED"
+    redactPaths:
+      - "$.fraud.applicantSsn"
+      - "$.fraud.deviceFingerprintIp"
+      - "$.fraud.idDocumentNumber"
+    commonFields:
+      eventIdPath: "$.eventId"
+      eventTimePath: "$.eventTime"
+      eventTypePath: "$.eventType"
+      customerIdPath: "$.fraud.accountId"
+      accountTypePath: "$.fraud.accountType"
+    emitRules:
+      - ruleId: "emit-fraud-entity"
+        entityLevel: "ORDER"
+        entityKeyTemplate: "{$.fraud.orderId}"
+        orderTypePath: "$.fraud.orderType"
+        errorCodePath: "$.fraud.reasonCode"
+        dimensions:
+          fraud_provider: "$.fraud.provider"
+          fraud_score_band: "$.fraud.riskBand"
+          review_queue: "$.fraud.reviewQueue"
+
+  # ---------------------------------------------------------------------------
+  # 2. Payment Domain Adapter
+  # ---------------------------------------------------------------------------
+  - adapterId: "adapter-domain-payment"
+    version: 1
+    enabled: true
+    sourceTopic: "domain.payment.events"
+    domain: "PAYMENT"
+    includeFilter:
+      eventTypePath: "$.eventType"
+      allowedValues:
+        - "PAYMENT_AUTH_STARTED"
+        - "PAYMENT_AUTH_CAPTURED"
+        - "PAYMENT_AUTH_DECLINED"
+        - "PAYMENT_REAUTH_CAPTURED"
+        - "PAYMENT_REFUND_ISSUED"
+    redactPaths:
+      - "$.payment.cardNumber"
+      - "$.payment.cvv"
+      - "$.payment.cardholderEmail"
+      - "$.payment.billingAddress.streetLine1"
+    commonFields:
+      eventIdPath: "$.eventId"
+      eventTimePath: "$.eventTime"
+      eventTypePath: "$.eventType"
+      customerIdPath: "$.payment.accountId"
+      accountTypePath: "$.payment.accountType"
+    emitRules:
+      - ruleId: "emit-payment-target"
+        entityLevel: "ORDER"
+        entityKeyFallbacks:
+          - whenPathExists: "$.payment.changeOrderId"
+            entityKeyTemplate: "{$.payment.changeOrderId}"
+          - whenPathExists: "$.payment.orderId"
+            entityKeyTemplate: "{$.payment.orderId}"
+        orderTypePath: "$.payment.orderType"
+        errorCodePath: "$.payment.declineCode"
+        dimensions:
+          payment_gateway: "$.payment.gateway"
+          payment_method: "$.payment.methodType"
+          decline_code: "$.payment.declineCode"
+          currency: "$.payment.currency"
+
+  # ---------------------------------------------------------------------------
+  # 3. Fulfillment & Trade-In Warehouse Adapter
+  # ---------------------------------------------------------------------------
+  - adapterId: "adapter-domain-fulfillment"
+    version: 1
+    enabled: true
+    sourceTopic: "domain.fulfillment.events"
+    domain: "FULFILLMENT"
+    includeFilter:
+      eventTypePath: "$.eventType"
+      allowedValues:
+        - "WAREHOUSE_PICK_STARTED"
+        - "SHIPMENT_LABEL_CREATED"
+        - "CARRIER_IN_TRANSIT"
+        - "SHIPMENT_DELIVERED"
+        - "SHIPMENT_EXCEPTION"
+        - "TRADEIN_KIT_SHIPPED"
+        - "TRADEIN_DEVICE_RECEIVED"
+        - "TRADEIN_INSPECTION_STARTED"
+        - "TRADEIN_INSPECTION_PASSED"
+        - "TRADEIN_INSPECTION_FAILED"
+    redactPaths:
+      - "$.fulfillment.recipientPhone"
+      - "$.fulfillment.recipientEmail"
+      - "$.fulfillment.deliveryAddress.streetLine1"
+    commonFields:
+      eventIdPath: "$.eventId"
+      eventTimePath: "$.eventTime"
+      eventTypePath: "$.eventType"
+      customerIdPath: "$.fulfillment.accountId"
+      accountTypePath: "$.fulfillment.accountType"
+    emitRules:
+      - ruleId: "emit-fulfillment-item-or-tradein"
+        entityKeyFallbacks:
+          - whenPathExists: "$.fulfillment.tradeInOrderId"
+            entityKeyTemplate: "{$.fulfillment.tradeInOrderId}"
+            entityLevel: "TRADE_IN"
+          - whenAllPathsExist: ["$.fulfillment.orderId", "$.fulfillment.lineItemId"]
+            entityKeyTemplate: "{$.fulfillment.orderId}:{$.fulfillment.lineItemId}"
+            entityLevel: "ORDER_ITEM"
+          - whenPathExists: "$.fulfillment.orderId"
+            entityKeyTemplate: "{$.fulfillment.orderId}"
+            entityLevel: "ORDER"
+        orderTypePath: "$.fulfillment.orderType"
+        errorCodePath: "$.fulfillment.exceptionCode"
+        dimensions:
+          shipping_carrier: "$.fulfillment.carrier"
+          warehouse_id: "$.fulfillment.warehouseId"
+          inspection_grade: "$.fulfillment.inspection.grade"
+          exception_code: "$.fulfillment.exceptionCode"
+
+  # ---------------------------------------------------------------------------
+  # 4. Network Provisioning, Port-In FOC & Partner Promo Adapter
+  # ---------------------------------------------------------------------------
+  - adapterId: "adapter-domain-provisioning"
+    version: 1
+    enabled: true
+    sourceTopic: "domain.provisioning.events"
+    domain: "PROVISIONING"
+    includeFilter:
+      eventTypePath: "$.eventType"
+      allowedValues:
+        - "PORT_REQUEST_SUBMITTED"
+        - "PORT_FOC_RECEIVED"
+        - "PORT_REQUEST_REJECTED"
+        - "ESIM_DOWNLOAD_STARTED"
+        - "ESIM_ACTIVATED"
+        - "ESIM_ACTIVATION_FAILED"
+        - "PARTNER_PROMO_SUBMITTED"
+        - "PARTNER_PROMO_ENROLLED"
+        - "PARTNER_PROMO_FAILED"
+    redactPaths:
+      - "$.provisioning.subscriberMdn"
+      - "$.provisioning.imsi"
+      - "$.provisioning.portAuthPin"
+    commonFields:
+      eventIdPath: "$.eventId"
+      eventTimePath: "$.eventTime"
+      eventTypePath: "$.eventType"
+      customerIdPath: "$.provisioning.accountId"
+      accountTypePath: "$.provisioning.accountType"
+    emitRules:
+      - ruleId: "emit-provisioning-entity"
+        entityKeyFallbacks:
+          - whenPathExists: "$.provisioning.promoOrderId"
+            entityKeyTemplate: "{$.provisioning.promoOrderId}"
+            entityLevel: "INTERNAL_PROMO"
+          - whenAllPathsExist: ["$.provisioning.orderId", "$.provisioning.lineItemId"]
+            entityKeyTemplate: "{$.provisioning.orderId}:{$.provisioning.lineItemId}"
+            entityLevel: "ORDER_ITEM"
+          - whenPathExists: "$.provisioning.orderId"
+            entityKeyTemplate: "{$.provisioning.orderId}"
+            entityLevel: "ORDER"
+        orderTypePath: "$.provisioning.orderType"
+        errorCodePath: "$.provisioning.errorCode"
+        dimensions:
+          donor_carrier: "$.provisioning.portIn.donorCarrier"
+          port_type: "$.provisioning.portIn.portType"
+          esim_vendor: "$.provisioning.esim.smDpVendor"
+          partner_name: "$.provisioning.partner.partnerName"
+          error_code: "$.provisioning.errorCode"
+
+  # ---------------------------------------------------------------------------
+  # 5. Billing & Credit Sync Adapter
+  # ---------------------------------------------------------------------------
+  - adapterId: "adapter-domain-billing"
+    version: 1
+    enabled: true
+    sourceTopic: "domain.billing.events"
+    domain: "BILLING"
+    includeFilter:
+      eventTypePath: "$.eventType"
+      allowedValues:
+        - "BILLING_SYNC_STARTED"
+        - "BILLING_SYNC_COMPLETED"
+        - "BILLING_SYNC_FAILED"
+        - "TRADEIN_CREDIT_APPLIED"
+        - "PROMO_SKU_BILLED"
+    redactPaths:
+      - "$.billing.bankRoutingNumber"
+      - "$.billing.autopayToken"
+    commonFields:
+      eventIdPath: "$.eventId"
+      eventTimePath: "$.eventTime"
+      eventTypePath: "$.eventType"
+      customerIdPath: "$.billing.accountId"
+      accountTypePath: "$.billing.accountType"
+    emitRules:
+      - ruleId: "emit-billing-entity"
+        entityKeyFallbacks:
+          - whenPathExists: "$.billing.tradeInOrderId"
+            entityKeyTemplate: "{$.billing.tradeInOrderId}"
+            entityLevel: "TRADE_IN"
+          - whenPathExists: "$.billing.promoOrderId"
+            entityKeyTemplate: "{$.billing.promoOrderId}"
+            entityLevel: "INTERNAL_PROMO"
+          - whenAllPathsExist: ["$.billing.orderId", "$.billing.lineItemId"]
+            entityKeyTemplate: "{$.billing.orderId}:{$.billing.lineItemId}"
+            entityLevel: "ORDER_ITEM"
+          - whenPathExists: "$.billing.orderId"
+            entityKeyTemplate: "{$.billing.orderId}"
+            entityLevel: "ORDER"
+        orderTypePath: "$.billing.orderType"
+        errorCodePath: "$.billing.errorCode"
+        dimensions:
+          billing_system: "$.billing.system"
+          billing_cycle: "$.billing.cycleCode"
+          credit_amount_usd: "$.billing.creditAmountUsd"
+          error_code: "$.billing.errorCode"

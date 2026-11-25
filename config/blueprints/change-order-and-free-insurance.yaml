@@ -1,0 +1,115 @@
+# =============================================================================
+# Block 3: Journey Blueprints — Short-Lived Supplemental Change Order &
+# Internally-Triggered Free Device Insurance Promo
+# Demonstrates Cross-Order SLA Clock Coordination (`jeopardy.cross-order.signals`)
+# and decoupled RocksDB TTLs for auxiliary tracked entities.
+# =============================================================================
+schemaVersion: "1.0"
+configType: "JOURNEY_BLUEPRINT"
+
+blueprints:
+  # ---------------------------------------------------------------------------
+  # 1. Short-Lived Supplemental Payment Update Change Order
+  #    Emits PAUSE_PARENT_MILESTONE on start & RESUME_PARENT_MILESTONE on close
+  # ---------------------------------------------------------------------------
+  - blueprintId: "bp-supp-payment-update"
+    version: 1
+    active: true
+    displayName: "Supplemental Payment Update Change Order"
+    orderFamily: "CHANGE_CANCEL"
+    orderType: "SUPP_PAYMENT_UPDATE"
+    itemType: "CHANGE_ORDER"
+    entityLevel: "CHANGE_ORDER"
+    stateTtlDays: 7
+    overallSla:
+      warning: "10m"
+      jeopardy: "20m"
+      breach: "30m"
+    crossOrderPolicies:
+      - triggerPhase: "ON_ENTITY_STARTED"
+        action: "PAUSE_PARENT_MILESTONE"
+        targetRelationship: "CHANGE_ORDER_OF"
+        targetTemplateId: "TMPL_PAYMENT_AUTH"
+        signalTopic: "jeopardy.cross-order.signals"
+        reason: "Customer updating payment method via supplemental change order"
+      - triggerPhase: "ON_ENTITY_COMPLETED"
+        action: "RESUME_PARENT_MILESTONE"
+        targetRelationship: "CHANGE_ORDER_OF"
+        targetTemplateId: "TMPL_PAYMENT_AUTH"
+        signalTopic: "jeopardy.cross-order.signals"
+        reason: "Replacement payment authorized; parent milestone clock resumed"
+    steps:
+      - stepId: "C1"
+        useTemplate: "TMPL_ORDER_RECEIVED"
+        displayName: "Payment Amendment Requested"
+        dependsOn: []
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "2s"
+          expected: "15s"
+          warning: "1m"
+          jeopardy: "3m"
+          hardMax: "10m"
+      - stepId: "C2"
+        useTemplate: "TMPL_PAYMENT_AUTH"
+        displayName: "Replacement Card Re-Authorization"
+        dependsOn: ["C1"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "2s"
+          expected: "30s"
+          warning: "5m"
+          jeopardy: "12m"
+          hardMax: "25m"
+      - stepId: "C3"
+        useTemplate: "TMPL_ORDER_CLOSED"
+        displayName: "Change Order Applied & Parent Resumed"
+        dependsOn: ["C2"]
+
+  # ---------------------------------------------------------------------------
+  # 2. Internally-Triggered Free Device Insurance Promo
+  # ---------------------------------------------------------------------------
+  - blueprintId: "bp-internal-free-insurance"
+    version: 1
+    active: true
+    displayName: "Auto-Triggered Free Device Insurance Promo"
+    orderFamily: "PLAN_PROMO"
+    orderType: "INTERNAL_PROMO_PROVISIONING"
+    itemType: "FREE_DEVICE_INSURANCE"
+    entityLevel: "INTERNAL_PROMO"
+    stateTtlDays: 14
+    overallSla:
+      warning: "20m"
+      jeopardy: "45m"
+      breach: "2h"
+    steps:
+      - stepId: "I1"
+        useTemplate: "TMPL_ORDER_RECEIVED"
+        displayName: "Free Device Insurance Promo Triggered"
+        dependsOn: []
+      - stepId: "I2"
+        useTemplate: "TMPL_PARTNER_ENROLL"
+        displayName: "Assurant Partner Insurance Enrollment"
+        dependsOn: ["I1"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "5s"
+          expected: "2m"
+          warning: "10m"
+          jeopardy: "25m"
+          hardMax: "90m"
+      - stepId: "I3"
+        useTemplate: "TMPL_BILLING_SYNC"
+        displayName: "$0 Promotional Insurance SKU Billing Sync"
+        dependsOn: ["I2"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "5s"
+          expected: "1m"
+          warning: "8m"
+          jeopardy: "15m"
+          hardMax: "1h"
+      - stepId: "I4"
+        useTemplate: "TMPL_ORDER_CLOSED"
+        displayName: "Free Device Insurance Active"
+        dependsOn: ["I3"]

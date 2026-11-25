@@ -1,0 +1,49 @@
+---
+# =============================================================================
+# Cloud Foundry Production Manifest — Jeopardy 3-Persona React UI
+# =============================================================================
+# Serves the pre-built static Vite/React bundle from apps/jeopardy-ui/dist
+# using the open-source Cloud Foundry Staticfile (Nginx) buildpack.
+#
+# Prerequisites before cf push:
+#   1. Build production bundle: (cd apps/jeopardy-ui && npm ci && npm run build)
+#   2. Place a Staticfile in apps/jeopardy-ui/dist/Staticfile containing:
+#        pushstate: enabled
+#        http_strict_transport_security: true
+#        location_include: includes/*.conf
+#   3. Optional Nginx SSE proxy include (apps/jeopardy-ui/dist/nginx/conf/includes/api.conf):
+#        location /api/ {
+#          proxy_pass https://<jeopardy-api-route>;
+#          proxy_http_version 1.1;
+#          proxy_set_header Connection "";
+#          proxy_buffering off;
+#          proxy_cache off;
+#          proxy_read_timeout 3600s;
+#        }
+#
+# Usage:
+#   cf push -f deploy/cloudfoundry/jeopardy-ui-manifest.yml \
+#     --vars-file deploy/cloudfoundry/vars-prod.yml
+# =============================================================================
+applications:
+  - name: jeopardy-ui
+    instances: 2
+    memory: 128M
+    disk_quota: 256M
+    buildpacks:
+      - staticfile_buildpack
+    path: ../../apps/jeopardy-ui/dist
+    stack: cflinuxfs4
+    routes:
+      - route: ((jeopardy_ui_route))
+    health-check-type: http
+    health-check-http-endpoint: /
+    health-check-invocation-timeout: 5
+    metadata:
+      labels:
+        app.kubernetes.io/name: jeopardy-ui
+        app.kubernetes.io/part-of: jeopardy-management
+        tier: frontend
+    env:
+      FORCE_HTTPS: "true"
+      JEOPARDY_API_BASE_URL: ((jeopardy_api_url))

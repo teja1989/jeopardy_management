@@ -1,0 +1,97 @@
+# =============================================================================
+# Block 3: Journey Blueprint — Consumer & Enterprise Mobile Port-In
+# Demonstrates carrier-segmented Tier-2 SLA fallbacks (Verizon 5m vs.
+# Google Voice 24h-72h) combined with Tier-3 in-process ONNX ML ETA scoring.
+# =============================================================================
+schemaVersion: "1.0"
+configType: "JOURNEY_BLUEPRINT"
+
+blueprints:
+  - blueprintId: "bp-mobile-port-in"
+    version: 1
+    active: true
+    displayName: "Mobile & Enterprise Multi-Line Port-In Journey"
+    orderFamily: "PORT_INS"
+    orderType: "MOBILE_PORT_IN"
+    additionalOrderTypes:
+      - "ENTERPRISE_PORT_IN"
+      - "MULTI_LINE_PORT_IN"
+      - "WIRELINE_TO_WIRELESS_PORT"
+    itemType: "PORT_IN_LINE"
+    entityLevel: "ORDER_ITEM"
+    stateTtlDays: 21
+    overallSla:
+      warning: "48h"
+      jeopardy: "64h"
+      breach: "72h"
+    steps:
+      - stepId: "P1"
+        useTemplate: "TMPL_ORDER_RECEIVED"
+        displayName: "Port-In Request Accepted"
+        dependsOn: []
+      - stepId: "P2"
+        useTemplate: "TMPL_FRAUD_CHECK"
+        displayName: "Port-Out PIN & Account Validation"
+        dependsOn: ["P1"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "2s"
+          expected: "20s"
+          warning: "2m"
+          jeopardy: "5m"
+          hardMax: "30m"
+      - stepId: "P3"
+        useTemplate: "TMPL_PORT_FOC"
+        displayName: "Donor Carrier Port FOC Approval"
+        dependsOn: ["P2"]
+        slaOverride:
+          mode: "ML_PREDICTED"
+          modelId: "port_in_foc_xgb_aft_v1.onnx"
+          hardMin: "1m"
+          hardMax: "72h"
+          fallbackExpected: "30m"
+          segmentSlaFallbacks:
+            - match: { "dimensions.donor_carrier": "VERIZON" }
+              expected: "5m"
+              warning: "10m"
+              jeopardy: "15m"
+              hardMin: "1m"
+              hardMax: "2h"
+            - match: { "dimensions.donor_carrier": "AT&T" }
+              expected: "12m"
+              warning: "25m"
+              jeopardy: "45m"
+              hardMin: "2m"
+              hardMax: "4h"
+            - match: { "dimensions.donor_carrier": "GOOGLE_VOICE" }
+              expected: "24h"
+              warning: "48h"
+              jeopardy: "60h"
+              hardMin: "4h"
+              hardMax: "72h"
+            - match: { "dimensions.donor_carrier": "DEFAULT" }
+              expected: "30m"
+              warning: "60m"
+              jeopardy: "120m"
+              hardMin: "2m"
+              hardMax: "72h"
+      - stepId: "P4"
+        useTemplate: "TMPL_ESIM_ACTIVATION"
+        displayName: "eSIM Port-In Cutover & Network Activation"
+        dependsOn: ["P3"]
+        slaOverride:
+          mode: "ML_PREDICTED"
+          modelId: "esim_activation_lgbm_v1.onnx"
+          fallbackExpected: "3m"
+          warning: "10m"
+          jeopardy: "20m"
+          hardMin: "10s"
+          hardMax: "2h"
+      - stepId: "P5"
+        useTemplate: "TMPL_BILLING_SYNC"
+        displayName: "Ported Line Billing & Rate Plan Sync"
+        dependsOn: ["P4"]
+      - stepId: "P6"
+        useTemplate: "TMPL_ORDER_CLOSED"
+        displayName: "Port-In Completed"
+        dependsOn: ["P5"]

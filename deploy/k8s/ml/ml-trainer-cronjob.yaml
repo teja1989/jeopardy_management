@@ -1,0 +1,118 @@
+# =============================================================================
+# Offline Survival ML & Governed Tier-2 SLA Calibration — K8s CronJob
+# =============================================================================
+# 100% Open-Source Python Pipeline (XGBoost AFT / LightGBM -> ONNX, zero idle GPU/CPU):
+#   1. Extracts right-censored milestone telemetry from ClickHouse 24.8 OSS
+#      (filtering historical outage/maintenance windows).
+#   2. Trains survival ETA models (e.g., 5m Verizon vs 3d Google Voice port-in,
+#      60-day Trade-In returns) and exports `.onnx` artifacts to the shared PVC
+#      (`/opt/flink/models`) + S3 versioned archive so Apache Flink scores in <1ms.
+#   3. Computes bounded Tier-2 segment SLA calibration proposals (STRICTLY within
+#      Tier-1 Hard Min/Max guardrails — never auto-overwrites Tier-1 bounds).
+# =============================================================================
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jeopardy-ml-trainer
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: jeopardy-ml-trainer
+    app.kubernetes.io/part-of: jeopardy-management
+    app.kubernetes.io/component: ml-pipeline
+spec:
+  # Runs daily at 02:00 UTC (switch to "0 2 * * 0" for weekly cadence)
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: jeopardy-ml-trainer
+            app.kubernetes.io/part-of: jeopardy-management
+        spec:
+          serviceAccountName: jeopardy-batch-sa
+          restartPolicy: OnFailure
+          containers:
+            - name: ml-trainer
+              # Built from services/jeopardy-ml/Dockerfile (Python 3.12 + xgboost + lightgbm + onnxmltools)
+              image: ghcr.io/jeopardy-management/jeopardy-ml:0.1.0-SNAPSHOT
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - -m
+                - jeopardy_ml.run_pipeline
+              args:
+                - "--output-dir=/opt/flink/models"
+                - "--lookback-days=90"
+                - "--publish-proposals"
+              env:
+                - name: CLICKHOUSE_HTTP_URL
+                  value: "http://clickhouse-jeopardy.jeopardy.svc.cluster.local:8123"
+                - name: CLICKHOUSE_DB
+                  value: "jeopardy"
+                - name: CLICKHOUSE_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-db-credentials
+                      key: clickhouse-user
+                - name: CLICKHOUSE_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-db-credentials
+                      key: clickhouse-password
+                - name: POSTGRES_JDBC_URL
+                  value: "jdbc:postgresql://jeopardy-pg-rw.jeopardy.svc.cluster.local:5432/jeopardy"
+                - name: POSTGRES_HOST
+                  value: "jeopardy-pg-rw.jeopardy.svc.cluster.local"
+                - name: POSTGRES_PORT
+                  value: "5432"
+                - name: POSTGRES_DB
+                  value: "jeopardy"
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-db-credentials
+                      key: postgres-user
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-db-credentials
+                      key: postgres-password
+                - name: KAFKA_BOOTSTRAP_SERVERS
+                  value: "kafka-bootstrap.jeopardy.svc.cluster.local:9092"
+                - name: JEOPARDY_TOPIC_CONFIG_UPDATES
+                  value: "jeopardy.config.updates"
+                - name: ONNX_MODEL_DIR
+                  value: "/opt/flink/models"
+                - name: ONNX_S3_BUCKET
+                  value: "s3://jeopardy-ml-models/prod/onnx/"
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-s3-credentials
+                      key: ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-s3-credentials
+                      key: ACCESS_SECRET_KEY
+              volumeMounts:
+                - name: onnx-models
+                  mountPath: /opt/flink/models
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: "4Gi"
+                limits:
+                  cpu: "4"
+                  memory: "8Gi"
+          volumes:
+            - name: onnx-models
+              persistentVolumeClaim:
+                claimName: jeopardy-onnx-models-pvc

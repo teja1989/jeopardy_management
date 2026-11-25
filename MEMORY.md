@@ -1,0 +1,104 @@
+# Project Memory — Jeopardy Management & Predictive SLA Tracker
+
+> **Purpose:** Single living source of truth for project state, locked architectural decisions (ADRs), phase progress, environment quirks, and session handoffs. **Review at the start of every session and update at the end of every completed milestone.**
+
+---
+
+## 1. Current Project Status
+
+- **Last Updated:** 2026-11-24
+- **Current Stage:** **ALL 4 PHASES COMPLETE & FULL-STACK LIVE-VERIFIED**
+- **Active Phase:** Production Ready (Phases 1, 2, 3, and 4 all built, tested, and verified end-to-end)
+- **Active Blockers:** None
+
+---
+
+## 2. Locked Architectural Decisions (ADR Summary)
+
+| ADR # | Decision | Rationale / Guardrail |
+| :--- | :--- | :--- |
+| **ADR-001** | **100% Pure Open-Source Core Stack** | Local Kafka KRaft, Apache Flink 1.20 OSS (Java 21 + embedded RocksDB), PostgreSQL 16 OSS (CloudNativePG), ClickHouse OSS + Keeper (Altinity K8s Operator), optional Valkey 8 OSS, Spring Boot 3 (Cloud Foundry / K8s), React, Apache Superset / Grafana OSS, Python XGBoost AFT / LightGBM → ONNX. Zero proprietary SaaS lock-in. |
+| **ADR-002** | **4-Layer Simplified Architecture (2 Databases)** | Eliminated Iceberg, Feast, Airflow, MLflow, and Temporal from core launch stack. ClickHouse handles raw audit (1,000 events/order), 60+ order-type OLAP MVs, and ML training data; PostgreSQL handles hot operational state (~20 writes/order, 90d partitioned). |
+| **ADR-003** | **Universal `TrackedEntity` (`entityKey`)** | Orders (`ORD-88412`), Order Items (`ORD-88412:ITM-1`), 60-day Trade-Ins (`TRD-55091`), Short-Lived Change Orders (`CHG-10294`), and Internally-Triggered Promos (`INS-77301`) run independent Blueprints & RocksDB TTLs, joined in `entity_relationships`. Cross-order SLA pause/resume uses `jeopardy.cross-order.signals`. |
+| **ADR-004** | **3-Block Admin Config Studio + Nested JSON Search** | (1) 1-to-N `forEach` Event Adapter Catalog with live Nested JSON Search (pre-compiled Jayway JsonPath ASTs in Flink behind O(1) noise filter, `<50 µs`), (2) Reusable Milestone Template Library (`template_id`), (3) Order-Type Blueprint Stitcher with custom `displayName` & SLA overrides + `blueprint_version` pinning on in-flight entities. |
+| **ADR-005** | **Flowable `(processInstanceId, parentProcessInstanceId)` Correlation** | No `rootProcessInstanceId` available. Stage 2 uses `AsyncDataStream` + Caffeine LRU (~99.5% hit) + Single-Flight coalescing over `bpmn_process_registry` (PostgreSQL locally, Valkey in prod) + 15s OOO buffer + `jeopardy.dlq.uncorrelated`. |
+| **ADR-006** | **First-Class Fallout Management BPMN Overlay** | `falloutManagementBpmn` correlates directly onto the failing Order or Order Item & milestone (`entity_fallouts`), displaying inline in the timeline and feeding Fallout Rate / Ops Queue / MTTR analytics. |
+| **ADR-007** | **Exact Live vs. Historical Query Split** | PostgreSQL partial index (`<5ms`) serves exact *live current open* Jeopardy/Fallout counts; ClickHouse `AggregatingMergeTree` MVs (`<30ms`) + `Map(String,String)` dynamic dimensions serve historical volume, SLA %, P50/P90 trends, 5-min error storms & zero-ETL BI across 60+ order types & account types. |
+| **ADR-008** | **3-Tier Safe ML & Zero-Refresh SSE UX** | Tier-1 Hard Min/Max (never overwritten), Tier-2 Governed Segment Baselines (outage-filtered), Tier-3 In-Process ONNX ETA (`<1ms`, right-censored survival models). Live updates stream via `jeopardy.ui.updates` → Spring Boot HTTP/2 SSE (`<1.5s` tracker, 10–15s throttled Exec dashboards). |
+| **ADR-009** | **DR & Resilience Guardrails** | Embedded RocksDB (off-heap SSD + 60s incremental S3 checkpoints) + PostgreSQL `sla_jeopardy_at`/`sla_breach_at` persistence for `<60s` DR timer rehydration; Processing-Time timers for live alerts, Event-Time for duration math; Poison-pill DLQ & `redactPaths` PII scrubbing. |
+| **ADR-010** | **Local Kafka KRaft + Multi-Domain Simulator** | No AWS MSK locally — Phase 1 runs local Apache Kafka KRaft + realistic unpartitioned 8-topic payload simulator (Order, Flowable Parent/Sub-BPMN/Trade-In, Fallout, Fraud, Payment, Fulfillment, Provisioning, Billing). |
+
+---
+
+## 3. Completed Deliverables Inventory
+
+- [x] **Architecture Blueprint (v3.4):** `docs/architecture/architecture_design.md`
+- [x] **Vector SVG Diagrams:** `docs/architecture/high_level_block_diagram.svg`, `docs/architecture/detailed_architecture_flow.svg`
+- [x] **Production Sizing & 6 Hardening Guardrails:** `docs/architecture/production_review_and_sizing.md`
+- [x] **Cloud Foundry + K8s OSS Topology, HA & Multi-Region DR:** `docs/architecture/resilience_scaling_and_dr.md`
+- [x] **Interactive Flow Simulator (iPhone 18 + Google 10 Pro Trade-In):** `docs/simulation/order_jeopardy_simulator.html`
+- [x] **3-Persona Interactive UX Prototype (+ Live Nested JSON Search):** `docs/ux/jeopardy_ux_prototype.html`
+- [x] **Master Execution Plan:** `docs/plan/EXECUTION_PLAN.md`
+- [x] **Agent Rules & 4 Specialized Skills:** `AGENTS.md`, `.agents/skills/{jeopardy-architect,jeopardy-infra-data,jeopardy-flink-engine,jeopardy-api-ui}/SKILL.md`
+
+---
+
+## 4. Phase Execution Checklist (Update Live During Execution)
+
+### Phase 1: Local Infra, Schemas, Starter Configs & Kafka Simulator — ✅ COMPLETE
+- [x] **1A:** `docker-compose.yml` (Kafka KRaft 3.8.1, Kafka UI `:8085`, Flink 1.20.5 `:8081`, PG16 `:5432`, ClickHouse 24.8 `:8123`, optional Valkey/Grafana profiles), `.env.example`, `infra/kafka/create-topics.sh` (14 topics: 8 source + 6 internal)
+- [x] **1B:** `db/postgres/init.sql` (39 relations: 11 tables + 28 monthly range partitions, live-open partial index, DR timer index, Fallout, BPMN registry, 3-block Config tables, 6 families seeded) & `db/clickhouse/init.sql` (`raw_events`, `milestone_telemetry`, `fallout_events`, `Map` dims, 3 `AggregatingMergeTree` targets + 3 real-time MVs)
+- [x] **1C:** `config/` (10 validated YAMLs: taxonomy, 1-to-N & Flowable/Fallout adapters, 11 reusable templates, 6 blueprints) + `tools/event-simulator/simulate.py` (unpartitioned `key=None` 8-topic simulator + `.venv`)
+- [x] **Phase 1 Gate Verified:** `docker compose up -d --wait` all 6 services healthy; 14 Kafka topics verified; 39 PG relations & 9 ClickHouse tables/MVs verified; Flink 1.20.5 (`1 TM / 2 slots`) & Kafka UI UP; live simulator published **1,542 unpartitioned events** (141 signals, 1,400 BPMN noise, 1 poison pill, 3 OOO sub-BPMN inversions) verified via `kafka-get-offsets.sh`!
+
+### Phase 2: Spring Boot 3 Backend (Admin Studio, Tracker, Analytics & SSE) — ✅ COMPLETE
+- [x] **Skeleton:** Standalone `services/jeopardy-api/pom.xml` (Spring Boot 3.3.5, Java 21, Cloud Foundry `manifest.yml`, `Dockerfile`, dual `postgresJdbc` + `clickhouseJdbc` pools)
+- [x] **2A:** Admin Config Studio CRUD (immutable versioning across 3 blocks + order families) + `NestedJsonSearchService` + compiled Jayway JsonPath `ConfigDryRunService` (1-to-N fan-out, PII `redactPaths`, milestone predicates) + YAML seeder + Kafka `jeopardy.config.updates` publisher
+- [x] **2B:** Customer/Order/Fallout Tracker API + Exact Live (PG partial index) / Historical (ClickHouse MVs + dynamic `Map` dims) Sliced Analytics + ClickHouse HTTP Streaming CSV/Parquet Export + Cloud Foundry-safe HTTP/2 SSE (`SseHub` + 25s heartbeat + instance-unique Kafka fan-out consumers)
+- [x] **Phase 2 Gate Verified:** **19/19 JUnit 5 tests passed**; fat JAR built; live verification on `:8080` confirmed Postgres + ClickHouse health `UP`, seeded **31 order families, 8 adapters, 11 templates, 6 blueprints** into live PG, published **48 KB compiled bundle** to `jeopardy.config.updates` (Kafka offset verified), live Nested JSON Search, live Exec/DevOps MV analytics + CSV stream export, and live `text/event-stream` SSE connection!
+
+### Phase 3: Apache Flink 1.20 (Java 17 Bytecode) Streaming & SLA Timer Engine — ✅ COMPLETE
+- [x] **3A:** Stages 1–2 (`CompiledAdapterRegistry`, `Stage1EventAdapterFunction`, `PostgresProcessRegistryStore`, `Stage2AsyncBpmnCorrelator` with Caffeine LRU + Single-Flight, `Stage2OutOfOrderBufferFunction` 15s OOO buffer + DLQs)
+- [x] **3B:** Stage 3 (`CompiledBlueprintRegistry`, `OnnxEtaPredictor` with Tier-1 Min/Max clamping & Tier-2 fallback, `EntityState`, `Stage3MilestoneEngineFunction` with version pinning, Processing-Time timers, Cross-Order Pause/Resume & Fallout overlay, PK-deduplicated `BatchedPostgresSink`, `BatchedClickHouseSink`, Kafka SSE/Alert/DLQ serializers & `JeopardyFlinkJob`)
+- [x] **Phase 3 Gate Verified:** **16/16 Flink MiniCluster & unit tests passed** (`Stage1AdapterTest` 5, `Stage2CorrelatorTest` 3, `OnnxEtaPredictorTest` 3, `Stage3EngineTest` 5); 112 MB shaded fat JAR deployed live to Docker Flink 1.20.5 (`7/7` tasks RUNNING); live end-to-end verified: **33** `tracked_entities`, **101** `entity_milestones`, **35** `entity_relationships`, **3** `entity_fallouts` (`F-9801 RESOLVED`, `F-9950 OPEN`, `F-9988 OPEN`), **39** `bpmn_process_registry`, **3** `jeopardy_cases` in Postgres; **1,881** `raw_events` (**1,680** noise filtered, **96** PII redacted), **121** `milestone_telemetry`, **18** `fallout_events`, and all 3 ClickHouse MVs populated; **234** `jeopardy.ui.updates`, **7** `jeopardy.alerts.out`, **2** `jeopardy.cross-order.signals`, **2** `jeopardy.dlq.parse-errors`, **0** `jeopardy.dlq.uncorrelated`!
+
+### Phase 4: React UI, Python ML/ONNX & CF/K8s Deployment Packs — ✅ COMPLETE
+- [x] **4A:** Production React 18 + TypeScript + Vite 5 + Tailwind CSS 3 3-persona live UI (`apps/jeopardy-ui/`): Executive & DevOps/SRE Sliced Dashboards (PG live open + ClickHouse MV trends + dynamic `Map` dims + live `/api/v1/stream/ops-alerts` ticker + CSV/Parquet export), Customer & Order Tracker (unified Journey Tree, version-pinned Milestone DAG, inline Fallout BPMN overlay, ClickHouse raw event noise toggle, live `/api/v1/stream/customers/{id}` SSE), and 3-block Admin Config Studio (Live Nested JSON Search, 1-click JsonPath binder, 1-to-N dry-run, template versioning, blueprint stitcher, Kafka hot-reload publish), plus multi-stage `Dockerfile` + SSE-safe `nginx.conf`. Built cleanly inside Docker `node:22-alpine` (`tsc --noEmit` + `vite build`: `254.61 KB` / `69.18 KB` gzip, 0 errors).
+- [x] **4B:** Python ML Survival/Quantile trainer, ONNX exporter & governed Tier-2 SLA calibration (`services/jeopardy-ml/`): ClickHouse OSS HTTP extractor (`feature_extractor.py`) with outage-window + per-segment log-MAD anomaly filtering, exact Java `OnnxEtaPredictor` 6-feature contract (`String.hashCode()` parity), right-censored Kaplan-Meier quantile trainer (`train_and_export.py`) exporting 4 canonical `.onnx` models + blueprint aliases (`fulfillment_ship_xgb_aft_v1.onnx`, `port_foc_duration_aft_v1.onnx` / `port_in_foc_xgb_aft_v1.onnx`, `esim_activation_lgbm_v1.onnx`, `trade_in_return_aft_v1.onnx` / `tradein_return_aft_v1.onnx`, `<0.01ms` P50 inference), and governed Tier-2 `calibrate_slas.py` (±15% max step, ≥30 samples, 0 Tier-1 `hardMin`/`hardMax` edits). **4/4 pytest passed** + **Cross-Language Java ONNX Runtime verified** (`Verizon = 5.04m`, `Google Voice = 28.73h`, `Trade-In = 14.88d`, Tier-1 `hardMax` clamping verified).
+- [x] **4C:** 100% Open-Source Cloud Foundry & Kubernetes Operator Deployment Pack (`deploy/`): 14 validated files (CF `jeopardy-api-manifest.yml`, `jeopardy-ui-manifest.yml`, `autoscaler-policy.json`; K8s Apache Flink Operator `FlinkDeployment`, Altinity ClickHouse + Keeper + `clickhouse-backup`, CloudNativePG PostgreSQL 16 + Barman, Valkey 8 Sentinel, Apache Superset + Grafana OSS Helm values, ML Trainer CronJob, and `<60s` Multi-Region DR Timer Rehydration Job + `deploy/README.md`). **12/12 YAMLs (27 docs) + 1/1 JSON validated**, **0 proprietary SaaS dependencies**.
+- [x] **Phase 4 Gate Verified:** Full-stack live integration verified end-to-end: Apache Flink (`JobID 4dc04631`) loaded all 4 real Python-trained `.onnx` models live at `/opt/flink/models`; live Spring Boot 3 API (`:8080`) verified Customer Journeys (`ACC-88412`, `ACC-99401`), Entity Timeline (`TRD-55091` with inline Fallout `F-9988` & ClickHouse raw events), Exec Summary (`CH_MV_EXEC_SUMMARY_HOURLY` + PG live open), DevOps Bottlenecks (`CH_MV_DEVOPS_BOTTLENECKS_5M`), streaming CSV export, and real-time `<2s` HTTP/2 SSE push (**292 live delta events published** to `ops-alerts` and `customer:ACC-88412`).
+
+---
+
+## 5. Local Environment Notes & Known Quirks
+
+- **OS:** macOS (Apple Silicon / Homebrew).
+- **Local Node Note:** Homebrew `node` (`25.2.1`) currently has a broken `libsimdjson.29.dylib` linkage (seen during JS syntax check); verify or use `brew reinstall node` / `nvm` / Docker Node container when building Phase 4 React UI (`apps/jeopardy-ui`).
+- **Git Status:** Repository directory `/Users/tejatatini/Documents/git/jeopardy_management` is not yet initialized with `git init` (confirm with user before initializing if needed).
+- **Docker Image & Healthcheck Notes (Verified in Phase 1):**
+  - Official Apache Flink 1.20 Docker Hub image is `flink:1.20-java17` (there is no `flink:1.20-java21` tag). Phase 3 `services/jeopardy-flink` MUST compile with `<maven.compiler.release>17</maven.compiler.release>` so fat JARs run cleanly on `flink:1.20-java17`, while Spring Boot 3 (`services/jeopardy-api`) uses OpenJDK 21.
+  - Flink 1.20 JobManager requires `jobmanager.memory.process.size >= 768m` (default metaspace 256m + overhead 192m + off-heap 128m). Set `mem_limit: 896m` (JM) and `1280m` (TM, process size `1024m`).
+  - ClickHouse 24.8 Alpine healthcheck MUST use `http://127.0.0.1:8123/ping` (BusyBox `wget` resolves `localhost` to IPv6 `::1` and fails).
+- **Maven / Build Notes (Verified in Phase 2):**
+  - Host macOS has OpenJDK 21 but no host `mvn` binary — run Maven cleanly via `docker run --rm -e MAVEN_OPTS="-Xmx384m" -v ~/.m2:/root/.m2 -v <service-dir>:/app -w /app maven:3.9.9-eclipse-temurin-21-alpine mvn -B -DargLine="-Xmx256m" test package` (bounded heap avoids Docker Desktop OOM while Phase 1 stack is running; `~/.m2` caches all artifacts for ~8s rebuilds).
+  - For ClickHouse JDBC `0.6.5`, use unshaded `clickhouse-jdbc` + `clickhouse-http-client` + `httpclient5` (do NOT use `<classifier>all</classifier>`, which misses `ClickHouseClient` in Spring Boot fat JARs).
+  - For Apache Flink 1.20.1, match `<jackson.version>2.15.3</jackson.version>` (avoids `BufferRecycler.releaseToPool()` mismatch) and set Surefire `<reuseForks>false</reuseForks>` for Flink MiniCluster test isolation.
+  - Host Docker Desktop Linux VM currently has **1.91 GiB total RAM** (with another project using ~222 MiB). Tuned Kafka to `KAFKA_HEAP_OPTS="-Xms192m -Xmx320m"`; stop `kafka-ui` when running live Flink + Kafka + ClickHouse + Postgres simultaneously on 2 GB VM (or allocate 4–6 GB in Docker Desktop settings for full stack + Kafka UI).
+  - Flink named checkpoint volume `/opt/flink/checkpoints` requires `chown -R flink:flink` on first bind.
+  - `BatchedPostgresSink` deduplicates by table PK within each 200ms micro-batch (preserving sorted key order) to satisfy PostgreSQL `reWriteBatchedInserts=true` + `ON CONFLICT DO UPDATE`.
+- **Local Simulator Venv:** Installed cleanly via `uv` at `tools/event-simulator/.venv` (`kafka-python-ng==2.2.3`, `pyyaml==6.0.4`, ignored via `.gitignore`).
+- **Docker RAM Budget:** Local `docker-compose.yml` targets ~4.5 GB RAM total and is currently running live on localhost (`Kafka :29092`, `Kafka UI :8085`, `Flink UI :8081`, `Postgres :5432`, `ClickHouse :8123`).
+
+---
+
+## 6. Session Handoff Log
+
+| Date | Summary of Changes | Next Recommended Action |
+| :--- | :--- | :--- |
+| 2026-11-23 | Designed initial architecture v1.0–v3.3, interactive iPhone 18 + Trade-In flow simulator, and 3-persona UX prototype with Live Nested JSON Search. | Complete production architecture review & hardening. |
+| 2026-11-24 | Completed **Phase 2** via parallel sub-agents (2A Admin Config Studio & Nested JSON Search + 2B Tracker, Live+MV Analytics, Streaming Export & HTTP/2 SSE) inside standalone `services/jeopardy-api/`; 19/19 JUnit 5 tests green; live `:8080` verification seeded all starter YAMLs into PG, published compiled bundle to `jeopardy.config.updates`, and verified ClickHouse MVs, CSV streaming & SSE. | Kick off **Phase 3** parallel sub-agents. |
+| 2026-11-24 | Completed **Phase 3** (`services/jeopardy-flink/`) via parallel sub-agents (3A Stages 1–2 Adapters & Async `parentProcessInstanceId`/Fallout Correlator + 3B Stage 3 Milestone DAG, Timers, Cross-Order Signals, ONNX Runtime & PK-deduplicated Batched PG/CH/Kafka Sinks); **16/16 Flink MiniCluster tests green**; live deployed on Docker Flink 1.20.5 with all 6 PG tables, ClickHouse MVs, and internal Kafka topics verified. | Kick off **Phase 4** parallel sub-agents (4A React UI, 4B Python ONNX ML, 4C CF/K8s deploy). |
+| 2026-11-24 | Completed **Phase 4** (`apps/jeopardy-ui/`, `services/jeopardy-ml/`, `deploy/`): React UI production bundle built via Docker `node:22-alpine` (0 TS errors, 69.18 KB gzip); Python survival/quantile trainer exported 4 canonical `.onnx` models + aliases & governed Tier-2 calibration (`4/4 pytest` + cross-language Java Flink `OnnxEtaPredictor` verified); 14 CF/K8s 100% OSS manifests validated (27 YAML docs); live Flink loaded all 4 `.onnx` models and streamed **292 real-time SSE deltas** end-to-end to Spring Boot HTTP/2 SSE! | **ALL 4 PHASES COMPLETE.** |
+| 2026-11-25 | **50-Item-Type `SALES`/`CHANGE` Catalog + UX Redesign & Visual Workflow Studio (`/goal` COMPLETE):** Added 50 telecom item types (25 `SALES` + 25 `CHANGE`, e.g. `CHANGE_ESIM`, `CHANGE_PLAN`) via config-only `config/blueprints/sales-and-change-50-items.yaml`, streaming O(1)-RAM volume simulator (`simulate.py --scenario scale-50-items`), and 1-command `scripts/run-e2e-test.sh`. Completely redesigned `apps/jeopardy-ui` into 3 uncluttered workspaces (**Overview** with zero "Exec Dashboard" branding & progressive-disclosure filters, **Order Tracker**, and visual **Workflow Studio** with dot-grid milestone canvas, right-side **Milestone Inspector**, **Select/Add Events From JSON** modal backed by `/api/v1/admin/json/search` & `/dry-run`, **Onboard New Tracker** modal, **Event Adapters** editor, and 1-click **Publish Live**). Stabilized 2 GB Docker VM via Flink task-heap tuning + auto-mounted `/opt/flink/models` + `infra/clickhouse/local-mem.xml` (256 MB cap). **Live Zero-Code E2E Verified** on `http://localhost:3000`: onboarded brand-new `CHANGE / CHANGE_ESIM_TRANSFER` + custom `TMPL_ESIM_TRANSFER_VERIFY` via API/JSON picker → hot-reloaded live Flink (`7/7` tasks) → tracked `CHG-ZEROCODE-007:ITM-1` pinned to `bp-change-esim-transfer v1` with `S1` & `S2` `COMPLETED` with zero code changes! | Ready for live interactive use at `http://localhost:3000` (API `:8080`, Flink `:8081`). |
+
+| 2026-11-25 | **Workflow Admin Auth (Azure AD Ready) + Advanced UX & Data-Clarity Upgrades:** Added pluggable HMAC-SHA256 JWT + HttpOnly Cookie auth (`AuthProperties`, `AuthUser`, `AuthService`, `AdminAuthFilter`, `AuthController`) protecting all `/api/v1/admin/**` endpoints (`401` unauthenticated, `403` non-admin, real username stamped on `publishedBy`), with `JEOPARDY_AUTH_PROVIDER=local` today (`admin` / `admin123`) and Azure AD / Entra ID config hooks ready (`AZURE_AD_TENANT_ID`, `AZURE_AD_CLIENT_ID`, `AZURE_AD_ADMIN_ROLE=Jeopardy.Admin`). Added public read-only `GET /api/v1/tracker/blueprints` so Care Agents & Order Tracker stay zero-login. Upgraded React UI with `AdminAuthGate`, global `⌘K` / `Ctrl+K` `CommandPalette`, Order-Grouped Hierarchy in Order Tracker (`Group by Order` toggle collapsing parent + child items cleanly), 1-click **Copy ID / Copy Support Summary / Copy Status API** buttons, and a live **Needs Immediate Attention** priority strip on Operations Overview. **Verified:** 22/22 API JUnit tests passed (`AuthServiceTest` included), `tsc && vite build` clean (`index-DXP1mBue.js`), and all 8 live HTTP checks through `http://localhost:3000` passed (`401` → `200` cookie → `401` logout). | Live at `http://localhost:3000` (API daemon `task-1086` on `:8080`). |

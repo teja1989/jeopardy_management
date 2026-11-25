@@ -1,0 +1,126 @@
+# =============================================================================
+# Block 1: Event Adapter — Order Domain (1-to-N Fan-Out + PII Scrubbing)
+# Source Topic: domain.order.events
+# Evaluates compiled Jayway JsonPath ASTs inside Flink Stage 1 (<50 us).
+# =============================================================================
+schemaVersion: "1.0"
+configType: "EVENT_ADAPTER"
+adapterId: "adapter-order-domain"
+version: 1
+enabled: true
+sourceTopic: "domain.order.events"
+domain: "ORDER"
+description: >-
+  1-to-N fan-out adapter transforming a single deeply nested Order Management
+  event into TrackedEntity signals for the parent Order, each Order Line Item,
+  embedded 60-day Trade-Ins, and auto-triggered Internal Promo orders.
+
+# O(1) top-level pre-filter executed BEFORE any nested JsonPath evaluation
+includeFilter:
+  eventTypePath: "$.eventType"
+  allowedValues:
+    - "ORDER_SUBMITTED"
+    - "ORDER_AMENDED"
+    - "ORDER_COMPLETED"
+    - "ORDER_CANCELLED"
+    - "CHANGE_ORDER_CREATED"
+    - "CHANGE_ORDER_COMPLETED"
+    - "PROMO_ORDER_TRIGGERED"
+
+# Declarative PII/PCI redaction applied before writing raw_events to ClickHouse
+redactPaths:
+  - "$.order.customer.ssn"
+  - "$.order.customer.email"
+  - "$.order.customer.phoneNumber"
+  - "$.order.customer.dateOfBirth"
+  - "$.order.payment.cardNumber"
+  - "$.order.payment.cvv"
+  - "$.order.payment.billingZip"
+  - "$.order.shippingAddress.streetLine1"
+
+commonFields:
+  eventIdPath: "$.eventId"
+  eventTimePath: "$.eventTime"
+  eventTypePath: "$.eventType"
+  sourceSystemPath: "$.sourceSystem"
+  customerIdPath: "$.order.customer.accountId"
+  accountTypePath: "$.order.customer.accountType"
+  channelPath: "$.order.channel"
+  regionPath: "$.order.region"
+
+# 1-to-N fan-out rules executed for every matching Order domain event
+emitRules:
+  - ruleId: "emit-parent-order"
+    description: "Emit canonical event for the root Sales / Port-In / Change Order"
+    entityLevel: "ORDER"
+    entityKeyTemplate: "{$.order.orderId}"
+    orderTypePath: "$.order.orderType"
+    itemTypeLiteral: "ROOT_ORDER"
+    statusPath: "$.order.status"
+    relatedLinks:
+      - whenPathExists: "$.order.parentOrderId"
+        targetEntityKeyTemplate: "{$.order.parentOrderId}"
+        relationshipType: "CHANGE_ORDER_OF"
+    dimensions:
+      sales_rep_store: "$.order.storeId"
+      priority_tier: "$.order.customer.priorityTier"
+      line_item_count: "$.order.lineItemCount"
+      order_channel: "$.order.channel"
+
+  - ruleId: "emit-order-line-items"
+    description: "1-to-N fan-out over $.order.lineItems[*] for independent item DAGs"
+    forEach: "$.order.lineItems[*]"
+    entityLevel: "ORDER_ITEM"
+    entityKeyTemplate: "{$.order.orderId}:{$.item.lineItemId}"
+    orderTypePath: "$.order.orderType"
+    itemTypePath: "$.item.itemType"
+    statusPath: "$.item.status"
+    relatedLinks:
+      - targetEntityKeyTemplate: "{$.order.orderId}"
+        relationshipType: "CHILD_ITEM_OF"
+    dimensions:
+      sku: "$.item.sku"
+      device_model: "$.item.deviceModel"
+      fulfillment_method: "$.item.fulfillmentMethod"
+      donor_carrier: "$.item.portIn.donorCarrier"
+      port_type: "$.item.portIn.portType"
+      mdn_masked: "$.item.portIn.mdnLast4"
+
+  - ruleId: "emit-embedded-trade-in"
+    description: "Fan out embedded 60-day Trade-In entities with independent RocksDB TTL"
+    forEach: "$.order.lineItems[*].tradeIn"
+    whenPathExists: "$.item.tradeInOrderId"
+    entityLevel: "TRADE_IN"
+    entityKeyTemplate: "{$.item.tradeInOrderId}"
+    orderTypeLiteral: "DEVICE_TRADE_IN"
+    itemTypeLiteral: "DEVICE_TRADE_IN"
+    statusPath: "$.item.status"
+    relatedLinks:
+      - targetEntityKeyTemplate: "{$.order.orderId}"
+        relationshipType: "BUNDLED_FEATURE"
+      - targetEntityKeyTemplate: "{$.order.orderId}:{$.item.parentLineItemId}"
+        relationshipType: "BUNDLED_LINE_ITEM"
+    dimensions:
+      trade_in_device: "$.item.deviceModel"
+      quoted_credit_usd: "$.item.quotedCreditUsd"
+      return_window_days: "$.item.returnWindowDays"
+      kit_carrier: "$.item.returnKitCarrier"
+
+  - ruleId: "emit-embedded-auto-promos"
+    description: "Fan out internally triggered Free Device Insurance & partner promo entities"
+    forEach: "$.order.lineItems[*].autoPromos[*]"
+    whenPathExists: "$.item.promoOrderId"
+    entityLevel: "INTERNAL_PROMO"
+    entityKeyTemplate: "{$.item.promoOrderId}"
+    orderTypeLiteral: "INTERNAL_PROMO_PROVISIONING"
+    itemTypePath: "$.item.promoType"
+    statusPath: "$.item.status"
+    relatedLinks:
+      - targetEntityKeyTemplate: "{$.order.orderId}"
+        relationshipType: "TRIGGERED_BY_ORDER"
+      - targetEntityKeyTemplate: "{$.order.orderId}:{$.item.parentLineItemId}"
+        relationshipType: "TRIGGERED_BY_ITEM"
+    dimensions:
+      partner_name: "$.item.partnerName"
+      promo_code: "$.item.promoCode"
+      benefit_term_months: "$.item.benefitTermMonths"

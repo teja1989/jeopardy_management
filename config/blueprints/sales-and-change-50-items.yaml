@@ -1,0 +1,2331 @@
+# =============================================================================
+# Block 3: 50 Telecom Order Item Types for `SALES` (25) & `CHANGE` (25)
+# Includes CHANGE_ESIM, CHANGE_PLAN, SALES_HANDSET_SHIP, SALES_PORT_IN_WIRELESS,
+# etc. Composed strictly from reusable Block-2 Milestone Templates.
+# Hot-reloaded to Apache Flink via POST /api/v1/admin/configs/seed + /publish
+# =============================================================================
+schemaVersion: '1.0'
+configType: JOURNEY_BLUEPRINT
+blueprints:
+- blueprintId: bp-sales-root-order
+  version: 1
+  active: true
+  displayName: Unified Sales Root Order
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: ROOT_ORDER
+  entityLevel: ORDER
+  stateTtlDays: 30
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 120h
+  steps:
+  - stepId: O1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Sales Order Received
+    dependsOn: []
+  - stepId: O2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Account Fraud Check
+    dependsOn:
+    - O1
+  - stepId: O3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Order Payment Capture
+    dependsOn:
+    - O2
+  - stepId: O4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Account Billing Sync
+    dependsOn:
+    - O3
+  - stepId: O5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Sales Order Closed
+    dependsOn:
+    - O4
+- blueprintId: bp-change-root-order
+  version: 1
+  active: true
+  displayName: Unified Change Root Order
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: ROOT_ORDER
+  entityLevel: ORDER
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 2h
+  steps:
+  - stepId: C1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Change Order Received
+    dependsOn: []
+  - stepId: C2
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Change Order Billing Sync
+    dependsOn:
+    - C1
+  - stepId: C3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Change Order Closed
+    dependsOn:
+    - C2
+- blueprintId: bp-sales-handset-ship
+  version: 1
+  active: true
+  displayName: Handset Ship-to-Home Fulfillment (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_HANDSET_SHIP
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 120h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Handset Ship-to-Home Fulfillment Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: Handset Ship-to-Home Fulfillment Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Handset Ship-to-Home Fulfillment Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-handset-bopis
+  version: 1
+  active: true
+  displayName: Handset Buy-Online Pick-Up In-Store (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_HANDSET_BOPIS
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 4h
+    jeopardy: 8h
+    breach: 24h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Handset Buy-Online Pick-Up In-Store Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: Handset Buy-Online Pick-Up In-Store Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Handset Buy-Online Pick-Up In-Store Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-handset-upgrade
+  version: 1
+  active: true
+  displayName: Device Upgrade Ship-to-Home (SALES)
+  orderFamily: UPGRADES_TRADEIN
+  orderType: SALES
+  itemType: SALES_HANDSET_UPGRADE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 120h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Device Upgrade Ship-to-Home Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: Device Upgrade Ship-to-Home Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Device Upgrade Ship-to-Home Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-early-upgrade-jump
+  version: 1
+  active: true
+  displayName: Early Upgrade Lease Buyout & Ship (SALES)
+  orderFamily: UPGRADES_TRADEIN
+  orderType: SALES
+  itemType: SALES_EARLY_UPGRADE_JUMP
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 120h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Early Upgrade Lease Buyout & Ship Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: Early Upgrade Lease Buyout & Ship Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Early Upgrade Lease Buyout & Ship Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-byod-esim
+  version: 1
+  active: true
+  displayName: BYOD Instant eSIM Activation (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_BYOD_ESIM
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 2h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: BYOD Instant eSIM Activation Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: BYOD Instant eSIM Activation Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: BYOD Instant eSIM Activation Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-sales-byod-psim
+  version: 1
+  active: true
+  displayName: BYOD Physical SIM Kit Ship & Activate (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_BYOD_PSIM
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 21
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 96h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: BYOD Physical SIM Kit Ship & Activate Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: BYOD Physical SIM Kit Ship & Activate Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: BYOD Physical SIM Kit Ship & Activate Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-port-in-wireless
+  version: 1
+  active: true
+  displayName: Wireless Number Port-In & eSIM Cutover (SALES)
+  orderFamily: PORT_INS
+  orderType: SALES
+  itemType: SALES_PORT_IN_WIRELESS
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 30m
+    jeopardy: 2h
+    breach: 48h
+  steps:
+  - stepId: P1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Wireless Number Port-In & eSIM Cutover Submitted
+    dependsOn: []
+  - stepId: P2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Port-In Fraud & Account Check
+    dependsOn:
+    - P1
+  - stepId: P3
+    useTemplate: TMPL_PORT_FOC
+    displayName: Donor Carrier FOC Confirmation
+    dependsOn:
+    - P2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: port_in_foc_xgb_aft_v1.onnx
+      fallbackExpected: 15m
+      warning: 45m
+      jeopardy: 2h
+      hardMin: 1m
+      hardMax: 72h
+  - stepId: P4
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Number Cutover & eSIM Activation
+    dependsOn:
+    - P3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: P5
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Ported Line Billing Sync
+    dependsOn:
+    - P4
+  - stepId: P6
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Wireless Number Port-In & eSIM Cutover Completed
+    dependsOn:
+    - P5
+- blueprintId: bp-sales-port-in-wireline
+  version: 1
+  active: true
+  displayName: Wireline / VoIP Port-In Cutover (SALES)
+  orderFamily: PORT_INS
+  orderType: SALES
+  itemType: SALES_PORT_IN_WIRELINE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 24h
+    jeopardy: 48h
+    breach: 72h
+  steps:
+  - stepId: P1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Wireline / VoIP Port-In Cutover Submitted
+    dependsOn: []
+  - stepId: P2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Port-In Fraud & Account Check
+    dependsOn:
+    - P1
+  - stepId: P3
+    useTemplate: TMPL_PORT_FOC
+    displayName: Donor Carrier FOC Confirmation
+    dependsOn:
+    - P2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: port_in_foc_xgb_aft_v1.onnx
+      fallbackExpected: 15m
+      warning: 45m
+      jeopardy: 2h
+      hardMin: 1m
+      hardMax: 72h
+  - stepId: P4
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Number Cutover & eSIM Activation
+    dependsOn:
+    - P3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: P5
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Ported Line Billing Sync
+    dependsOn:
+    - P4
+  - stepId: P6
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Wireline / VoIP Port-In Cutover Completed
+    dependsOn:
+    - P5
+- blueprintId: bp-sales-port-in-enterprise
+  version: 1
+  active: true
+  displayName: Enterprise Bulk Number Port-In (SALES)
+  orderFamily: PORT_INS
+  orderType: SALES
+  itemType: SALES_PORT_IN_ENTERPRISE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 4h
+    jeopardy: 12h
+    breach: 72h
+  steps:
+  - stepId: P1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Enterprise Bulk Number Port-In Submitted
+    dependsOn: []
+  - stepId: P2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Port-In Fraud & Account Check
+    dependsOn:
+    - P1
+  - stepId: P3
+    useTemplate: TMPL_PORT_FOC
+    displayName: Donor Carrier FOC Confirmation
+    dependsOn:
+    - P2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: port_in_foc_xgb_aft_v1.onnx
+      fallbackExpected: 15m
+      warning: 45m
+      jeopardy: 2h
+      hardMin: 1m
+      hardMax: 72h
+  - stepId: P4
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Number Cutover & eSIM Activation
+    dependsOn:
+    - P3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: P5
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Ported Line Billing Sync
+    dependsOn:
+    - P4
+  - stepId: P6
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Enterprise Bulk Number Port-In Completed
+    dependsOn:
+    - P5
+- blueprintId: bp-sales-add-line-voice
+  version: 1
+  active: true
+  displayName: Add-a-Line Voice Subscriber Activation (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_ADD_LINE_VOICE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 2h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Add-a-Line Voice Subscriber Activation Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Add-a-Line Voice Subscriber Activation Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Add-a-Line Voice Subscriber Activation Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-sales-add-line-wearable
+  version: 1
+  active: true
+  displayName: Smartwatch eSIM Companion Line Add (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_ADD_LINE_WEARABLE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 2h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Smartwatch eSIM Companion Line Add Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Smartwatch eSIM Companion Line Add Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Smartwatch eSIM Companion Line Add Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-sales-add-line-tablet
+  version: 1
+  active: true
+  displayName: 5G Connected Tablet Line & Ship (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_ADD_LINE_TABLET
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 120h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: 5G Connected Tablet Line & Ship Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: 5G Connected Tablet Line & Ship Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: 5G Connected Tablet Line & Ship Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-add-line-iot
+  version: 1
+  active: true
+  displayName: IoT / Connected Car Telemetry Line (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_ADD_LINE_IOT
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 45m
+    breach: 4h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: IoT / Connected Car Telemetry Line Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: IoT / Connected Car Telemetry Line Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: IoT / Connected Car Telemetry Line Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-sales-5g-home-gateway
+  version: 1
+  active: true
+  displayName: 5G Home Internet Gateway Ship & Activate (SALES)
+  orderFamily: BROADBAND
+  orderType: SALES
+  itemType: SALES_5G_HOME_GATEWAY
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 120h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: 5G Home Internet Gateway Ship & Activate Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: 5G Home Internet Gateway Ship & Activate Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: 5G Home Internet Gateway Ship & Activate Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-fiber-ont-install
+  version: 1
+  active: true
+  displayName: Fiber Broadband ONT Dispatch & Provision (SALES)
+  orderFamily: BROADBAND
+  orderType: SALES
+  itemType: SALES_FIBER_ONT_INSTALL
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 45
+  overallSla:
+    warning: 72h
+    jeopardy: 120h
+    breach: 168h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Fiber Broadband ONT Dispatch & Provision Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: Fiber Broadband ONT Dispatch & Provision Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Fiber Broadband ONT Dispatch & Provision Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-hotspot-device
+  version: 1
+  active: true
+  displayName: 5G Mobile Hotspot Device & Data Line (SALES)
+  orderFamily: BROADBAND
+  orderType: SALES
+  itemType: SALES_HOTSPOT_DEVICE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 120h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: 5G Mobile Hotspot Device & Data Line Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: 5G Mobile Hotspot Device & Data Line Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: 5G Mobile Hotspot Device & Data Line Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-accessory-ship
+  version: 1
+  active: true
+  displayName: Accessory Ship-to-Home Fulfillment (SALES)
+  orderFamily: UPGRADES_TRADEIN
+  orderType: SALES
+  itemType: SALES_ACCESSORY_SHIP
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 21
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 120h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Accessory Ship-to-Home Fulfillment Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: Accessory Ship-to-Home Fulfillment Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Accessory Ship-to-Home Fulfillment Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-accessory-bopis
+  version: 1
+  active: true
+  displayName: Accessory In-Store Pickup (SALES)
+  orderFamily: UPGRADES_TRADEIN
+  orderType: SALES
+  itemType: SALES_ACCESSORY_BOPIS
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 4h
+    jeopardy: 8h
+    breach: 24h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Accessory In-Store Pickup Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: Accessory In-Store Pickup Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Accessory In-Store Pickup Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-sales-trade-in-mailin
+  version: 1
+  active: true
+  displayName: 60-Day Mail-In Trade-In Kit & Credit (SALES)
+  orderFamily: UPGRADES_TRADEIN
+  orderType: SALES
+  itemType: SALES_TRADE_IN_MAILIN
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 65
+  overallSla:
+    warning: 21d
+    jeopardy: 30d
+    breach: 60d
+  steps:
+  - stepId: T1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: 60-Day Mail-In Trade-In Kit & Credit Quote Locked
+    dependsOn: []
+  - stepId: T2
+    useTemplate: TMPL_WAREHOUSE_RCV
+    displayName: Return Device Received at Warehouse
+    dependsOn:
+    - T1
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: tradein_return_aft_v1.onnx
+      fallbackExpected: 14d
+      warning: 21d
+      jeopardy: 28d
+      hardMin: 2d
+      hardMax: 35d
+      rightCensoredSurvival: true
+  - stepId: T3
+    useTemplate: TMPL_INSPECTION
+    displayName: IMEI / FMD Condition Inspection
+    dependsOn:
+    - T2
+  - stepId: T4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Trade-In Bill Credit Applied
+    dependsOn:
+    - T3
+  - stepId: T5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: 60-Day Mail-In Trade-In Kit & Credit Closed
+    dependsOn:
+    - T4
+- blueprintId: bp-sales-trade-in-instore
+  version: 1
+  active: true
+  displayName: In-Store Instant Trade-In Inspection (SALES)
+  orderFamily: UPGRADES_TRADEIN
+  orderType: SALES
+  itemType: SALES_TRADE_IN_INSTORE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 2h
+    jeopardy: 6h
+    breach: 24h
+  steps:
+  - stepId: T1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: In-Store Instant Trade-In Inspection Quote Locked
+    dependsOn: []
+  - stepId: T2
+    useTemplate: TMPL_WAREHOUSE_RCV
+    displayName: Return Device Received at Warehouse
+    dependsOn:
+    - T1
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: tradein_return_aft_v1.onnx
+      fallbackExpected: 14d
+      warning: 21d
+      jeopardy: 28d
+      hardMin: 2d
+      hardMax: 35d
+      rightCensoredSurvival: true
+  - stepId: T3
+    useTemplate: TMPL_INSPECTION
+    displayName: IMEI / FMD Condition Inspection
+    dependsOn:
+    - T2
+  - stepId: T4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Trade-In Bill Credit Applied
+    dependsOn:
+    - T3
+  - stepId: T5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: In-Store Instant Trade-In Inspection Closed
+    dependsOn:
+    - T4
+- blueprintId: bp-sales-device-insurance
+  version: 1
+  active: true
+  displayName: Device Protection / Insurance Enrollment (SALES)
+  orderFamily: PLAN_PROMO
+  orderType: SALES
+  itemType: SALES_DEVICE_INSURANCE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 20m
+    jeopardy: 45m
+    breach: 2h
+  steps:
+  - stepId: K1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Device Protection / Insurance Enrollment Requested
+    dependsOn: []
+  - stepId: K2
+    useTemplate: TMPL_PARTNER_ENROLL
+    displayName: Device Protection / Insurance Enrollment Partner API Sync
+    dependsOn:
+    - K1
+  - stepId: K3
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Perk / Protection Billing Sync
+    dependsOn:
+    - K2
+  - stepId: K4
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Device Protection / Insurance Enrollment Completed
+    dependsOn:
+    - K3
+- blueprintId: bp-sales-streaming-perk
+  version: 1
+  active: true
+  displayName: Partner Streaming Bundle Enrollment (SALES)
+  orderFamily: PLAN_PROMO
+  orderType: SALES
+  itemType: SALES_STREAMING_PERK
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 2h
+  steps:
+  - stepId: K1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Partner Streaming Bundle Enrollment Requested
+    dependsOn: []
+  - stepId: K2
+    useTemplate: TMPL_PARTNER_ENROLL
+    displayName: Partner Streaming Bundle Enrollment Partner API Sync
+    dependsOn:
+    - K1
+  - stepId: K3
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Perk / Protection Billing Sync
+    dependsOn:
+    - K2
+  - stepId: K4
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Partner Streaming Bundle Enrollment Completed
+    dependsOn:
+    - K3
+- blueprintId: bp-sales-international-pass
+  version: 1
+  active: true
+  displayName: International Roaming Data Pass Sale (SALES)
+  orderFamily: PLAN_PROMO
+  orderType: SALES
+  itemType: SALES_INTERNATIONAL_PASS
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 25m
+    breach: 1h
+  steps:
+  - stepId: B1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: International Roaming Data Pass Sale Requested
+    dependsOn: []
+  - stepId: B2
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: International Roaming Data Pass Sale SOC & Rating Update
+    dependsOn:
+    - B1
+  - stepId: B3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: International Roaming Data Pass Sale Completed
+    dependsOn:
+    - B2
+- blueprintId: bp-sales-prepaid-to-postpaid
+  version: 1
+  active: true
+  displayName: Prepaid-to-Postpaid Account Migration (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_PREPAID_TO_POSTPAID
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 21
+  overallSla:
+    warning: 30m
+    jeopardy: 1h
+    breach: 4h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Prepaid-to-Postpaid Account Migration Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Prepaid-to-Postpaid Account Migration Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Prepaid-to-Postpaid Account Migration Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-sales-business-fleet-line
+  version: 1
+  active: true
+  displayName: Enterprise Fleet Bulk Handset & Line (SALES)
+  orderFamily: WIRELESS_NEW
+  orderType: SALES
+  itemType: SALES_BUSINESS_FLEET_LINE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 30
+  overallSla:
+    warning: 48h
+    jeopardy: 72h
+    breach: 120h
+  steps:
+  - stepId: S1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Enterprise Fleet Bulk Handset & Line Submitted
+    dependsOn: []
+  - stepId: S2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Identity & Fraud Check
+    dependsOn:
+    - S1
+  - stepId: S3
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Tax & Payment Capture
+    dependsOn:
+    - S2
+  - stepId: S4
+    useTemplate: TMPL_FULFILLMENT_SHIP
+    displayName: Enterprise Fleet Bulk Handset & Line Warehouse & Delivery
+    dependsOn:
+    - S3
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: fulfillment_ship_xgb_aft_v1.onnx
+      fallbackExpected: 48h
+      warningPct: 80
+      jeopardyPct: 95
+      hardMin: 4h
+      hardMax: 7d
+  - stepId: S5
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network / eSIM Activation
+    dependsOn:
+    - S4
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 3m
+      warning: 10m
+      jeopardy: 20m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: S6
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing & EIP Synchronization
+    dependsOn:
+    - S5
+  - stepId: S7
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Enterprise Fleet Bulk Handset & Line Completed
+    dependsOn:
+    - S6
+- blueprintId: bp-change-esim
+  version: 1
+  active: true
+  displayName: eSIM Swap / Re-Download Profile Change (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_ESIM
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 8m
+    jeopardy: 15m
+    breach: 2h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: eSIM Swap / Re-Download Profile Change Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: eSIM Swap / Re-Download Profile Change Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: eSIM Swap / Re-Download Profile Change Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-change-plan
+  version: 1
+  active: true
+  displayName: Rate Plan Tier Change & Billing Sync (CHANGE)
+  orderFamily: PLAN_PROMO
+  orderType: CHANGE
+  itemType: CHANGE_PLAN
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 25m
+    breach: 2h
+  steps:
+  - stepId: B1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Rate Plan Tier Change & Billing Sync Requested
+    dependsOn: []
+  - stepId: B2
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Rate Plan Tier Change & Billing Sync SOC & Rating Update
+    dependsOn:
+    - B1
+  - stepId: B3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Rate Plan Tier Change & Billing Sync Completed
+    dependsOn:
+    - B2
+- blueprintId: bp-change-psim-swap
+  version: 1
+  active: true
+  displayName: Physical SIM Card Replacement Swap (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_PSIM_SWAP
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 25m
+    breach: 2h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Physical SIM Card Replacement Swap Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Physical SIM Card Replacement Swap Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Physical SIM Card Replacement Swap Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-change-msisdn
+  version: 1
+  active: true
+  displayName: Mobile Number (MDN) Change Request (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_MSISDN
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 2h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Mobile Number (MDN) Change Request Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Mobile Number (MDN) Change Request Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Mobile Number (MDN) Change Request Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-change-payment-method
+  version: 1
+  active: true
+  displayName: Supplemental Payment Card Update (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_PAYMENT_METHOD
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 7
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 30m
+  steps:
+  - stepId: M1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Supplemental Payment Card Update Requested
+    dependsOn: []
+  - stepId: M2
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Payment Re-Auth / Amendment Validation
+    dependsOn:
+    - M1
+  - stepId: M3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Supplemental Payment Card Update Applied
+    dependsOn:
+    - M2
+- blueprintId: bp-change-shipping-address
+  version: 1
+  active: true
+  displayName: In-Flight Shipping Address Amendment (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_SHIPPING_ADDRESS
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 2h
+  steps:
+  - stepId: M1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: In-Flight Shipping Address Amendment Requested
+    dependsOn: []
+  - stepId: M2
+    useTemplate: TMPL_PAYMENT_AUTH
+    displayName: Payment Re-Auth / Amendment Validation
+    dependsOn:
+    - M1
+  - stepId: M3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: In-Flight Shipping Address Amendment Applied
+    dependsOn:
+    - M2
+- blueprintId: bp-change-billing-cycle
+  version: 1
+  active: true
+  displayName: Account Bill Cycle Date Change (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_BILLING_CYCLE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 4h
+  steps:
+  - stepId: B1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Account Bill Cycle Date Change Requested
+    dependsOn: []
+  - stepId: B2
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Account Bill Cycle Date Change SOC & Rating Update
+    dependsOn:
+    - B1
+  - stepId: B3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Account Bill Cycle Date Change Completed
+    dependsOn:
+    - B2
+- blueprintId: bp-change-add-feature
+  version: 1
+  active: true
+  displayName: Add Line Feature / Bolt-On SOC (CHANGE)
+  orderFamily: PLAN_PROMO
+  orderType: CHANGE
+  itemType: CHANGE_ADD_FEATURE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 2h
+  steps:
+  - stepId: B1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Add Line Feature / Bolt-On SOC Requested
+    dependsOn: []
+  - stepId: B2
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Add Line Feature / Bolt-On SOC SOC & Rating Update
+    dependsOn:
+    - B1
+  - stepId: B3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Add Line Feature / Bolt-On SOC Completed
+    dependsOn:
+    - B2
+- blueprintId: bp-change-remove-feature
+  version: 1
+  active: true
+  displayName: Remove Line Feature / Bolt-On SOC (CHANGE)
+  orderFamily: PLAN_PROMO
+  orderType: CHANGE
+  itemType: CHANGE_REMOVE_FEATURE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 2h
+  steps:
+  - stepId: B1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Remove Line Feature / Bolt-On SOC Requested
+    dependsOn: []
+  - stepId: B2
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Remove Line Feature / Bolt-On SOC SOC & Rating Update
+    dependsOn:
+    - B1
+  - stepId: B3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Remove Line Feature / Bolt-On SOC Completed
+    dependsOn:
+    - B2
+- blueprintId: bp-change-suspend-voluntary
+  version: 1
+  active: true
+  displayName: Voluntary Seasonal Line Suspend (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_SUSPEND_VOLUNTARY
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 2h
+  steps:
+  - stepId: L1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Voluntary Seasonal Line Suspend Submitted
+    dependsOn: []
+  - stepId: L2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Account Authority & Fraud Check
+    dependsOn:
+    - L1
+  - stepId: L3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network Lifecycle State Change
+    dependsOn:
+    - L2
+  - stepId: L4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing Account Status Update
+    dependsOn:
+    - L3
+  - stepId: L5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Voluntary Seasonal Line Suspend Completed
+    dependsOn:
+    - L4
+- blueprintId: bp-change-suspend-lost-stolen
+  version: 1
+  active: true
+  displayName: Lost / Stolen IMEI Block & Suspend (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_SUSPEND_LOST_STOLEN
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 5m
+    jeopardy: 10m
+    breach: 30m
+  steps:
+  - stepId: L1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Lost / Stolen IMEI Block & Suspend Submitted
+    dependsOn: []
+  - stepId: L2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Account Authority & Fraud Check
+    dependsOn:
+    - L1
+  - stepId: L3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network Lifecycle State Change
+    dependsOn:
+    - L2
+  - stepId: L4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing Account Status Update
+    dependsOn:
+    - L3
+  - stepId: L5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Lost / Stolen IMEI Block & Suspend Completed
+    dependsOn:
+    - L4
+- blueprintId: bp-change-resume-line
+  version: 1
+  active: true
+  displayName: Resume Suspended Wireless Line (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_RESUME_LINE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 2h
+  steps:
+  - stepId: L1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Resume Suspended Wireless Line Submitted
+    dependsOn: []
+  - stepId: L2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Account Authority & Fraud Check
+    dependsOn:
+    - L1
+  - stepId: L3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network Lifecycle State Change
+    dependsOn:
+    - L2
+  - stepId: L4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing Account Status Update
+    dependsOn:
+    - L3
+  - stepId: L5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Resume Suspended Wireless Line Completed
+    dependsOn:
+    - L4
+- blueprintId: bp-change-cancel-line
+  version: 1
+  active: true
+  displayName: Disconnect / Cancel Wireless Line (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_CANCEL_LINE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 4h
+  steps:
+  - stepId: L1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Disconnect / Cancel Wireless Line Submitted
+    dependsOn: []
+  - stepId: L2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Account Authority & Fraud Check
+    dependsOn:
+    - L1
+  - stepId: L3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network Lifecycle State Change
+    dependsOn:
+    - L2
+  - stepId: L4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing Account Status Update
+    dependsOn:
+    - L3
+  - stepId: L5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Disconnect / Cancel Wireless Line Completed
+    dependsOn:
+    - L4
+- blueprintId: bp-change-cancel-order
+  version: 1
+  active: true
+  displayName: In-Flight Order Cancellation Request (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_CANCEL_ORDER
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 1h
+  steps:
+  - stepId: L1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: In-Flight Order Cancellation Request Submitted
+    dependsOn: []
+  - stepId: L2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Account Authority & Fraud Check
+    dependsOn:
+    - L1
+  - stepId: L3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network Lifecycle State Change
+    dependsOn:
+    - L2
+  - stepId: L4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing Account Status Update
+    dependsOn:
+    - L3
+  - stepId: L5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: In-Flight Order Cancellation Request Completed
+    dependsOn:
+    - L4
+- blueprintId: bp-change-responsibility-cor
+  version: 1
+  active: true
+  displayName: Change of Responsibility (Account Transfer) (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_RESPONSIBILITY_COR
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 21
+  overallSla:
+    warning: 30m
+    jeopardy: 1h
+    breach: 6h
+  steps:
+  - stepId: L1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Change of Responsibility (Account Transfer) Submitted
+    dependsOn: []
+  - stepId: L2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Account Authority & Fraud Check
+    dependsOn:
+    - L1
+  - stepId: L3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network Lifecycle State Change
+    dependsOn:
+    - L2
+  - stepId: L4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing Account Status Update
+    dependsOn:
+    - L3
+  - stepId: L5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Change of Responsibility (Account Transfer) Completed
+    dependsOn:
+    - L4
+- blueprintId: bp-change-port-out-pin
+  version: 1
+  active: true
+  displayName: Number Transfer PIN Generation / Lock (CHANGE)
+  orderFamily: PORT_INS
+  orderType: CHANGE
+  itemType: CHANGE_PORT_OUT_PIN
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 7
+  overallSla:
+    warning: 5m
+    jeopardy: 15m
+    breach: 1h
+  steps:
+  - stepId: L1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Number Transfer PIN Generation / Lock Submitted
+    dependsOn: []
+  - stepId: L2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: Account Authority & Fraud Check
+    dependsOn:
+    - L1
+  - stepId: L3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Network Lifecycle State Change
+    dependsOn:
+    - L2
+  - stepId: L4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Billing Account Status Update
+    dependsOn:
+    - L3
+  - stepId: L5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Number Transfer PIN Generation / Lock Completed
+    dependsOn:
+    - L4
+- blueprintId: bp-change-caller-id-name
+  version: 1
+  active: true
+  displayName: CNAM Outbound Caller ID Name Update (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_CALLER_ID_NAME
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 4h
+  steps:
+  - stepId: B1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: CNAM Outbound Caller ID Name Update Requested
+    dependsOn: []
+  - stepId: B2
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: CNAM Outbound Caller ID Name Update SOC & Rating Update
+    dependsOn:
+    - B1
+  - stepId: B3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: CNAM Outbound Caller ID Name Update Completed
+    dependsOn:
+    - B2
+- blueprintId: bp-change-roaming-enable
+  version: 1
+  active: true
+  displayName: Enable International Roaming Profile (CHANGE)
+  orderFamily: PLAN_PROMO
+  orderType: CHANGE
+  itemType: CHANGE_ROAMING_ENABLE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 2h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Enable International Roaming Profile Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Enable International Roaming Profile Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Enable International Roaming Profile Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-change-roaming-disable
+  version: 1
+  active: true
+  displayName: Disable International Roaming Profile (CHANGE)
+  orderFamily: PLAN_PROMO
+  orderType: CHANGE
+  itemType: CHANGE_ROAMING_DISABLE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 2h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Disable International Roaming Profile Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Disable International Roaming Profile Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Disable International Roaming Profile Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-change-voicemail-reset
+  version: 1
+  active: true
+  displayName: Visual Voicemail Provisioning Reset (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_VOICEMAIL_RESET
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 7
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 1h
+  steps:
+  - stepId: D1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Visual Voicemail Provisioning Reset Requested
+    dependsOn: []
+  - stepId: D2
+    useTemplate: TMPL_FRAUD_CHECK
+    displayName: SIM Swap / Line Security Check
+    dependsOn:
+    - D1
+  - stepId: D3
+    useTemplate: TMPL_ESIM_ACTIVATION
+    displayName: Visual Voicemail Provisioning Reset Network Provisioning
+    dependsOn:
+    - D2
+    slaOverride:
+      mode: ML_PREDICTED
+      modelId: esim_activation_lgbm_v1.onnx
+      fallbackExpected: 2m
+      warning: 8m
+      jeopardy: 15m
+      hardMin: 10s
+      hardMax: 2h
+  - stepId: D4
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Subscriber Profile Billing Sync
+    dependsOn:
+    - D3
+  - stepId: D5
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Visual Voicemail Provisioning Reset Completed
+    dependsOn:
+    - D4
+- blueprintId: bp-change-insurance-add
+  version: 1
+  active: true
+  displayName: Post-Sales Device Insurance Add (CHANGE)
+  orderFamily: PLAN_PROMO
+  orderType: CHANGE
+  itemType: CHANGE_INSURANCE_ADD
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 2h
+  steps:
+  - stepId: K1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Post-Sales Device Insurance Add Requested
+    dependsOn: []
+  - stepId: K2
+    useTemplate: TMPL_PARTNER_ENROLL
+    displayName: Post-Sales Device Insurance Add Partner API Sync
+    dependsOn:
+    - K1
+  - stepId: K3
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Perk / Protection Billing Sync
+    dependsOn:
+    - K2
+  - stepId: K4
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Post-Sales Device Insurance Add Completed
+    dependsOn:
+    - K3
+- blueprintId: bp-change-insurance-remove
+  version: 1
+  active: true
+  displayName: Cancel Device Protection Plan (CHANGE)
+  orderFamily: PLAN_PROMO
+  orderType: CHANGE
+  itemType: CHANGE_INSURANCE_REMOVE
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 2h
+  steps:
+  - stepId: K1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Cancel Device Protection Plan Requested
+    dependsOn: []
+  - stepId: K2
+    useTemplate: TMPL_PARTNER_ENROLL
+    displayName: Cancel Device Protection Plan Partner API Sync
+    dependsOn:
+    - K1
+  - stepId: K3
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Perk / Protection Billing Sync
+    dependsOn:
+    - K2
+  - stepId: K4
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Cancel Device Protection Plan Completed
+    dependsOn:
+    - K3
+- blueprintId: bp-change-perk-swap
+  version: 1
+  active: true
+  displayName: Swap Partner Streaming / Cloud Perk (CHANGE)
+  orderFamily: PLAN_PROMO
+  orderType: CHANGE
+  itemType: CHANGE_PERK_SWAP
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 2h
+  steps:
+  - stepId: K1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Swap Partner Streaming / Cloud Perk Requested
+    dependsOn: []
+  - stepId: K2
+    useTemplate: TMPL_PARTNER_ENROLL
+    displayName: Swap Partner Streaming / Cloud Perk Partner API Sync
+    dependsOn:
+    - K1
+  - stepId: K3
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Perk / Protection Billing Sync
+    dependsOn:
+    - K2
+  - stepId: K4
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Swap Partner Streaming / Cloud Perk Completed
+    dependsOn:
+    - K3
+- blueprintId: bp-change-discount-promo
+  version: 1
+  active: true
+  displayName: Apply Military / Employee / Loyalty Discount (CHANGE)
+  orderFamily: PLAN_PROMO
+  orderType: CHANGE
+  itemType: CHANGE_DISCOUNT_PROMO
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 15m
+    jeopardy: 30m
+    breach: 4h
+  steps:
+  - stepId: B1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: Apply Military / Employee / Loyalty Discount Requested
+    dependsOn: []
+  - stepId: B2
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: Apply Military / Employee / Loyalty Discount SOC & Rating Update
+    dependsOn:
+    - B1
+  - stepId: B3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: Apply Military / Employee / Loyalty Discount Completed
+    dependsOn:
+    - B2
+- blueprintId: bp-change-autopay-enroll
+  version: 1
+  active: true
+  displayName: AutoPay & Paperless Billing Enrollment (CHANGE)
+  orderFamily: CHANGE_CANCEL
+  orderType: CHANGE
+  itemType: CHANGE_AUTOPAY_ENROLL
+  entityLevel: ORDER_ITEM
+  stateTtlDays: 14
+  overallSla:
+    warning: 10m
+    jeopardy: 20m
+    breach: 2h
+  steps:
+  - stepId: B1
+    useTemplate: TMPL_ORDER_RECEIVED
+    displayName: AutoPay & Paperless Billing Enrollment Requested
+    dependsOn: []
+  - stepId: B2
+    useTemplate: TMPL_BILLING_SYNC
+    displayName: AutoPay & Paperless Billing Enrollment SOC & Rating Update
+    dependsOn:
+    - B1
+  - stepId: B3
+    useTemplate: TMPL_ORDER_CLOSED
+    displayName: AutoPay & Paperless Billing Enrollment Completed
+    dependsOn:
+    - B2

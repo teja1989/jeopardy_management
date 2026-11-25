@@ -1,0 +1,123 @@
+# =============================================================================
+# Block 3: Journey Blueprint — Sales iPhone Ship-to-Home Upgrade
+# Composes reusable Milestone Templates with Sales Upgrade custom displayNames
+# and Tier-1/2/3 ML SLA overrides. Version-pinned per entity on creation.
+# =============================================================================
+schemaVersion: "1.0"
+configType: "JOURNEY_BLUEPRINT"
+
+blueprints:
+  - blueprintId: "bp-sales-iphone-upgrade"
+    version: 1
+    active: true
+    displayName: "iPhone Ship-to-Home Sales Upgrade (Item Journey)"
+    orderFamily: "UPGRADES_TRADEIN"
+    orderType: "SALES_UPGRADE"
+    itemType: "HANDSET_SHIP_TO_HOME"
+    entityLevel: "ORDER_ITEM"
+    stateTtlDays: 30
+    overallSla:
+      warning: "72h"
+      jeopardy: "96h"
+      breach: "120h"
+    steps:
+      - stepId: "S1"
+        useTemplate: "TMPL_ORDER_RECEIVED"
+        displayName: "iPhone Upgrade Order Placed"
+        dependsOn: []
+      - stepId: "S2"
+        useTemplate: "TMPL_FRAUD_CHECK"
+        displayName: "Identity & Device Fraud Check"
+        dependsOn: ["S1"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "2s"
+          expected: "30s"
+          warning: "3m"
+          jeopardy: "10m"
+          hardMax: "2h"
+      - stepId: "S3"
+        useTemplate: "TMPL_PAYMENT_AUTH"
+        displayName: "Tax & Down-Payment Capture"
+        dependsOn: ["S2"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "2s"
+          expected: "20s"
+          warning: "3m"
+          jeopardy: "10m"
+          hardMax: "12h"
+      - stepId: "S4"
+        useTemplate: "TMPL_FULFILLMENT_SHIP"
+        displayName: "iPhone Ship-to-Home Delivery"
+        dependsOn: ["S3"]
+        slaOverride:
+          mode: "ML_PREDICTED"
+          modelId: "fulfillment_ship_xgb_aft_v1.onnx"
+          fallbackExpected: "48h"
+          warningPct: 80
+          jeopardyPct: 95
+          hardMin: "6h"
+          hardMax: "7d"
+      - stepId: "S5"
+        useTemplate: "TMPL_ESIM_ACTIVATION"
+        displayName: "iPhone eSIM Activation"
+        dependsOn: ["S4"]
+        slaOverride:
+          mode: "ML_PREDICTED"
+          modelId: "esim_activation_lgbm_v1.onnx"
+          fallbackExpected: "2m"
+          warning: "8m"
+          jeopardy: "15m"
+          hardMin: "10s"
+          hardMax: "2h"
+      - stepId: "S6"
+        useTemplate: "TMPL_BILLING_SYNC"
+        displayName: "EIP Financing & Plan Billing Sync"
+        dependsOn: ["S5"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "5s"
+          expected: "2m"
+          warning: "10m"
+          jeopardy: "25m"
+          hardMax: "4h"
+      - stepId: "S7"
+        useTemplate: "TMPL_ORDER_CLOSED"
+        displayName: "Upgrade Order Closed"
+        dependsOn: ["S6"]
+
+  - blueprintId: "bp-sales-upgrade-root-order"
+    version: 1
+    active: true
+    displayName: "Sales Upgrade Root Order Orchestration"
+    orderFamily: "UPGRADES_TRADEIN"
+    orderType: "SALES_UPGRADE"
+    itemType: "ROOT_ORDER"
+    entityLevel: "ORDER"
+    stateTtlDays: 30
+    overallSla:
+      warning: "72h"
+      jeopardy: "96h"
+      breach: "120h"
+    steps:
+      - stepId: "O1"
+        useTemplate: "TMPL_ORDER_RECEIVED"
+        displayName: "Sales Order Received"
+        dependsOn: []
+      - stepId: "O2"
+        useTemplate: "TMPL_FRAUD_CHECK"
+        displayName: "Account Fraud Verification"
+        dependsOn: ["O1"]
+      - stepId: "O3"
+        useTemplate: "TMPL_PAYMENT_AUTH"
+        displayName: "Order Payment Capture"
+        dependsOn: ["O2"]
+      - stepId: "O4"
+        useTemplate: "TMPL_BILLING_SYNC"
+        displayName: "Account Billing Synchronization"
+        dependsOn: ["O3"]
+      - stepId: "O5"
+        useTemplate: "TMPL_ORDER_CLOSED"
+        displayName: "Sales Order Completed"
+        dependsOn: ["O4"]

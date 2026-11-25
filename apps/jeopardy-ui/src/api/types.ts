@@ -1,0 +1,516 @@
+export type SseConnectionState = 'CONNECTING' | 'LIVE' | 'RECONNECTING' | 'CLOSED';
+
+export interface ExecSummaryTotals {
+  liveOpenCount: number;
+  liveJeopardyCount: number;
+  liveFalloutCount: number;
+  liveBreachedCount: number;
+  historicalEventCount: number;
+  completedCount: number;
+  breachedCount: number;
+  falloutCount: number;
+  slaCompliancePct: number;
+}
+
+export interface ExecSliceMetric {
+  orderFamily: string;
+  orderType: string;
+  accountType: string;
+  liveOpenCount: number;
+  liveJeopardyCount: number;
+  liveFalloutCount: number;
+  liveBreachedCount: number;
+  historicalEventCount: number;
+  completedCount: number;
+  breachedCount: number;
+  falloutCount: number;
+  slaCompliancePct: number;
+  p50DurationMs: number;
+  p90DurationMs: number;
+}
+
+export interface HourlyTrendPoint {
+  hour: string;
+  eventCount: number;
+  completedCount: number;
+  breachedCount: number;
+  falloutCount: number;
+  slaCompliancePct: number;
+  p50DurationMs: number;
+  p90DurationMs: number;
+}
+
+export interface ExecSummaryResponse {
+  generatedAt: string;
+  windowHours: number;
+  querySource: string;
+  clickhouseAvailable: boolean;
+  clickhouseWarning: string | null;
+  appliedFilters: Record<string, string>;
+  totals: ExecSummaryTotals;
+  slices: ExecSliceMetric[];
+  hourlyTrend: HourlyTrendPoint[];
+}
+
+export interface BottleneckItem {
+  domain: string;
+  templateId: string;
+  errorCode: string;
+  orderType: string;
+  eventCount: number;
+  breachedCount: number;
+  avgRetryCount: number;
+  p90DurationMs: number;
+  uniqueEntities: number;
+}
+
+export interface ErrorStormPoint {
+  bucket5m: string;
+  eventCount: number;
+  breachedCount: number;
+  uniqueEntities: number;
+}
+
+export interface FalloutQueueMetric {
+  assignedQueue: string;
+  errorCode: string;
+  liveOpenFallouts: number;
+  oldestOpenAt: string | null;
+  historicalFalloutEvents: number;
+  avgMttrMs: number;
+  p90MttrMs: number;
+}
+
+export interface DevOpsBottlenecksResponse {
+  generatedAt: string;
+  windowHours: number;
+  querySource: string;
+  clickhouseAvailable: boolean;
+  clickhouseWarning: string | null;
+  appliedFilters: Record<string, string>;
+  bottlenecks: BottleneckItem[];
+  errorStorm5m: ErrorStormPoint[];
+  falloutQueues: FalloutQueueMetric[];
+}
+
+export interface EntitySummaryDto {
+  entityKey: string;
+  createdAt: string | null;
+  entityLevel: string;
+  orderFamily: string | null;
+  orderType: string | null;
+  itemType: string | null;
+  parentEntityKey: string | null;
+  customerId: string | null;
+  subscriberId: string | null;
+  accountType: string | null;
+  channel: string | null;
+  region: string | null;
+  journeyId: string | null;
+  blueprintId: string | null;
+  blueprintVersion: number | null;
+  status: string;
+  jeopardySeverity: string | null;
+  hasActiveFallout: boolean;
+  predictedP50At: string | null;
+  predictedP90At: string | null;
+  breachProbability: number | null;
+  attributes: Record<string, unknown> | null;
+  lastEventTime: string | null;
+  updatedAt: string | null;
+  closedAt: string | null;
+}
+
+export interface QueueSearchResponse {
+  items: EntitySummaryDto[];
+  totalCount: number;
+  limit: number;
+  offset: number;
+}
+
+export interface EntityRelationshipDto {
+  sourceEntityKey: string;
+  targetEntityKey: string;
+  relationType: string;
+  slaCoupling: string | null;
+  journeyId: string | null;
+  discoveredAt: string | null;
+}
+
+export interface FalloutDto {
+  falloutId: string;
+  createdAt: string | null;
+  entityKey: string;
+  entityLevel: string | null;
+  milestoneId: string | null;
+  templateId: string | null;
+  processInstanceId: string | null;
+  parentProcessInstanceId: string | null;
+  failedActivityId: string | null;
+  errorCode: string | null;
+  falloutStatus: string;
+  assignedGroup: string | null;
+  resolutionAction: string | null;
+  openedAt: string | null;
+  resolvedAt: string | null;
+  mttrMs: number | null;
+  details: Record<string, unknown> | null;
+  updatedAt: string | null;
+}
+
+export interface JourneyGroup {
+  journeyId: string;
+  customerImpact: string;
+  entityCount: number;
+  activeFalloutCount: number;
+  jeopardyEntityCount: number;
+  entities: EntitySummaryDto[];
+  relationships: EntityRelationshipDto[];
+  fallouts: FalloutDto[];
+}
+
+export interface CustomerJourneyResponse {
+  customerId: string;
+  customerImpact: string;
+  totalEntities: number;
+  totalActiveFallouts: number;
+  journeys: JourneyGroup[];
+}
+
+export interface MilestoneDto {
+  entityKey: string;
+  milestoneId: string;
+  createdAt: string | null;
+  templateId: string;
+  displayName: string;
+  sequenceNo: number;
+  status: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  pausedAt: string | null;
+  pausedDurationMs: number;
+  slaWarningAt: string | null;
+  slaJeopardyAt: string | null;
+  slaBreachAt: string | null;
+  predictedP50At: string | null;
+  predictedP90At: string | null;
+  hardMinMs: number | null;
+  hardMaxMs: number | null;
+  retryCount: number;
+  lastErrorCode: string | null;
+  lastEventTime: string | null;
+  updatedAt: string | null;
+}
+
+export interface JeopardyCaseDto {
+  caseId: string;
+  createdAt: string | null;
+  entityKey: string;
+  milestoneId: string | null;
+  templateId: string | null;
+  severity: string;
+  reasonCode: string | null;
+  status: string;
+  assignedTo: string | null;
+  openedAt: string | null;
+  resolvedAt: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface RawEventDto {
+  eventId: string;
+  eventTime: string | null;
+  ingestTime: string | null;
+  sourceTopic: string | null;
+  sourceDomain: string | null;
+  entityKey: string | null;
+  orderId: string | null;
+  customerId: string | null;
+  processInstanceId: string | null;
+  parentProcessInstanceId: string | null;
+  eventType: string | null;
+  noise: boolean;
+  errorCode: string | null;
+  payloadJson: string | null;
+}
+
+export interface EntityTimelineResponse {
+  entity: EntitySummaryDto;
+  milestones: MilestoneDto[];
+  fallouts: FalloutDto[];
+  jeopardyCases: JeopardyCaseDto[];
+  relationships: EntityRelationshipDto[];
+  rawEvents: RawEventDto[];
+  includeNoise: boolean;
+  rawEventsAvailable: boolean;
+  rawEventsWarning: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Admin Config Studio DTOs
+// ---------------------------------------------------------------------------
+
+export interface OrderFamilyRecord {
+  orderType: string;
+  orderFamily: string;
+  description: string | null;
+  updatedAt: string | null;
+}
+
+export interface EventAdapterRecord {
+  adapterId: string;
+  version: number;
+  sourceTopic: string;
+  active: boolean;
+  definition: Record<string, unknown>;
+  createdBy: string | null;
+  createdAt: string | null;
+}
+
+export interface EventAdapterRequest {
+  adapterId: string;
+  sourceTopic: string;
+  definition: Record<string, unknown>;
+  createdBy?: string;
+}
+
+export interface TriggerPredicateConfig {
+  path: string;
+  op: 'EQ' | 'IN' | 'CONTAINS' | 'EXISTS' | string;
+  value?: string;
+  values?: string[];
+}
+
+export interface TriggerRuleConfig {
+  sourceTopic: string;
+  eventType?: string;
+  predicate?: TriggerPredicateConfig;
+}
+
+export interface SegmentSlaRuleConfig {
+  match: Record<string, string>;
+  expected?: string;
+  warning?: string;
+  jeopardy?: string;
+  hardMin?: string;
+  hardMax?: string;
+}
+
+export interface CrossOrderPolicyConfig {
+  triggerPhase: 'ON_ENTITY_STARTED' | 'ON_ENTITY_COMPLETED' | string;
+  action: 'PAUSE_PARENT_MILESTONE' | 'RESUME_PARENT_MILESTONE' | 'PAUSE_SLA_CLOCK' | 'RESUME_SLA_CLOCK' | string;
+  targetRelationship: string;
+  targetTemplateId?: string;
+  signalTopic?: string;
+  reason?: string;
+}
+
+export interface MilestoneTemplateRecord {
+  templateId: string;
+  version: number;
+  defaultDisplayName: string;
+  domain: string;
+  active: boolean;
+  definition: Record<string, unknown>;
+  createdBy: string | null;
+  createdAt: string | null;
+}
+
+export interface MilestoneTemplateRequest {
+  templateId: string;
+  defaultDisplayName: string;
+  domain: string;
+  definition: Record<string, unknown>;
+  createdBy?: string;
+}
+
+export interface SlaOverrideConfig {
+  mode?: string;
+  modelId?: string;
+  hardMin?: string;
+  expected?: string;
+  fallbackExpected?: string;
+  warning?: string;
+  jeopardy?: string;
+  hardMax?: string;
+  warningPct?: number;
+  jeopardyPct?: number;
+  rightCensoredSurvival?: boolean;
+  segmentSlaFallbacks?: SegmentSlaRuleConfig[];
+}
+
+export interface BlueprintStepDefinition {
+  stepId: string;
+  useTemplate: string;
+  displayName: string;
+  dependsOn?: string[];
+  slaOverride?: SlaOverrideConfig;
+  [key: string]: unknown;
+}
+
+export interface JourneyBlueprintRecord {
+  blueprintId: string;
+  version: number;
+  entityLevel: string;
+  orderType: string;
+  itemType: string | null;
+  active: boolean;
+  definition: Record<string, unknown>;
+  createdBy: string | null;
+  createdAt: string | null;
+}
+
+export interface JourneyBlueprintRequest {
+  blueprintId: string;
+  entityLevel: string;
+  orderType: string;
+  itemType?: string | null;
+  definition: Record<string, unknown>;
+  createdBy?: string;
+}
+
+export interface JsonSearchRequest {
+  payload?: unknown;
+  rawJson?: string;
+  query: string;
+}
+
+export interface JsonSearchMatch {
+  concretePath: string;
+  wildcardPath: string;
+  key: string;
+  valuePreview: string;
+  valueType: string;
+  depth: number;
+  matched: boolean;
+}
+
+export interface JsonSearchResponse {
+  query: string;
+  totalNodes: number;
+  matchedCount: number;
+  matches: JsonSearchMatch[];
+}
+
+export interface DryRunRuleBinding {
+  role: string;
+  path?: string | null;
+  forEach?: string | null;
+  entityLevel?: string | null;
+  entityKeyTemplate?: string | null;
+  whenPathExists?: string | null;
+  orderTypePath?: string | null;
+  orderTypeLiteral?: string | null;
+  itemTypePath?: string | null;
+  itemTypeLiteral?: string | null;
+  statusPath?: string | null;
+  relatedTargetTemplate?: string | null;
+  relatedType?: string | null;
+  dimensions?: Record<string, string> | null;
+}
+
+export interface MilestonePredicate {
+  templateId: string;
+  displayName?: string;
+  triggerPhase?: string;
+  path: string;
+  operator: string;
+  value?: string;
+  values?: string[];
+}
+
+export interface DryRunRequest {
+  payload?: unknown;
+  rawJson?: string;
+  forEachPath?: string;
+  bindings?: DryRunRuleBinding[];
+  redactPaths?: string[];
+  milestonePredicates?: MilestonePredicate[];
+  adapterDefinition?: Record<string, unknown>;
+}
+
+export interface DryRunResponse {
+  extractedFields: Record<string, unknown>;
+  canonicalEvents: Array<Record<string, unknown>>;
+  relatedLinks: Array<Record<string, unknown>>;
+  matchedMilestones: Array<Record<string, unknown>>;
+  redactedPayload: unknown;
+  warnings: string[];
+}
+
+export interface PublishResponse {
+  publishId: string;
+  bundleVersion: number;
+  topic: string;
+  kafkaOffset: number | null;
+  status: string;
+  publishedBy: string;
+  publishedAt: string;
+  familyCount: number;
+  adapterCount: number;
+  templateCount: number;
+  blueprintCount: number;
+  summary: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Live HTTP/2 SSE DTOs
+// ---------------------------------------------------------------------------
+
+export interface UiDeltaEvent {
+  eventType: string | null;
+  entityKey: string | null;
+  customerId: string | null;
+  journeyId: string | null;
+  orderFamily: string | null;
+  orderType: string | null;
+  milestoneId: string | null;
+  templateId: string | null;
+  displayName: string | null;
+  status: string | null;
+  severity: string | null;
+  hasActiveFallout: boolean | null;
+  opsAlert: boolean;
+  timestamp: string;
+  payload: Record<string, unknown>;
+}
+
+export interface SseStatsDto {
+  activeConnections: number;
+  activeChannels: number;
+  customerChannels: number;
+  entityChannels: number;
+  opsAlertSubscribers: number;
+  totalEventsPublished: number;
+  totalHeartbeatsSent: number;
+  totalEmittersPruned: number;
+  channelSubscriberCounts: Record<string, number>;
+}
+
+// ---------------------------------------------------------------------------
+// Authentication & RBAC DTOs (Local Admin today -> Azure AD / Entra ID SSO)
+// ---------------------------------------------------------------------------
+
+export interface AuthUser {
+  username: string;
+  displayName: string;
+  email: string;
+  roles: string[];
+  provider: string;
+  expiresAt: string;
+}
+
+export interface AuthStatusResponse {
+  authEnabled: boolean;
+  provider: string;
+  azureAdConfigured: boolean;
+  authenticated: boolean;
+  user: AuthUser | null;
+}
+
+export interface LoginResponse {
+  authenticated: boolean;
+  provider: string;
+  token: string;
+  user: AuthUser;
+}

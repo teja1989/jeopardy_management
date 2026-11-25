@@ -1,0 +1,38 @@
+{
+  "instance_min_count": 2,
+  "instance_max_count": 12,
+  "scaling_rules": [
+    {
+      "metric_type": "cpu",
+      "breach_duration_secs": 120,
+      "threshold": 65,
+      "operator": ">=",
+      "cool_down_secs": 180,
+      "adjustment": "+2"
+    },
+    {
+      "metric_type": "cpu",
+      "breach_duration_secs": 300,
+      "threshold": 30,
+      "operator": "<=",
+      "cool_down_secs": 300,
+      "adjustment": "-1"
+    },
+    {
+      "metric_type": "responsetime",
+      "breach_duration_secs": 120,
+      "threshold": 300,
+      "operator": ">=",
+      "cool_down_secs": 180,
+      "adjustment": "+2"
+    },
+    {
+      "metric_type": "responsetime",
+      "breach_duration_secs": 300,
+      "threshold": 100,
+      "operator": "<=",
+      "cool_down_secs": 300,
+      "adjustment": "-1"
+    }
+  ]
+}

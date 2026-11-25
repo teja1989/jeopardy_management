@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jeopardy Management & Predictive SLA Simulator — iPhone 18 + Google 10 Pro Trade-In</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --fg: #f1f5f9;
+      --muted: #94a3b8;
+      --primary: #3b82f6;
+      --primary-fg: #ffffff;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --paused: #a855f7;
+    }
+    [data-theme="light"] {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --border: #cbd5e1;
+      --fg: #0f172a;
+      --muted: #475569;
+      --primary: #2563eb;
+      --primary-fg: #ffffff;
+      --success: #16a34a;
+      --warning: #d97706;
+      --error: #dc2626;
+      --paused: #7c3aed;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .container { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+    .subcard { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+    .flex { display: flex; }
+    .flex-wrap { flex-wrap: wrap; }
+    .items-center { align-items: center; }
+    .justify-between { justify-content: space-between; }
+    .gap-2 { gap: 8px; }
+    .gap-3 { gap: 12px; }
+    .gap-4 { gap: 16px; }
+    .grid-5 { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+    .split-detail { display: grid; grid-template-columns: 5fr 7fr; gap: 16px; }
+    @media (max-width: 900px) { .split-detail { grid-template-columns: 1fr; } }
+
+    h1 { margin: 4px 0; font-size: 20px; }
+    h2 { margin: 0; font-size: 15px; }
+    h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+    .muted { color: var(--muted); }
+    .xs { font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .bold { font-weight: 700; }
+    .hidden { display: none !important; }
+
+    button, select {
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 7px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--fg);
+      cursor: pointer;
+    }
+    select { background: var(--bg); }
+    .btn-primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+    .btn-danger { color: var(--error); border-color: rgba(239,68,68,0.5); background: rgba(239,68,68,0.1); }
+    .tab-active { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 10px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .st-completed { color: var(--success); background: rgba(34,197,94,0.14); border-color: rgba(34,197,94,0.4); }
+    .st-active    { color: var(--primary); background: rgba(59,130,246,0.14); border-color: rgba(59,130,246,0.4); }
+    .st-warning   { color: var(--warning); background: rgba(245,158,11,0.16); border-color: rgba(245,158,11,0.45); }
+    .st-jeopardy  { color: var(--error);   background: rgba(239,68,68,0.15);  border-color: rgba(239,68,68,0.45); }
+    .st-paused    { color: var(--paused);  background: rgba(168,85,247,0.15); border-color: rgba(168,85,247,0.45); }
+    .st-pending   { color: var(--muted);   background: rgba(148,163,184,0.12); border-color: var(--border); }
+
+    .order-card {
+      text-align: left;
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .node-selected { box-shadow: 0 0 0 2px var(--primary); border-color: var(--primary) !important; }
+    .progress-track { width: 100%; height: 6px; background: var(--card); border-radius: 9999px; overflow: hidden; border: 1px solid var(--border); }
+    .progress-fill { height: 100%; border-radius: 9999px; transition: width 0.25s ease; }
+
+    .pipeline-wrap { overflow-x: auto; padding-bottom: 6px; }
+    .pipeline { display: flex; align-items: center; min-width: max-content; padding: 4px 2px; }
+    .ms-node {
+      width: 162px;
+      text-align: left;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .connector { width: 20px; height: 2px; background: var(--border); flex-shrink: 0; }
+    .connector.done { background: var(--success); }
+    .connector.err  { background: var(--error); }
+    .connector.warn { background: var(--warning); }
+
+    .alert-banner {
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.45);
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .event-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
+    .event-item { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; }
+    pre { margin: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <div class="card flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="status-pill st-active">AWS MSK + Apache Flink + ONNX</span>
+          <span class="status-pill st-pending">40k Orders/Day Architecture</span>
+          <span id="simClockBadge" class="status-pill st-pending mono">T+0m (Day 0)</span>
+        </div>
+        <h1>Jeopardy Management &amp; Predictive SLA Simulator</h1>
+        <div class="xs muted">
+          Customer <span class="mono" style="color:var(--fg)">ACC-77812 (Alex Rivera)</span> &middot;
+          iPhone 18 Pro (Ship-to-Home Upgrade) + Google 10 Pro (60-Day Trade-In) + Linked Change &amp; Internal Promo Orders
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <select id="scenarioSelect">
+          <option value="happy">Scenario 1: Happy Path (Sales Closed + 60d Trade-In Active)</option>
+          <option value="payment_change">Scenario 2: Payment Fraud Hold + Change Order Clock Pause</option>
+          <option value="fulfillment_activation_fail">Scenario 3: Fulfillment Backorder &amp; eSIM Activation Failure</option>
+          <option value="post_sales_tradein_ins_fail">Scenario 4: Sales Closed OK, Trade-In Grading &amp; Insurance Fail</option>
+        </select>
+        <button id="btnPlay" class="btn-primary">Play Flow</button>
+        <button id="btnStep">Step Next</button>
+        <button id="btnInjectFail" class="btn-danger">Inject Failure</button>
+        <button id="btnReset">Reset</button>
+        <button id="btnTheme">Light / Dark</button>
+      </div>
+    </div>
+
+    <!-- Live Metrics -->
+    <div class="grid-5">
+      <div class="card">
+        <div class="xs muted">Raw MSK Events (ClickHouse)</div>
+        <div id="metricRawEvents" class="mono bold" style="font-size:20px; margin-top:2px;">0</div>
+        <div class="xs muted">Flowable + Domain noise</div>
+      </div>
+      <div class="card">
+        <div class="xs muted">Signal Writes (PostgreSQL)</div>
+        <div id="metricSignalWrites" class="mono bold" style="font-size:20px; margin-top:2px; color:var(--success)">0</div>
+        <div id="metricNoiseDrop" class="xs muted">0% noise filtered</div>
+      </div>
+      <div class="card">
+        <div class="xs muted">Active Flink SLA Timers</div>
+        <div id="metricActiveTimers" class="mono bold" style="font-size:20px; margin-top:2px; color:var(--primary)">0</div>
+        <div class="xs muted">Zero DB polling</div>
+      </div>
+      <div class="card">
+        <div class="xs muted">Open Jeopardy Cases</div>
+        <div id="metricJeopardyCount" class="mono bold" style="font-size:20px; margin-top:2px; color:var(--error)">0</div>
+        <div id="metricHighestRisk" class="xs muted">Peak breach prob: 0%</div>
+      </div>
+      <div class="card">
+        <div class="xs muted">ONNX Runtime Inference</div>
+        <div class="mono bold" style="font-size:20px; margin-top:2px;">0.62 ms</div>
+        <div class="xs muted">In-process Java Flink</div>
+      </div>
+    </div>
+
+    <!-- Lens Switcher -->
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-wrap gap-2">
+        <button data-lens="customer" class="lens-btn tab-active">Lens 1: Customer &amp; Order Journey Graph</button>
+        <button data-lens="platform" class="lens-btn">Lens 2: Platform Ops View (40k/day ClickHouse)</button>
+        <button data-lens="architecture" class="lens-btn">Lens 3: Blueprint Config &amp; Cross-Order Signals</button>
+      </div>
+      <div id="scenarioNarrative" class="xs muted" style="max-width:560px;"></div>
+    </div>
+
+    <!-- LENS 1 -->
+    <div id="lens-customer" style="display:flex; flex-direction:column; gap:16px;">
+      <div class="card" style="display:flex; flex-direction:column; gap:12px;">
+        <div class="flex flex-wrap items-center justify-between gap-2" style="border-bottom:1px solid var(--border); padding-bottom:10px;">
+          <div>
+            <h2>Commercial Journey Graph &middot; <span class="mono">JRN-2026-9941</span></h2>
+            <div class="xs muted">Click any order card below to inspect its Milestone DAG, ML SLA predictions, and raw Flowable/Domain events.</div>
+          </div>
+          <div id="customerHealthPill" class="status-pill st-pending">Customer Impact: Pending</div>
+        </div>
+        <div id="journeyGraphGrid" class="grid-4"></div>
+      </div>
+
+      <div class="card" style="display:flex; flex-direction:column; gap:14px;">
+        <div class="flex flex-wrap items-center justify-between gap-3" style="border-bottom:1px solid var(--border); padding-bottom:12px;">
+          <div>
+            <div class="flex flex-wrap items-center gap-2">
+              <h2 id="selectedOrderTitle">Sales Order: iPhone 18 Pro</h2>
+              <span id="selectedOrderBadge" class="status-pill st-pending">PENDING</span>
+              <span id="selectedOrderLinkBadge" class="status-pill st-pending">PRIMARY_ORDER</span>
+            </div>
+            <div id="selectedOrderMeta" class="xs muted" style="margin-top:4px;"></div>
+          </div>
+
+          <div class="subcard flex flex-wrap gap-4 xs">
+            <div><div class="muted">ML Predicted P50</div><div id="selectedOrderP50" class="mono bold">-</div></div>
+            <div><div class="muted">P90 Jeopardy</div><div id="selectedOrderP90" class="mono bold">-</div></div>
+            <div><div class="muted">Hard Max Guardrail</div><div id="selectedOrderHardMax" class="mono bold">-</div></div>
+            <div><div class="muted">Breach Probability</div><div id="selectedOrderRisk" class="mono bold">-</div></div>
+          </div>
+        </div>
+
+        <div class="pipeline-wrap">
+          <div id="milestonePipeline" class="pipeline"></div>
+        </div>
+
+        <div id="jeopardyAlertBanner" class="alert-banner hidden">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span id="jeopardyBannerTitle" class="bold" style="color:var(--error)">JEOPARDY CASE OPEN</span>
+              <span id="jeopardyBannerCode" class="mono xs subcard" style="padding:2px 8px;"></span>
+            </div>
+            <button id="btnAutoRemediate" class="btn-primary">Trigger Automated Remediation</button>
+          </div>
+          <div id="jeopardyBannerDetail" class="xs"></div>
+        </div>
+
+        <div class="split-detail">
+          <div class="subcard" style="display:flex; flex-direction:column; gap:10px;">
+            <div class="flex items-center justify-between">
+              <h3>Level-3 Milestone SLA Inspector</h3>
+              <span id="inspMilestoneId" class="mono xs muted">-</span>
+            </div>
+            <div id="milestoneInspectorContent" class="xs" style="display:flex; flex-direction:column; gap:10px;"></div>
+          </div>
+
+          <div class="subcard" style="display:flex; flex-direction:column; gap:10px;">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3>Level-4 Event Timeline (AWS MSK &rarr; Flink / ClickHouse)</h3>
+              <div class="flex gap-2">
+                <button data-evfilter="signal" class="ev-filter-btn tab-active" style="padding:4px 8px;">Signal Only (Postgres)</button>
+                <button data-evfilter="all" class="ev-filter-btn" style="padding:4px 8px;">All Raw + BPMN Noise (ClickHouse)</button>
+              </div>
+            </div>
+            <div id="eventStreamList" class="event-list mono xs"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LENS 2 -->
+    <div id="lens-platform" class="hidden">
+      <div class="card" style="display:flex; flex-direction:column; gap:14px;">
+        <div class="flex flex-wrap items-center justify-between gap-2" style="border-bottom:1px solid var(--border); padding-bottom:10px;">
+          <div>
+            <h2>Platform Operations Rollup (ClickHouse Real-Time OLAP)</h2>
+            <div class="xs muted">Aggregated across ~40,000 daily orders. Live failures in your simulation dynamically update these counts.</div>
+          </div>
+          <span class="status-pill st-active">Query Latency: 38ms</span>
+        </div>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Order Type / Domain</th>
+                <th>Active Today</th>
+                <th>Completed</th>
+                <th>Warning (P75-P89)</th>
+                <th>Jeopardy / Breach</th>
+                <th>Live P50 vs Learned SLA</th>
+                <th>Drill-Down</th>
+              </tr>
+            </thead>
+            <tbody id="platformTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- LENS 3 -->
+    <div id="lens-architecture" class="hidden">
+      <div class="grid-2">
+        <div class="card" style="display:flex; flex-direction:column; gap:10px;">
+          <div class="flex items-center justify-between">
+            <h2>Declarative Blueprint: Sales + Trade-In Link (YAML)</h2>
+            <span class="status-pill st-active">BroadcastState v2.4</span>
+          </div>
+          <pre class="mono"><code>kind: MilestoneBlueprint
+id: iphone-18-ship-to-home-upgrade
+appliesTo:
+  orderTypes: ["SALES_UPGRADE"]
+  itemTypes: ["HANDSET_SHIP_TO_HOME"]
+correlations:
+  customerIdPath: "$.header.accountId"
+  journeyIdPath: "$.header.commercialJourneyId"
+  relationships:
+    - type: BUNDLED_FEATURE
+      targetOrderIdPath: "$.payload.tradeInOrderId"
+      slaCoupling: INDEPENDENT   # Sales closes; Trade-In lives 60d
+    - type: CHANGE_ORDER
+      slaClockAction: PAUSE_PARENT_MILESTONE
+milestones:
+  - M1_ORDER_RECEIVED    (domain.order)
+  - M2_FRAUD_VALIDATION  (domain.fraud, SLA: 3m / ML P90)
+  - M3_PAYMENT_AUTH      (domain.payment, SLA: 2m / Pause on CHG)
+  - M4_FULFILLMENT_SHIP  (domain.fulfillment, ML P50: 2.1d, Max: 7d)
+  - M5_ESIM_ACTIVATION   (domain.provisioning, ML P50: 4m, Max: 2h)
+  - M6_BILLING_UPDATES   (domain.billing, SLA: 15m)
+  - M7_ORDER_CLOSED      (domain.order -> Evict Flink RocksDB State)</code></pre>
+        </div>
+
+        <div class="card" style="display:flex; flex-direction:column; gap:10px;">
+          <div class="flex items-center justify-between">
+            <h2>How Flink Handles Unpartitioned MSK + 1,000 Events</h2>
+            <span class="status-pill st-completed">Java 21 + RocksDB</span>
+          </div>
+          <div class="subcard xs">
+            <div class="bold">1. Zero Producer Breaking Changes (AWS MSK)</div>
+            <div class="muted" style="margin-top:4px;">Flink consumes unpartitioned <code>flowable.activity.events</code> and domain topics, drops ~95% non-mapped Flowable micro-events in memory, and executes <code>keyBy(order_id)</code> with a 10s out-of-orderness watermark.</div>
+          </div>
+          <div class="subcard xs">
+            <div class="bold">2. Independent Lifecycle TTLs</div>
+            <div class="muted" style="margin-top:4px;"><code>ORD-2026-88412</code> (iPhone 18 Pro) closes in ~3 days and evicts from RocksDB. <code>TRD-2026-55091</code> (Google 10 Pro Trade-In) stays active up to 60 days with its own ONNX survival-model timers, joined via PostgreSQL <code>order_relationships</code>.</div>
+          </div>
+          <div class="subcard xs">
+            <div class="bold">3. Cross-Order Signals (No Distributed Locks)</div>
+            <div class="muted" style="margin-top:4px;">When <code>CHG-2026-10294</code> (Payment Update Change Order) starts, Flink publishes <code>PAUSE_SLA_CLOCK</code> to <code>jeopardy.cross-order.signals</code> keyed by <code>ORD-2026-88412</code>. On resolution, it emits <code>RESUME_SLA_CLOCK</code>.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+<script>
+(() => {
+  function createInitialState() {
+    return {
+      stepIndex: 0,
+      simTimeLabel: "T+0m (Day 0)",
+      rawEventsCount: 0,
+      signalWritesCount: 0,
+      selectedOrderId: "ORD-2026-88412",
+      selectedMilestoneId: "M1_RECEIVED",
+      eventFilter: "signal",
+      events: [],
+      orders: {
+        "ORD-2026-88412": {
+          orderId: "ORD-2026-88412",
+          title: "Sales Order: iPhone 18 Pro (Ship-to-Home)",
+          shortTitle: "iPhone 18 Pro Upgrade",
+          orderType: "SALES_UPGRADE",
+          itemType: "HANDSET_SHIP_TO_HOME",
+          relationLabel: "PRIMARY_ORDER",
+          lifecycleNote: "Typical 2-4 day lifecycle",
+          status: "PENDING",
+          p50: "3.1 days", p90: "4.8 days", hardMax: "10 days", breachProb: 4,
+          activeJeopardy: null,
+          milestones: [
+            { id: "M1_RECEIVED",    code: "M1", name: "Order Received",     domain: "domain.order",        status: "PENDING", elapsed: "-", p50: "15s",  p90: "1m",   hardMax: "5m",   risk: 1,  rawCount: 0, note: "Order captured & validated" },
+            { id: "M2_FRAUD",       code: "M2", name: "Fraud Validation",   domain: "domain.fraud",        status: "PENDING", elapsed: "-", p50: "45s",  p90: "3m",   hardMax: "30m",  risk: 3,  rawCount: 0, note: "Identity & device risk check" },
+            { id: "M3_PAYMENT",     code: "M3", name: "Payment Auth",       domain: "domain.payment",      status: "PENDING", elapsed: "-", p50: "20s",  p90: "2m",   hardMax: "15m",  risk: 4,  rawCount: 0, note: "Card pre-auth & tax capture" },
+            { id: "M4_FULFILLMENT", code: "M4", name: "Fulfillment & Ship", domain: "domain.fulfillment",  status: "PENDING", elapsed: "-", p50: "2.2d", p90: "3.8d", hardMax: "7d",   risk: 8,  rawCount: 0, note: "Warehouse pick, FedEx ship & deliver" },
+            { id: "M5_ACTIVATION",  code: "M5", name: "eSIM Activation",    domain: "domain.provisioning", status: "PENDING", elapsed: "-", p50: "4m",   p90: "18m",  hardMax: "2h",   risk: 6,  rawCount: 0, note: "Network provisioning & eSIM push" },
+            { id: "M6_BILLING",     code: "M6", name: "Billing Updates",    domain: "domain.billing",      status: "PENDING", elapsed: "-", p50: "2m",   p90: "10m",  hardMax: "1h",   risk: 2,  rawCount: 0, note: "DPP installment & plan sync" },
+            { id: "M7_CLOSED",      code: "M7", name: "Order Closed",       domain: "domain.order",        status: "PENDING", elapsed: "-", p50: "10s",  p90: "1m",   hardMax: "5m",   risk: 0,  rawCount: 0, note: "Flink RocksDB state evicted cleanly" }
+          ]
+        },
+        "TRD-2026-55091": {
+          orderId: "TRD-2026-55091",
+          title: "Trade-In Order: Google 10 Pro ($650 Promo)",
+          shortTitle: "Google 10 Pro Trade-In",
+          orderType: "TRADE_IN",
+          itemType: "DEVICE_TRADE_IN",
+          relationLabel: "BUNDLED_FEATURE (60d SLA)",
+          lifecycleNote: "Independent 60-day lifecycle after Sales closes",
+          status: "PENDING",
+          p50: "21 days", p90: "38 days", hardMax: "60 days", breachProb: 9,
+          activeJeopardy: null,
+          milestones: [
+            { id: "T1_REGISTERED", code: "T1", name: "Trade-In Registered", domain: "domain.order",       status: "PENDING", elapsed: "-", p50: "30s",  p90: "2m",   hardMax: "15m",  risk: 1,  rawCount: 0, note: "IMEI & $650 promo value locked" },
+            { id: "T2_KIT_SHIP",   code: "T2", name: "Return Kit Shipped",  domain: "domain.fulfillment", status: "PENDING", elapsed: "-", p50: "2.5d", p90: "4d",   hardMax: "7d",   risk: 5,  rawCount: 0, note: "USPS prepaid return mailer sent" },
+            { id: "T3_RECEIVED",   code: "T3", name: "Device Received",     domain: "domain.fulfillment", status: "PENDING", elapsed: "-", p50: "14d",  p90: "28d",  hardMax: "45d",  risk: 12, rawCount: 0, note: "Adaptive polling: daily carrier check" },
+            { id: "T4_INSPECTION", code: "T4", name: "Grading & Inspect",   domain: "domain.warehouse",   status: "PENDING", elapsed: "-", p50: "2d",   p90: "5d",   hardMax: "10d",  risk: 11, rawCount: 0, note: "Screen, power-on & FRP lock check" },
+            { id: "T5_CREDIT",     code: "T5", name: "Bill Credit Applied", domain: "domain.billing",     status: "PENDING", elapsed: "-", p50: "1d",   p90: "3d",   hardMax: "7d",   risk: 3,  rawCount: 0, note: "24-mo $27.08/mo promo credit posted" },
+            { id: "T6_CLOSED",     code: "T6", name: "Trade-In Closed",     domain: "domain.order",       status: "PENDING", elapsed: "-", p50: "1m",   p90: "5m",   hardMax: "30m",  risk: 0,  rawCount: 0, note: "Trade-in journey archived to Iceberg" }
+          ]
+        },
+        "INS-2026-77301": {
+          orderId: "INS-2026-77301",
+          title: "Free Device Insurance (Unlimited Premium Perk)",
+          shortTitle: "Auto Free Insurance",
+          orderType: "INTERNAL_PROMO",
+          itemType: "FREE_DEVICE_INSURANCE",
+          relationLabel: "INTERNAL_TRIGGERED",
+          lifecycleNote: "Auto-spawned by Unlimited Premium plan eligibility",
+          status: "PENDING",
+          p50: "3 min", p90: "12 min", hardMax: "4 hours", breachProb: 5,
+          activeJeopardy: null,
+          milestones: [
+            { id: "I1_ELIG",    code: "I1", name: "Eligibility Check",   domain: "domain.order",        status: "PENDING", elapsed: "-", p50: "20s", p90: "1m",  hardMax: "5m",  risk: 2, rawCount: 0, note: "Verified Unlimited Premium tier" },
+            { id: "I2_PARTNER", code: "I2", name: "Partner Policy Sync", domain: "domain.provisioning", status: "PENDING", elapsed: "-", p50: "2m",  p90: "10m", hardMax: "15m", risk: 8, rawCount: 0, note: "Partner policy enrollment API" },
+            { id: "I3_ACTIVE",  code: "I3", name: "Policy Active",       domain: "domain.billing",      status: "PENDING", elapsed: "-", p50: "30s", p90: "2m",  hardMax: "15m", risk: 1, rawCount: 0, note: "$0/mo promo SOC attached to line" }
+          ]
+        }
+      }
+    };
+  }
+
+  function addChangeOrder(state, id, title) {
+    state.orders[id] = {
+      orderId: id, title, shortTitle: "Change Order (Payment Fix)",
+      orderType: "CHANGE_ORDER", itemType: "SUPP_PAYMENT_UPDATE",
+      relationLabel: "CHANGE_ORDER (Pauses Sales M3)",
+      lifecycleNote: "Short-lived amend order; sends PAUSE/RESUME signals",
+      status: "IN_PROGRESS", p50: "8 min", p90: "25 min", hardMax: "2 hours", breachProb: 12,
+      activeJeopardy: null,
+      milestones: [
+        { id: "C1_INIT",   code: "C1", name: "Amend Created",     domain: "domain.order",   status: "COMPLETED",   elapsed: "12s", p50: "15s", p90: "1m",  hardMax: "5m", risk: 0,  rawCount: 28, note: "Emitted PAUSE_SLA_CLOCK to ORD-2026-88412" },
+        { id: "C2_REAUTH", code: "C2", name: "Customer New Card", domain: "domain.payment", status: "IN_PROGRESS", elapsed: "3m",  p50: "6m",  p90: "20m", hardMax: "2h", risk: 14, rawCount: 44, note: "Awaiting customer SMS link & 3DS auth" },
+        { id: "C3_RESUME", code: "C3", name: "Resume Parent",     domain: "domain.order",   status: "PENDING",     elapsed: "-",   p50: "10s", p90: "1m",  hardMax: "5m", risk: 0,  rawCount: 0,  note: "Emits RESUME_SLA_CLOCK to ORD-2026-88412" }
+      ]
+    };
+  }
+
+  function setMs(state, orderId, msId, patch, rawBump, eventObj) {
+    const order = state.orders[orderId];
+    if (!order) return;
+    const ms = order.milestones.find(m => m.id === msId);
+    if (ms) { Object.assign(ms, patch); ms.rawCount += rawBump; }
+    state.rawEventsCount += rawBump;
+    state.signalWritesCount += 1;
+
+    const statuses = order.milestones.map(m => m.status);
+    if (statuses.some(s => s === "BREACHED")) order.status = "BREACHED";
+    else if (statuses.some(s => s === "JEOPARDY")) order.status = "JEOPARDY";
+    else if (statuses.some(s => s === "PAUSED")) order.status = "PAUSED";
+    else if (statuses.some(s => s === "WARNING")) order.status = "WARNING";
+    else if (statuses.every(s => s === "COMPLETED")) order.status = "COMPLETED";
+    else if (statuses.some(s => s === "IN_PROGRESS" || s === "COMPLETED")) order.status = "IN_PROGRESS";
+
+    if (eventObj) {
+      state.events.unshift({ time: state.simTimeLabel, orderId, msId, kind: "SIGNAL", ...eventObj });
+      state.events.unshift({
+        time: state.simTimeLabel, orderId, msId, kind: "NOISE",
+        topic: "flowable.activity.events",
+        eventType: "BPMN_GATEWAY_AND_VAR_UPDATE (x" + Math.max(12, rawBump - 1) + " filtered)",
+        detail: "Dropped by Flink noise filter; micro-batched directly to ClickHouse raw_order_events"
+      });
+    }
+  }
+
+  const SCENARIOS = {
+    happy: {
+      narrative: "Happy Path: iPhone 18 Pro completes all 7 milestones and closes in 3.1 days (evicted from Flink RocksDB), while the bundled Google 10 Pro Trade-In stays cleanly active on its 60-day SLA.",
+      steps: [
+        (s) => {
+          s.simTimeLabel = "T+12s (Day 0)";
+          setMs(s, "ORD-2026-88412", "M1_RECEIVED", { status: "COMPLETED", elapsed: "12s", risk: 0 }, 95, { topic: "domain.order.events", eventType: "ORDER_RECEIVED", detail: "iPhone 18 Pro Upgrade captured; linked BUNDLED_FEATURE TRD-2026-55091 discovered" });
+          setMs(s, "TRD-2026-55091", "T1_REGISTERED", { status: "COMPLETED", elapsed: "18s", risk: 0 }, 42, { topic: "domain.order.events", eventType: "TRADE_IN_REGISTERED", detail: "Google 10 Pro IMEI locked ($650 promo); attached to JRN-2026-9941" });
+          setMs(s, "INS-2026-77301", "I1_ELIG", { status: "COMPLETED", elapsed: "15s", risk: 0 }, 24, { topic: "domain.order.events", eventType: "INTERNAL_PROMO_TRIGGERED", detail: "Unlimited Premium perk auto-spawned Free Device Insurance order" });
+          setMs(s, "ORD-2026-88412", "M2_FRAUD", { status: "IN_PROGRESS", elapsed: "5s", risk: 3 }, 35, { topic: "flowable.activity.events", eventType: "ACTIVITY_STARTED: fraudCheckTask", detail: "Flink registered P90 timer (3m) & Hard Max timer (30m)" });
+        },
+        (s) => {
+          s.simTimeLabel = "T+2m (Day 0)";
+          setMs(s, "ORD-2026-88412", "M2_FRAUD", { status: "COMPLETED", elapsed: "41s", risk: 0 }, 110, { topic: "domain.fraud.events", eventType: "FRAUD_APPROVED", detail: "Score 98/100; Flink cancelled M2 timers in O(1)" });
+          setMs(s, "ORD-2026-88412", "M3_PAYMENT", { status: "COMPLETED", elapsed: "19s", risk: 0 }, 130, { topic: "domain.payment.events", eventType: "PAYMENT_AUTHORIZED", detail: "Tax & upgrade fee captured cleanly" });
+          setMs(s, "INS-2026-77301", "I2_PARTNER", { status: "COMPLETED", elapsed: "1m 50s", risk: 0 }, 48, { topic: "domain.provisioning.events", eventType: "PARTNER_POLICY_ACTIVE", detail: "Insurance partner enrolled IMEI" });
+          setMs(s, "INS-2026-77301", "I3_ACTIVE", { status: "COMPLETED", elapsed: "12s", risk: 0 }, 18, { topic: "domain.billing.events", eventType: "INSURANCE_ORDER_CLOSED", detail: "Free Device Insurance ACTIVE ($0/mo)" });
+          setMs(s, "ORD-2026-88412", "M4_FULFILLMENT", { status: "IN_PROGRESS", elapsed: "1m", risk: 8 }, 65, { topic: "domain.fulfillment.events", eventType: "WAREHOUSE_ALLOCATED", detail: "ONNX Runtime predicted M4 P50=2.2d, P90=3.8d" });
+          setMs(s, "TRD-2026-55091", "T2_KIT_SHIP", { status: "IN_PROGRESS", elapsed: "1m", risk: 5 }, 30, { topic: "domain.fulfillment.events", eventType: "RETURN_KIT_QUEUED", detail: "Google 10 Pro return box queued at depot" });
+        },
+        (s) => {
+          s.simTimeLabel = "T+2.4d (Day 2)";
+          setMs(s, "ORD-2026-88412", "M4_FULFILLMENT", { status: "COMPLETED", elapsed: "2.4d", risk: 0 }, 240, { topic: "domain.fulfillment.events", eventType: "FEDEX_DELIVERED", detail: "iPhone 18 Pro delivered to home (within P50/P90 SLA)" });
+          setMs(s, "TRD-2026-55091", "T2_KIT_SHIP", { status: "COMPLETED", elapsed: "2.1d", risk: 0 }, 85, { topic: "domain.fulfillment.events", eventType: "KIT_SHIPPED", detail: "Trade-in return kit shipped; adaptive poller set to 1x/day" });
+          setMs(s, "TRD-2026-55091", "T3_RECEIVED", { status: "IN_PROGRESS", elapsed: "7h", risk: 11 }, 20, { topic: "domain.fulfillment.events", eventType: "AWAITING_CUSTOMER_RETURN", detail: "ONNX AFT model: P50=14d, P90=28d, Hard Max=45d" });
+          setMs(s, "ORD-2026-88412", "M5_ACTIVATION", { status: "IN_PROGRESS", elapsed: "2m", risk: 6 }, 90, { topic: "domain.provisioning.events", eventType: "ESIM_DOWNLOAD_STARTED", detail: "Customer powered on iPhone 18 Pro" });
+        },
+        (s) => {
+          s.simTimeLabel = "T+3.1d (Day 3)";
+          setMs(s, "ORD-2026-88412", "M5_ACTIVATION", { status: "COMPLETED", elapsed: "4m 10s", risk: 0 }, 165, { topic: "domain.provisioning.events", eventType: "ESIM_ACTIVATED", detail: "5G line active on iPhone 18 Pro" });
+          setMs(s, "ORD-2026-88412", "M6_BILLING", { status: "COMPLETED", elapsed: "1m 45s", risk: 0 }, 110, { topic: "domain.billing.events", eventType: "BILLING_SYNCED", detail: "Device installment plan posted" });
+          setMs(s, "ORD-2026-88412", "M7_CLOSED", { status: "COMPLETED", elapsed: "9s", risk: 0 }, 45, { topic: "domain.order.events", eventType: "SALES_ORDER_CLOSED", detail: "ORD-2026-88412 CLOSED & evicted from RocksDB. TRD-2026-55091 remains active!" });
+          s.orders["ORD-2026-88412"].breachProb = 0;
+        },
+        (s) => {
+          s.simTimeLabel = "T+18d (Day 18)";
+          setMs(s, "TRD-2026-55091", "T3_RECEIVED", { status: "COMPLETED", elapsed: "15.5d", risk: 0 }, 140, { topic: "domain.fulfillment.events", eventType: "TRADE_IN_DEVICE_RECEIVED", detail: "Google 10 Pro scanned at Texas Grading Warehouse" });
+          setMs(s, "TRD-2026-55091", "T4_INSPECTION", { status: "IN_PROGRESS", elapsed: "1.2d", risk: 9 }, 75, { topic: "domain.warehouse.events", eventType: "INSPECTION_STARTED", detail: "Automated diagnostics & IMEI match running (within P50=2d)" });
+          s.selectedOrderId = "TRD-2026-55091";
+          s.selectedMilestoneId = "T4_INSPECTION";
+        },
+        (s) => {
+          s.simTimeLabel = "T+22d (Day 22)";
+          setMs(s, "TRD-2026-55091", "T4_INSPECTION", { status: "COMPLETED", elapsed: "2.1d", risk: 0 }, 95, { topic: "domain.warehouse.events", eventType: "INSPECTION_PASSED_TIER1", detail: "Google 10 Pro graded Tier 1 — full $650 credit approved" });
+          setMs(s, "TRD-2026-55091", "T5_CREDIT", { status: "COMPLETED", elapsed: "18h", risk: 0 }, 60, { topic: "domain.billing.events", eventType: "TRADE_IN_CREDIT_POSTED", detail: "$27.08/mo x 24 bill credits applied" });
+          setMs(s, "TRD-2026-55091", "T6_CLOSED", { status: "COMPLETED", elapsed: "40s", risk: 0 }, 30, { topic: "domain.order.events", eventType: "TRADE_IN_CLOSED", detail: "Entire Commercial Journey JRN-2026-9941 completed with 0 breaches!" });
+          s.orders["TRD-2026-55091"].breachProb = 0;
+        }
+      ]
+    },
+
+    payment_change: {
+      narrative: "Failure + Recovery: iPhone 18 Pro hits a Payment Decline at M3 (Immediate Jeopardy). A short-lived Change Order (CHG-2026-10294) spawns, sends PAUSE_SLA_CLOCK to stop false SLA bleed on the Sales Order, updates the card, and resumes cleanly!",
+      steps: [
+        (s) => {
+          s.simTimeLabel = "T+50s (Day 0)";
+          setMs(s, "ORD-2026-88412", "M1_RECEIVED", { status: "COMPLETED", elapsed: "11s", risk: 0 }, 90, { topic: "domain.order.events", eventType: "ORDER_RECEIVED", detail: "iPhone 18 Pro Upgrade + Google 10 Pro Trade-In captured" });
+          setMs(s, "ORD-2026-88412", "M2_FRAUD", { status: "COMPLETED", elapsed: "38s", risk: 0 }, 115, { topic: "domain.fraud.events", eventType: "FRAUD_APPROVED", detail: "Identity verified cleanly" });
+          setMs(s, "TRD-2026-55091", "T1_REGISTERED", { status: "COMPLETED", elapsed: "22s", risk: 0 }, 40, { topic: "domain.order.events", eventType: "TRADE_IN_REGISTERED", detail: "Google 10 Pro quote locked ($650)" });
+          setMs(s, "INS-2026-77301", "I1_ELIG", { status: "COMPLETED", elapsed: "14s", risk: 0 }, 22, { topic: "domain.order.events", eventType: "INTERNAL_PROMO_TRIGGERED", detail: "Free Device Insurance queued pending Sales Payment" });
+        },
+        (s) => {
+          s.simTimeLabel = "T+3m (Day 0)";
+          setMs(s, "ORD-2026-88412", "M3_PAYMENT", { status: "JEOPARDY", elapsed: "2m 15s", risk: 94, note: "FAILED: E_CARD_3DS_DECLINED (3 Flowable retries exhausted)" }, 210, { topic: "jeopardy.alerts.out", eventType: "IMMEDIATE_JEOPARDY: M3_PAYMENT", detail: "Card issuer declined 3DS auth; ONNX breach probability jumped to 94%" });
+          s.orders["ORD-2026-88412"].breachProb = 94;
+          s.orders["ORD-2026-88412"].activeJeopardy = {
+            caseId: "JEP-90412", code: "E_CARD_3DS_DECLINED",
+            title: "Payment Authorization Failed at M3 (Sales Order)",
+            detail: "Flowable paymentAuthTask exhausted 3 retries. Trigger Automated Remediation (or Step Next) to spawn Short-Lived Change Order CHG-2026-10294 and pause the M3 SLA clock."
+          };
+          s.selectedOrderId = "ORD-2026-88412"; s.selectedMilestoneId = "M3_PAYMENT";
+        },
+        (s) => {
+          s.simTimeLabel = "T+4m (Day 0)";
+          addChangeOrder(s, "CHG-2026-10294", "Change Order: Payment Card Update");
+          setMs(s, "ORD-2026-88412", "M3_PAYMENT", { status: "PAUSED", elapsed: "2m 15s (PAUSED)", risk: 18, note: "SLA clock PAUSED by CHG-2026-10294 via jeopardy.cross-order.signals" }, 35, { topic: "jeopardy.cross-order.signals", eventType: "PAUSE_SLA_CLOCK", detail: "CHG-2026-10294 paused ORD-2026-88412 M3 timer — prevents false breach while customer enters new card" });
+          s.orders["ORD-2026-88412"].breachProb = 18; s.orders["ORD-2026-88412"].activeJeopardy = null;
+          s.selectedOrderId = "CHG-2026-10294"; s.selectedMilestoneId = "C2_REAUTH";
+        },
+        (s) => {
+          s.simTimeLabel = "T+11m (Day 0)";
+          setMs(s, "CHG-2026-10294", "C2_REAUTH", { status: "COMPLETED", elapsed: "7m 10s", risk: 0 }, 78, { topic: "domain.payment.events", eventType: "CUSTOMER_NEW_CARD_VERIFIED", detail: "Customer completed Apple Pay fallback via SMS link" });
+          setMs(s, "CHG-2026-10294", "C3_RESUME", { status: "COMPLETED", elapsed: "8s", risk: 0 }, 24, { topic: "jeopardy.cross-order.signals", eventType: "RESUME_SLA_CLOCK", detail: "CHG-2026-10294 closed; resumed ORD-2026-88412 M3" });
+          s.orders["CHG-2026-10294"].breachProb = 0;
+          setMs(s, "ORD-2026-88412", "M3_PAYMENT", { status: "COMPLETED", elapsed: "2m 35s net (7m paused)", risk: 0, note: "Payment succeeded on updated method; Jeopardy JEP-90412 auto-resolved" }, 65, { topic: "domain.payment.events", eventType: "PAYMENT_AUTHORIZED", detail: "Auto-closed Jeopardy Case JEP-90412; advancing to M4 Fulfillment" });
+          setMs(s, "ORD-2026-88412", "M4_FULFILLMENT", { status: "IN_PROGRESS", elapsed: "10s", risk: 7 }, 50, { topic: "domain.fulfillment.events", eventType: "WAREHOUSE_ALLOCATED", detail: "iPhone 18 Pro allocated for FedEx shipping" });
+          s.orders["ORD-2026-88412"].breachProb = 7;
+          s.selectedOrderId = "ORD-2026-88412"; s.selectedMilestoneId = "M4_FULFILLMENT";
+        }
+      ]
+    },
+
+    fulfillment_activation_fail: {
+      narrative: "Operational Jeopardy: iPhone 18 Pro crosses ML P80 Warning during Fulfillment (warehouse congestion), then hits an eSIM Activation failure (E_ESIM_PROFILE_LOCKED) at M5 with full ClickHouse Flowable event drill-down.",
+      steps: [
+        (s) => {
+          s.simTimeLabel = "T+2m (Day 0)";
+          setMs(s, "ORD-2026-88412", "M1_RECEIVED", { status: "COMPLETED", elapsed: "10s", risk: 0 }, 88, { topic: "domain.order.events", eventType: "ORDER_RECEIVED", detail: "iPhone 18 Pro Ship-to-Home captured" });
+          setMs(s, "ORD-2026-88412", "M2_FRAUD", { status: "COMPLETED", elapsed: "36s", risk: 0 }, 105, { topic: "domain.fraud.events", eventType: "FRAUD_APPROVED", detail: "Fraud passed" });
+          setMs(s, "ORD-2026-88412", "M3_PAYMENT", { status: "COMPLETED", elapsed: "22s", risk: 0 }, 118, { topic: "domain.payment.events", eventType: "PAYMENT_AUTHORIZED", detail: "Payment captured" });
+          setMs(s, "TRD-2026-55091", "T1_REGISTERED", { status: "COMPLETED", elapsed: "19s", risk: 0 }, 38, { topic: "domain.order.events", eventType: "TRADE_IN_REGISTERED", detail: "Google 10 Pro trade-in registered" });
+          setMs(s, "INS-2026-77301", "I1_ELIG", { status: "COMPLETED", elapsed: "12s", risk: 0 }, 20, { topic: "domain.order.events", eventType: "INTERNAL_PROMO_TRIGGERED", detail: "Free insurance created" });
+        },
+        (s) => {
+          s.simTimeLabel = "T+3.3d (Day 3)";
+          setMs(s, "ORD-2026-88412", "M4_FULFILLMENT", { status: "WARNING", elapsed: "3.3d", risk: 68, note: "WARNING: Crossed ML P80 (3.1d) due to Memphis hub weather + iPhone 18 Pro SKU congestion" }, 280, { topic: "jeopardy.alerts.out", eventType: "SLA_WARNING_TIMER_FIRED: M4_FULFILLMENT", detail: "Feast real-time feature: warehouse_p90_delay=18h; ONNX breach probability=68%" });
+          s.orders["ORD-2026-88412"].breachProb = 68;
+          s.selectedOrderId = "ORD-2026-88412"; s.selectedMilestoneId = "M4_FULFILLMENT";
+        },
+        (s) => {
+          s.simTimeLabel = "T+4.1d (Day 4)";
+          setMs(s, "ORD-2026-88412", "M4_FULFILLMENT", { status: "COMPLETED", elapsed: "4.1d", risk: 0, note: "Delivered (late but inside 7d hard max)" }, 145, { topic: "domain.fulfillment.events", eventType: "FEDEX_DELIVERED", detail: "Warning auto-cleared upon delivery" });
+          setMs(s, "TRD-2026-55091", "T2_KIT_SHIP", { status: "COMPLETED", elapsed: "2.5d", risk: 0 }, 72, { topic: "domain.fulfillment.events", eventType: "KIT_SHIPPED", detail: "Return kit shipped" });
+          setMs(s, "TRD-2026-55091", "T3_RECEIVED", { status: "IN_PROGRESS", elapsed: "1.5d", risk: 10 }, 24, { topic: "domain.fulfillment.events", eventType: "AWAITING_CUSTOMER_RETURN", detail: "Waiting for Google 10 Pro return" });
+          setMs(s, "ORD-2026-88412", "M5_ACTIVATION", { status: "JEOPARDY", elapsed: "24m", risk: 96, note: "FAILED: E_ESIM_PROFILE_LOCKED on Network Provisioning Gateway (4 BPMN retries)" }, 310, { topic: "jeopardy.alerts.out", eventType: "JEOPARDY_TRIGGERED: M5_ACTIVATION", detail: "Exceeded ML P90 (18m) + hard network error E_ESIM_PROFILE_LOCKED on Flowable task activateEsimTask" });
+          s.orders["ORD-2026-88412"].breachProb = 96;
+          s.orders["ORD-2026-88412"].activeJeopardy = {
+            caseId: "JEP-91882", code: "E_ESIM_PROFILE_LOCKED",
+            title: "eSIM Activation Stuck in Jeopardy (M5)",
+            detail: "Flowable BPMN task 'activateEsimTask' retried 4 times (310 raw events captured in ClickHouse). Root cause: Old SIM profile still locked on HLR. Click 'Trigger Automated Remediation' to force HLR release & re-push eSIM."
+          };
+          s.selectedMilestoneId = "M5_ACTIVATION";
+        }
+      ]
+    },
+
+    post_sales_tradein_ins_fail: {
+      narrative: "Silent Post-Sales Failure: Sales Order (iPhone 18 Pro) is CLOSED & GREEN — yet Customer Journey View catches BOTH a 60-day Trade-In Inspection Jeopardy (Google 10 Pro FRP lock) AND a silently breached Free Insurance internal order!",
+      steps: [
+        (s) => {
+          s.simTimeLabel = "T+3.0d (Day 3)";
+          ["M1_RECEIVED","M2_FRAUD","M3_PAYMENT","M4_FULFILLMENT","M5_ACTIVATION","M6_BILLING","M7_CLOSED"].forEach((id, idx) => {
+            setMs(s, "ORD-2026-88412", id, { status: "COMPLETED", elapsed: idx === 3 ? "2.3d" : "1m", risk: 0 }, 125, idx === 6 ? { topic: "domain.order.events", eventType: "SALES_ORDER_CLOSED", detail: "iPhone 18 Pro Sales Order CLOSED cleanly — no issues in Sales domain" } : null);
+          });
+          s.orders["ORD-2026-88412"].breachProb = 0;
+          setMs(s, "TRD-2026-55091", "T1_REGISTERED", { status: "COMPLETED", elapsed: "20s", risk: 0 }, 40, null);
+          setMs(s, "TRD-2026-55091", "T2_KIT_SHIP", { status: "COMPLETED", elapsed: "2.2d", risk: 0 }, 70, { topic: "domain.fulfillment.events", eventType: "KIT_SHIPPED", detail: "Google 10 Pro return kit delivered" });
+          setMs(s, "INS-2026-77301", "I1_ELIG", { status: "COMPLETED", elapsed: "16s", risk: 0 }, 24, null);
+          setMs(s, "INS-2026-77301", "I2_PARTNER", { status: "BREACHED", elapsed: "48m (Max 15m)", risk: 99, note: "BREACHED: Partner API 504 Gateway Timeout — customer has NO active free insurance!" }, 195, { topic: "jeopardy.alerts.out", eventType: "SLA_BREACHED: INS-2026-77301 / I2_PARTNER", detail: "Internal Free Insurance order failed silently after Sales closed — surfaced in Customer View!" });
+          s.orders["INS-2026-77301"].breachProb = 99;
+          s.orders["INS-2026-77301"].activeJeopardy = {
+            caseId: "JEP-92004", code: "E_PARTNER_504_TIMEOUT",
+            title: "Free Device Insurance Enrollment Breached (48m vs 15m SLA)",
+            detail: "Customer upgraded to Unlimited Premium expecting free device protection, but the internally-triggered order timed out at the partner gateway. Click 'Trigger Automated Remediation' to replay enrollment."
+          };
+          s.selectedOrderId = "INS-2026-77301"; s.selectedMilestoneId = "I2_PARTNER";
+        },
+        (s) => {
+          s.simTimeLabel = "T+19d (Day 19)";
+          setMs(s, "TRD-2026-55091", "T3_RECEIVED", { status: "COMPLETED", elapsed: "16d", risk: 0 }, 135, { topic: "domain.fulfillment.events", eventType: "TRADE_IN_DEVICE_RECEIVED", detail: "Google 10 Pro arrived at warehouse (Day 19 after Sales Order closed)" });
+          setMs(s, "TRD-2026-55091", "T4_INSPECTION", { status: "JEOPARDY", elapsed: "3.2d", risk: 92, note: "JEOPARDY: E_GOOGLE_FRP_LOCK_ACTIVE — Factory Reset Protection still enabled on Google 10 Pro!" }, 160, { topic: "jeopardy.alerts.out", eventType: "IMMEDIATE_JEOPARDY: TRD-2026-55091 / T4_INSPECTION", detail: "Warehouse inspection failed: Find My Device / FRP lock active; $650 promo credit at risk!" });
+          s.orders["TRD-2026-55091"].breachProb = 92;
+          s.orders["TRD-2026-55091"].activeJeopardy = {
+            caseId: "JEP-92771", code: "E_GOOGLE_FRP_LOCK_ACTIVE",
+            title: "Google 10 Pro Failed Inspection (FRP Lock Active)",
+            detail: "Sales Order ORD-2026-88412 closed 16 days ago, but the linked 60-day Trade-In Order cannot issue the $650 bill credit until the customer remotely removes Google account lock. Click 'Trigger Automated Remediation' to send customer unlock guide & re-queue inspection."
+          };
+          s.selectedOrderId = "TRD-2026-55091"; s.selectedMilestoneId = "T4_INSPECTION";
+        }
+      ]
+    }
+  };
+
+  let state = createInitialState();
+  let currentScenarioKey = "happy";
+  let playTimer = null;
+
+  function statusClass(s) {
+    if (s === "COMPLETED") return "st-completed";
+    if (s === "IN_PROGRESS") return "st-active";
+    if (s === "WARNING") return "st-warning";
+    if (s === "JEOPARDY" || s === "BREACHED") return "st-jeopardy";
+    if (s === "PAUSED") return "st-paused";
+    return "st-pending";
+  }
+
+  function render() {
+    document.getElementById("simClockBadge").textContent = state.simTimeLabel;
+    document.getElementById("metricRawEvents").textContent = state.rawEventsCount.toLocaleString();
+    document.getElementById("metricSignalWrites").textContent = state.signalWritesCount.toLocaleString();
+    const dropPct = state.rawEventsCount > 0 ? (((state.rawEventsCount - state.signalWritesCount) / state.rawEventsCount) * 100).toFixed(1) : "0.0";
+    document.getElementById("metricNoiseDrop").textContent = `${dropPct}% noise filtered`;
+
+    const allOrders = Object.values(state.orders);
+    let activeTimers = 0, jeopardyCount = 0, maxRisk = 0;
+    allOrders.forEach(o => {
+      if (o.activeJeopardy || o.status === "JEOPARDY" || o.status === "BREACHED") jeopardyCount++;
+      if (o.breachProb > maxRisk) maxRisk = o.breachProb;
+      o.milestones.forEach(m => { if (m.status === "IN_PROGRESS" || m.status === "WARNING") activeTimers += 2; });
+    });
+    document.getElementById("metricActiveTimers").textContent = activeTimers;
+    document.getElementById("metricJeopardyCount").textContent = jeopardyCount;
+    document.getElementById("metricHighestRisk").textContent = `Peak breach prob: ${maxRisk}%`;
+    document.getElementById("scenarioNarrative").textContent = SCENARIOS[currentScenarioKey].narrative;
+
+    const custPill = document.getElementById("customerHealthPill");
+    if (jeopardyCount > 0) { custPill.className = "status-pill st-jeopardy"; custPill.textContent = `Customer Impact: AT RISK (${jeopardyCount} Open Jeopardy)`; }
+    else if (allOrders.some(o => o.status === "WARNING")) { custPill.className = "status-pill st-warning"; custPill.textContent = "Customer Impact: WARNING (Predicted Delay)"; }
+    else if (allOrders.some(o => o.status === "PAUSED")) { custPill.className = "status-pill st-paused"; custPill.textContent = "Customer Impact: PAUSED (Change Order Active)"; }
+    else if (allOrders.every(o => o.status === "COMPLETED")) { custPill.className = "status-pill st-completed"; custPill.textContent = "Customer Impact: ALL JOURNEY ORDERS COMPLETE"; }
+    else if (allOrders.some(o => o.status === "IN_PROGRESS" || o.status === "COMPLETED")) { custPill.className = "status-pill st-active"; custPill.textContent = "Customer Impact: HEALTHY (In Flight)"; }
+    else { custPill.className = "status-pill st-pending"; custPill.textContent = "Customer Impact: Ready to Simulate"; }
+
+    const graphEl = document.getElementById("journeyGraphGrid");
+    graphEl.innerHTML = allOrders.map(o => {
+      const doneCount = o.milestones.filter(m => m.status === "COMPLETED").length;
+      const pct = Math.round((doneCount / o.milestones.length) * 100);
+      const fillColor = (o.status === "JEOPARDY" || o.status === "BREACHED") ? "var(--error)" : o.status === "WARNING" ? "var(--warning)" : o.status === "COMPLETED" ? "var(--success)" : "var(--primary)";
+      return `
+        <button data-order-select="${o.orderId}" class="order-card ${o.orderId === state.selectedOrderId ? 'node-selected' : ''}">
+          <div class="flex items-center justify-between gap-2">
+            <span class="mono xs bold">${o.orderId}</span>
+            <span class="status-pill ${statusClass(o.status)}">${o.status}</span>
+          </div>
+          <div>
+            <div class="xs bold">${o.shortTitle}</div>
+            <div class="xs muted">${o.relationLabel}</div>
+          </div>
+          <div>
+            <div class="flex justify-between xs muted" style="margin-bottom:4px;">
+              <span>${doneCount}/${o.milestones.length} milestones</span>
+              <span class="mono">Risk ${o.breachProb}%</span>
+            </div>
+            <div class="progress-track"><div class="progress-fill" style="width:${pct}%; background:${fillColor};"></div></div>
+          </div>
+          <div class="xs muted">${o.lifecycleNote}</div>
+        </button>
+      `;
+    }).join("");
+
+    graphEl.querySelectorAll("[data-order-select]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        state.selectedOrderId = btn.getAttribute("data-order-select");
+        const ord = state.orders[state.selectedOrderId];
+        const interesting = ord.milestones.find(m => ["JEOPARDY","BREACHED","WARNING","PAUSED","IN_PROGRESS"].includes(m.status)) || ord.milestones[0];
+        state.selectedMilestoneId = interesting.id;
+        render();
+      });
+    });
+
+    const selOrder = state.orders[state.selectedOrderId] || allOrders[0];
+    document.getElementById("selectedOrderTitle").textContent = `${selOrder.title} (${selOrder.orderId})`;
+    const badgeEl = document.getElementById("selectedOrderBadge");
+    badgeEl.className = `status-pill ${statusClass(selOrder.status)}`;
+    badgeEl.textContent = selOrder.status;
+    document.getElementById("selectedOrderLinkBadge").textContent = selOrder.relationLabel;
+    document.getElementById("selectedOrderMeta").textContent = `Order Type: ${selOrder.orderType} | Item Type: ${selOrder.itemType} | ${selOrder.lifecycleNote}`;
+    document.getElementById("selectedOrderP50").textContent = selOrder.p50;
+    document.getElementById("selectedOrderP90").textContent = selOrder.p90;
+    document.getElementById("selectedOrderHardMax").textContent = selOrder.hardMax;
+    const riskEl = document.getElementById("selectedOrderRisk");
+    riskEl.textContent = `${selOrder.breachProb}%`;
+    riskEl.style.color = selOrder.breachProb >= 75 ? "var(--error)" : selOrder.breachProb >= 40 ? "var(--warning)" : "var(--success)";
+
+    const pipeEl = document.getElementById("milestonePipeline");
+    pipeEl.innerHTML = selOrder.milestones.map((m, idx) => {
+      const connClass = m.status === "COMPLETED" ? "done" : (m.status === "JEOPARDY" || m.status === "BREACHED") ? "err" : m.status === "WARNING" ? "warn" : "";
+      return `
+        <button data-ms-select="${m.id}" class="ms-node ${m.id === state.selectedMilestoneId ? 'node-selected' : ''}">
+          <div class="flex items-center justify-between gap-2">
+            <span class="mono xs bold muted">${m.code}</span>
+            <span class="status-pill ${statusClass(m.status)}">${m.status}</span>
+          </div>
+          <div class="xs bold">${m.name}</div>
+          <div class="mono xs muted">${m.domain}</div>
+          <div class="flex justify-between xs" style="border-top:1px solid var(--border); padding-top:5px;">
+            <span class="muted">Elap: <b class="mono" style="color:var(--fg)">${m.elapsed}</b></span>
+            <span class="mono" style="color:${m.risk>=70?'var(--error)':m.risk>=40?'var(--warning)':'var(--muted)'}">${m.risk}%</span>
+          </div>
+        </button>
+        ${idx < selOrder.milestones.length - 1 ? `<div class="connector ${connClass}"></div>` : ""}
+      `;
+    }).join("");
+
+    pipeEl.querySelectorAll("[data-ms-select]").forEach(btn => {
+      btn.addEventListener("click", () => { state.selectedMilestoneId = btn.getAttribute("data-ms-select"); render(); });
+    });
+
+    const jepBanner = document.getElementById("jeopardyAlertBanner");
+    if (selOrder.activeJeopardy) {
+      jepBanner.classList.remove("hidden");
+      document.getElementById("jeopardyBannerTitle").textContent = `${selOrder.activeJeopardy.caseId}: ${selOrder.activeJeopardy.title}`;
+      document.getElementById("jeopardyBannerCode").textContent = selOrder.activeJeopardy.code;
+      document.getElementById("jeopardyBannerDetail").textContent = selOrder.activeJeopardy.detail;
+    } else {
+      jepBanner.classList.add("hidden");
+    }
+
+    const selMs = selOrder.milestones.find(m => m.id === state.selectedMilestoneId) || selOrder.milestones[0];
+    document.getElementById("inspMilestoneId").textContent = `${selOrder.orderId} / ${selMs.id}`;
+    document.getElementById("milestoneInspectorContent").innerHTML = `
+      <div class="flex items-center justify-between">
+        <span class="bold" style="font-size:14px;">${selMs.name}</span>
+        <span class="status-pill ${statusClass(selMs.status)}">${selMs.status}</span>
+      </div>
+      <div class="muted">${selMs.note}</div>
+      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+        <div class="card" style="padding:8px;"><div class="muted">Tier-3 ML P50</div><div class="mono bold">${selMs.p50}</div></div>
+        <div class="card" style="padding:8px;"><div class="muted">Tier-2/3 P90</div><div class="mono bold">${selMs.p90}</div></div>
+        <div class="card" style="padding:8px;"><div class="muted">Tier-1 Hard Max</div><div class="mono bold">${selMs.hardMax}</div></div>
+      </div>
+      <div class="flex justify-between muted" style="border-top:1px solid var(--border); padding-top:8px;">
+        <span>Elapsed: <b class="mono" style="color:var(--fg)">${selMs.elapsed}</b></span>
+        <span>Raw ClickHouse Events: <b class="mono" style="color:var(--fg)">${selMs.rawCount}</b></span>
+      </div>
+    `;
+
+    const evList = document.getElementById("eventStreamList");
+    const filteredEvents = state.events.filter(e => state.eventFilter === "all" || e.kind === "SIGNAL");
+    evList.innerHTML = filteredEvents.length === 0
+      ? `<div class="muted" style="text-align:center; padding:24px;">Click <b>Play Flow</b> or <b>Step Next</b> to stream AWS MSK events.</div>`
+      : filteredEvents.slice(0, 40).map(e => {
+          const isNoise = e.kind === "NOISE";
+          const color = (e.topic && e.topic.includes("jeopardy.alerts")) ? "var(--error)"
+            : (e.topic && e.topic.includes("cross-order")) ? "var(--paused)"
+            : isNoise ? "var(--muted)" : "var(--primary)";
+          return `
+            <div class="event-item" style="${isNoise ? 'opacity:0.65;' : ''}">
+              <div class="flex flex-wrap justify-between gap-2">
+                <span class="bold" style="color:${color}">${e.eventType}</span>
+                <span class="muted">${e.time} &middot; ${e.orderId}</span>
+              </div>
+              <div class="muted" style="margin-top:2px;">[${e.topic}] ${e.detail}</div>
+            </div>
+          `;
+        }).join("");
+
+    const salesFail = ["JEOPARDY","BREACHED"].includes(state.orders["ORD-2026-88412"].status) ? 1 : 0;
+    const salesWarn = state.orders["ORD-2026-88412"].status === "WARNING" ? 1 : 0;
+    const trdFail   = ["JEOPARDY","BREACHED"].includes(state.orders["TRD-2026-55091"].status) ? 1 : 0;
+    const insFail   = ["JEOPARDY","BREACHED"].includes(state.orders["INS-2026-77301"].status) ? 1 : 0;
+    const chgActive = state.orders["CHG-2026-10294"] ? 1 : 0;
+
+    const rows = [
+      { orderId: "ORD-2026-88412", type: "SALES_UPGRADE (iPhone 18 Ship-to-Home)", active: 14210, done: 11840, warn: 312 + salesWarn, fail: 84 + salesFail, sla: "3.1d vs 3.2d P50" },
+      { orderId: "TRD-2026-55091", type: "TRADE_IN (Google 10 Pro / 60-Day)",      active: 19450, done: 4120,  warn: 490,             fail: 129 + trdFail,   sla: "21d vs 22d P50" },
+      { orderId: "INS-2026-77301", type: "INTERNAL_PROMO (Auto Free Insurance)",   active: 1120,  done: 6890,  warn: 42,              fail: 18 + insFail,    sla: "3m vs 3.5m P50" },
+      { orderId: state.orders["CHG-2026-10294"] ? "CHG-2026-10294" : "ORD-2026-88412", type: "CHANGE_ORDER (Short-Lived Amend)", active: 380 + chgActive, done: 2910, warn: 19, fail: 7, sla: "8m vs 9m P50" }
+    ];
+
+    const tbody = document.getElementById("platformTableBody");
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td class="bold">${r.type}</td>
+        <td class="mono">${r.active.toLocaleString()}</td>
+        <td class="mono" style="color:var(--success)">${r.done.toLocaleString()}</td>
+        <td class="mono" style="color:var(--warning)">${r.warn.toLocaleString()}</td>
+        <td class="mono bold" style="color:var(--error)">${r.fail.toLocaleString()}</td>
+        <td class="mono muted">${r.sla}</td>
+        <td><button data-drill-order="${r.orderId}">Drill to Journey &rarr;</button></td>
+      </tr>
+    `).join("");
+
+    tbody.querySelectorAll("[data-drill-order]").forEach(btn => {
+      btn.addEventListener("click", () => { state.selectedOrderId = btn.getAttribute("data-drill-order"); switchLens("customer"); render(); });
+    });
+  }
+
+  function stepOnce() {
+    const scen = SCENARIOS[currentScenarioKey];
+    if (state.stepIndex >= scen.steps.length) { stopPlay(); return; }
+    scen.steps[state.stepIndex](state);
+    state.stepIndex++;
+    render();
+    if (state.stepIndex >= scen.steps.length) stopPlay();
+  }
+  function stopPlay() { if (playTimer) { clearInterval(playTimer); playTimer = null; } document.getElementById("btnPlay").textContent = "Play Flow"; }
+  function resetScenario() { stopPlay(); state = createInitialState(); render(); }
+  function switchLens(lens) {
+    ["customer","platform","architecture"].forEach(l => document.getElementById(`lens-${l}`).classList.toggle("hidden", l !== lens));
+    document.querySelectorAll(".lens-btn").forEach(b => b.classList.toggle("tab-active", b.getAttribute("data-lens") === lens));
+  }
+
+  document.getElementById("scenarioSelect").addEventListener("change", (e) => { currentScenarioKey = e.target.value; resetScenario(); stepOnce(); });
+  document.getElementById("btnStep").addEventListener("click", stepOnce);
+  document.getElementById("btnReset").addEventListener("click", resetScenario);
+  document.getElementById("btnTheme").addEventListener("click", () => {
+    document.documentElement.setAttribute("data-theme", document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
+  });
+  document.getElementById("btnPlay").addEventListener("click", () => {
+    if (playTimer) stopPlay();
+    else {
+      if (state.stepIndex >= SCENARIOS[currentScenarioKey].steps.length) resetScenario();
+      document.getElementById("btnPlay").textContent = "Pause";
+      stepOnce();
+      playTimer = setInterval(stepOnce, 1700);
+    }
+  });
+  document.getElementById("btnInjectFail").addEventListener("click", () => {
+    stopPlay();
+    const ord = state.orders[state.selectedOrderId];
+    if (!ord) return;
+    const target = ord.milestones.find(m => m.id === state.selectedMilestoneId) || ord.milestones[0];
+    setMs(state, ord.orderId, target.id, { status: "JEOPARDY", elapsed: "Exceeded P90", risk: 95, note: `INJECTED FAILURE at ${target.name} (${target.domain})` }, 185, {
+      topic: "jeopardy.alerts.out", eventType: `INJECTED_FAILURE: ${target.id}`, detail: `Manual fault injection on ${ord.orderId} / ${target.name}. Breach probability spiked to 95%.`
+    });
+    ord.breachProb = 95;
+    ord.activeJeopardy = {
+      caseId: "JEP-SIM-" + Math.floor(1000 + Math.random() * 8999), code: "E_SIMULATED_FAULT_" + target.code,
+      title: `Injected Failure at ${target.name} (${ord.orderId})`,
+      detail: `Simulated failure in ${target.domain}. Sibling orders continue independently while Customer Impact flips to AT RISK. Click 'Trigger Automated Remediation' to recover.`
+    };
+    state.selectedMilestoneId = target.id;
+    render();
+  });
+  document.getElementById("btnAutoRemediate").addEventListener("click", () => {
+    const ord = state.orders[state.selectedOrderId];
+    if (!ord || !ord.activeJeopardy) return;
+    if (currentScenarioKey === "payment_change" && state.stepIndex === 2) { stepOnce(); return; }
+    const failedMs = ord.milestones.find(m => m.status === "JEOPARDY" || m.status === "BREACHED");
+    if (failedMs) {
+      setMs(state, ord.orderId, failedMs.id, { status: "COMPLETED", elapsed: "Recovered", risk: 0, note: `Auto-remediated (${ord.activeJeopardy.code}); Jeopardy case closed.` }, 65, {
+        topic: "domain.remediation.events", eventType: `REMEDIATION_SUCCEEDED: ${failedMs.id}`, detail: `Closed ${ord.activeJeopardy.caseId} and advanced ${ord.orderId}`
+      });
+    }
+    ord.activeJeopardy = null; ord.breachProb = 5;
+    const nextPending = ord.milestones.find(m => m.status === "PENDING");
+    if (nextPending) {
+      setMs(state, ord.orderId, nextPending.id, { status: "IN_PROGRESS", elapsed: "10s", risk: 4 }, 25, { topic: "flowable.activity.events", eventType: `ACTIVITY_STARTED: ${nextPending.id}`, detail: `Resumed order progression on ${ord.orderId}` });
+      state.selectedMilestoneId = nextPending.id;
+    }
+    render();
+  });
+  document.querySelectorAll(".lens-btn").forEach(b => b.addEventListener("click", () => switchLens(b.getAttribute("data-lens"))));
+  document.querySelectorAll(".ev-filter-btn").forEach(b => b.addEventListener("click", () => {
+    state.eventFilter = b.getAttribute("data-evfilter");
+    document.querySelectorAll(".ev-filter-btn").forEach(x => x.classList.toggle("tab-active", x.getAttribute("data-evfilter") === state.eventFilter));
+    render();
+  }));
+
+  stepOnce();
+})();
+</script>
+</body>
+</html>

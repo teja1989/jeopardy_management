@@ -1,0 +1,85 @@
+# =============================================================================
+# Block 3: Journey Blueprint — 60-Day Mail-In Device Trade-In
+# Reuses canonical templates (TMPL_ORDER_RECEIVED, TMPL_FULFILLMENT_SHIP,
+# TMPL_WAREHOUSE_RCV, TMPL_INSPECTION, TMPL_BILLING_SYNC, TMPL_ORDER_CLOSED)
+# with Trade-In business displayNames and independent 60-day SLA / RocksDB TTL.
+# =============================================================================
+schemaVersion: "1.0"
+configType: "JOURNEY_BLUEPRINT"
+
+blueprints:
+  - blueprintId: "bp-tradein-60day"
+    version: 1
+    active: true
+    displayName: "60-Day Bundled Device Trade-In Journey"
+    orderFamily: "UPGRADES_TRADEIN"
+    orderType: "DEVICE_TRADE_IN"
+    itemType: "DEVICE_TRADE_IN"
+    entityLevel: "TRADE_IN"
+    stateTtlDays: 75
+    overallSla:
+      warning: "45d"
+      jeopardy: "55d"
+      breach: "60d"
+    steps:
+      - stepId: "T1"
+        useTemplate: "TMPL_ORDER_RECEIVED"
+        displayName: "Trade-In Quote Locked ($650)"
+        dependsOn: []
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "5s"
+          expected: "1m"
+          warning: "5m"
+          jeopardy: "15m"
+          hardMax: "1h"
+      - stepId: "T2"
+        useTemplate: "TMPL_FULFILLMENT_SHIP"
+        displayName: "Prepaid Return Kit Shipped"
+        dependsOn: ["T1"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "4h"
+          expected: "60h"
+          warning: "96h"
+          jeopardy: "120h"
+          hardMax: "7d"
+      - stepId: "T3"
+        useTemplate: "TMPL_WAREHOUSE_RCV"
+        displayName: "Customer Device Mail-Back & Warehouse Receipt"
+        dependsOn: ["T2"]
+        slaOverride:
+          mode: "ML_PREDICTED"
+          modelId: "tradein_return_aft_v1.onnx"
+          rightCensoredSurvival: true
+          fallbackExpected: "16d"
+          warning: "24d"
+          jeopardy: "30d"
+          hardMin: "2d"
+          hardMax: "35d"
+      - stepId: "T4"
+        useTemplate: "TMPL_INSPECTION"
+        displayName: "Warehouse IMEI, FMD & Condition Inspection"
+        dependsOn: ["T3"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "1h"
+          expected: "24h"
+          warning: "48h"
+          jeopardy: "72h"
+          hardMax: "5d"
+      - stepId: "T5"
+        useTemplate: "TMPL_BILLING_SYNC"
+        displayName: "Recurring Monthly Trade-In Bill Credit Applied"
+        dependsOn: ["T4"]
+        slaOverride:
+          mode: "STATIC"
+          hardMin: "1m"
+          expected: "4h"
+          warning: "24h"
+          jeopardy: "48h"
+          hardMax: "7d"
+      - stepId: "T6"
+        useTemplate: "TMPL_ORDER_CLOSED"
+        displayName: "Trade-In Completed"
+        dependsOn: ["T5"]

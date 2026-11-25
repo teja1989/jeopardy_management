@@ -1,0 +1,4 @@
+# Local Multi-Domain Kafka Payload Simulator dependencies
+# Note: `--dry-run` mode works using Python 3 standard library only (zero pip installs required).
+kafka-python-ng>=2.2.3
+pyyaml>=6.0.1

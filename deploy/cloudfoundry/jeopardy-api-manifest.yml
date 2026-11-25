@@ -1,0 +1,76 @@
+---
+# =============================================================================
+# Cloud Foundry Production Manifest — Jeopardy Spring Boot 3 API & SSE Hub
+# =============================================================================
+# 100% Open-Source stack (OpenJDK 21, Spring Boot 3, PostgreSQL 16 OSS,
+# ClickHouse OSS, Apache Kafka). Zero proprietary SaaS dependencies.
+#
+# Usage:
+#   cf push -f deploy/cloudfoundry/jeopardy-api-manifest.yml \
+#     --vars-file deploy/cloudfoundry/vars-prod.yml
+#   cf attach-autoscaling-policy jeopardy-api deploy/cloudfoundry/autoscaler-policy.json
+# =============================================================================
+applications:
+  - name: jeopardy-api
+    instances: 2
+    memory: 1G
+    disk_quota: 1G
+    buildpacks:
+      - java_buildpack_offline
+    path: ../../services/jeopardy-api/target/jeopardy-api-0.1.0-SNAPSHOT.jar
+    stack: cflinuxfs4
+    routes:
+      - route: ((jeopardy_api_route))
+    health-check-type: http
+    health-check-http-endpoint: /actuator/health
+    health-check-invocation-timeout: 5
+    timeout: 120
+    metadata:
+      labels:
+        app.kubernetes.io/name: jeopardy-api
+        app.kubernetes.io/part-of: jeopardy-management
+        tier: api-sse
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8080"
+    # Bind externalized Cloud Foundry User-Provided Services (CUPS) or brokered OSS services
+    services:
+      - jeopardy-postgres-cups
+      - jeopardy-clickhouse-cups
+      - jeopardy-kafka-cups
+    env:
+      # Java 21 OpenJDK runtime & Spring Boot 3 Cloud Foundry profile
+      JBP_CONFIG_OPEN_JDK_JRE: '{ jre: { version: 21.+ }, memory_calculator: { stack_threads: 250 } }'
+      JBP_CONFIG_SPRING_AUTO_RECONFIGURATION: '{ enabled: false }'
+      SPRING_PROFILES_ACTIVE: cloudfoundry
+
+      # Cloud Foundry GoRouter HTTP/2 SSE Streaming (25s heartbeat avoids 60s idle proxy drops)
+      SERVER_HTTP2_ENABLED: "true"
+      JEOPARDY_SSE_HEARTBEAT_INTERVAL_MS: "25000"
+      JEOPARDY_SSE_TIMEOUT_MS: "0"
+
+      # Externalized PostgreSQL 16 OSS (CloudNativePG Read/Write endpoints)
+      POSTGRES_JDBC_URL: ((postgres_jdbc_url))
+      POSTGRES_USER: ((postgres_user))
+      POSTGRES_PASSWORD: ((postgres_password))
+      POSTGRES_POOL_SIZE: "15"
+
+      # Externalized ClickHouse 24.8 OSS (Altinity K8s Operator cluster)
+      CLICKHOUSE_JDBC_URL: ((clickhouse_jdbc_url))
+      CLICKHOUSE_HTTP_URL: ((clickhouse_http_url))
+      CLICKHOUSE_DB: jeopardy
+      CLICKHOUSE_USER: ((clickhouse_user))
+      CLICKHOUSE_PASSWORD: ((clickhouse_password))
+      CLICKHOUSE_POOL_SIZE: "10"
+
+      # Externalized Apache Kafka (MSK / Strimzi OSS) — instance-unique SSE consumer groups via CF_INSTANCE_GUID
+      KAFKA_BOOTSTRAP_SERVERS: ((kafka_bootstrap_servers))
+      JEOPARDY_KAFKA_LISTENER_ENABLED: "true"
+      JEOPARDY_TOPIC_CONFIG_UPDATES: jeopardy.config.updates
+      JEOPARDY_TOPIC_UI_UPDATES: jeopardy.ui.updates
+      JEOPARDY_TOPIC_ALERTS_OUT: jeopardy.alerts.out
+
+      # Observability & Actuator
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus,metrics
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: when_authorized

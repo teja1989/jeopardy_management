@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jeopardy Management Platform — Full UX Prototype (Dashboards, User Tracker & Admin Studio)</title>
+  <style>
+    :root {
+      --background: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --foreground: #f1f5f9;
+      --muted-foreground: #94a3b8;
+      --primary: #3b82f6;
+      --primary-foreground: #ffffff;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --chart-4: #a855f7;
+    }
+    [data-theme="light"] {
+      --background: #f8fafc;
+      --card: #ffffff;
+      --border: #cbd5e1;
+      --foreground: #0f172a;
+      --muted-foreground: #475569;
+      --primary: #2563eb;
+      --primary-foreground: #ffffff;
+      --success: #16a34a;
+      --warning: #d97706;
+      --error: #dc2626;
+      --chart-4: #7c3aed;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 18px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif; background: var(--background); color: var(--foreground); font-size: 13px; line-height: 1.45; }
+    .wrap { max-width: 1300px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+    .sub  { background: var(--background); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+    .row  { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .between { justify-content: space-between; }
+    .grid-5 { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 10px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
+    .split-tracker { display: grid; grid-template-columns: 3fr 9fr; gap: 14px; }
+    @media (max-width: 960px) { .split-tracker { grid-template-columns: 1fr; } }
+
+    .hidden { display: none !important; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .muted { color: var(--muted-foreground); }
+    .bold { font-weight: 700; }
+    .xs { font-size: 12px; }
+    h1 { margin: 0; font-size: 16px; }
+    h2 { margin: 0; font-size: 14px; }
+
+    button, select, input {
+      font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--background); color: var(--foreground);
+    }
+    button { cursor: pointer; font-weight: 600; background: var(--card); }
+    .nav-active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+    .selected-ring { box-shadow: 0 0 0 2px var(--primary); border-color: var(--primary) !important; }
+
+    .pill { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 9999px; font-size: 11px; font-weight: 700; border: 1px solid transparent; white-space: nowrap; }
+    .st-ok      { color: var(--success); background: rgba(34,197,94,0.14); border-color: rgba(34,197,94,0.4); }
+    .st-active  { color: var(--primary); background: rgba(59,130,246,0.14); border-color: rgba(59,130,246,0.4); }
+    .st-warn    { color: var(--warning); background: rgba(245,158,11,0.16); border-color: rgba(245,158,11,0.45); }
+    .st-err     { color: var(--error);   background: rgba(239,68,68,0.15);  border-color: rgba(239,68,68,0.45); }
+    .st-fallout { color: var(--chart-4); background: rgba(168,85,247,0.16); border-color: rgba(168,85,247,0.45); }
+    .st-muted   { color: var(--muted-foreground); background: rgba(148,163,184,0.12); border-color: var(--border); }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; padding: 9px 7px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted-foreground); }
+    .pipe-wrap { overflow-x: auto; padding-bottom: 4px; }
+    .pipe { display: flex; align-items: center; min-width: max-content; }
+    .ms-card { width: 170px; background: var(--background); border: 1px solid var(--border); border-radius: 10px; padding: 9px; display: flex; flex-direction: column; gap: 5px; }
+    .conn { width: 18px; height: 2px; background: var(--border); flex-shrink: 0; }
+    .conn.ok { background: var(--success); }
+    .conn.err { background: var(--error); }
+    .json-row { cursor: pointer; padding: 4px 8px; border-radius: 6px; display: flex; justify-content: space-between; gap: 10px; }
+    .json-row:hover { background: rgba(59,130,246,0.14); }
+    .json-match { background: rgba(245,158,11,0.3); border-radius: 4px; padding: 0 3px; }
+    pre { margin: 0; background: var(--background); border: 1px solid var(--border); border-radius: 8px; padding: 10px; overflow: auto; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <!-- HEADER -->
+    <div class="card row between">
+      <div class="row">
+        <div style="width:34px;height:34px;border-radius:8px;background:var(--primary);color:var(--primary-foreground);display:flex;align-items:center;justify-content:center;font-weight:800;">JM</div>
+        <div>
+          <div class="row">
+            <h1>Jeopardy Management &amp; Predictive SLA Platform</h1>
+            <span class="pill st-active">Full UX Prototype · Offline Standalone</span>
+          </div>
+          <div class="xs muted">40k Orders/Day &middot; 60+ Order Types &middot; AWS MSK + Apache Flink + PostgreSQL + ClickHouse + ONNX</div>
+        </div>
+      </div>
+      <div class="row">
+        <button data-persona="dashboards" class="persona-btn nav-active">1. Executive &amp; DevOps Dashboards</button>
+        <button data-persona="tracker" class="persona-btn">2. User &amp; Care Order Tracker (+ Fallout)</button>
+        <button data-persona="admin" class="persona-btn">3. Admin Config Studio (Nested JSON Search)</button>
+        <button id="btnTheme">Light/Dark</button>
+      </div>
+    </div>
+
+    <!-- PERSONA 1: DASHBOARDS -->
+    <div id="view-dashboards" style="display:flex;flex-direction:column;gap:14px;">
+      <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+        <div class="row between">
+          <div class="row">
+            <button data-dash="exec" class="dash-sub-btn nav-active">Executive Portfolio Summary</button>
+            <button data-dash="devops" class="dash-sub-btn">DevOps / SRE Bottlenecks &amp; Fallout Queues</button>
+          </div>
+          <div class="row">
+            <span class="pill st-ok mono">ClickHouse MV: 34ms</span>
+            <button id="btnExportReport">Export Sliced CSV / Parquet</button>
+          </div>
+        </div>
+        <div class="grid-5 xs" style="border-top:1px solid var(--border);padding-top:10px;">
+          <label><div class="muted" style="margin-bottom:3px;">Account Type</div>
+            <select id="sliceAccount" style="width:100%;">
+              <option value="ALL">All Account Types (4)</option>
+              <option value="RESIDENTIAL">RESIDENTIAL (Consumer)</option>
+              <option value="SMB">SMB (Small Business)</option>
+              <option value="ENTERPRISE">ENTERPRISE (B2B)</option>
+              <option value="VIP">VIP / Executive Care</option>
+            </select>
+          </label>
+          <label><div class="muted" style="margin-bottom:3px;">Order Family (60+ Types)</div>
+            <select id="sliceFamily" style="width:100%;">
+              <option value="ALL">All 6 Order Families (62 Types)</option>
+              <option value="UPGRADES_TRADEIN">Upgrades &amp; Trade-In (12 types)</option>
+              <option value="PORT_INS">Number Port-Ins (6 types)</option>
+              <option value="WIRELESS_NEW">Wireless New Activation (8 types)</option>
+              <option value="PLAN_PROMO">Plan &amp; Internal Promos (14 types)</option>
+              <option value="CHANGE_CANCEL">Change &amp; Cancel Orders (10 types)</option>
+              <option value="BROADBAND">Broadband &amp; Fiber (12 types)</option>
+            </select>
+          </label>
+          <label><div class="muted" style="margin-bottom:3px;">Sales Channel</div>
+            <select id="sliceChannel" style="width:100%;">
+              <option value="ALL">All Channels</option>
+              <option value="WEB">WEB / App Digital</option>
+              <option value="RETAIL">RETAIL Store</option>
+              <option value="CARE">CARE Agent</option>
+            </select>
+          </label>
+          <label><div class="muted" style="margin-bottom:3px;">Dynamic Dimension (Map)</div>
+            <select id="sliceDim" style="width:100%;">
+              <option value="ALL">All Carriers / Partners</option>
+              <option value="VERIZON">donor_carrier = VERIZON</option>
+              <option value="GOOGLE_VOICE">donor_carrier = GOOGLE_VOICE</option>
+              <option value="TRADEIN_WAREHOUSE">warehouse = TEXAS_GRADING</option>
+            </select>
+          </label>
+          <label><div class="muted" style="margin-bottom:3px;">Filter Order Type</div>
+            <input id="sliceSearch" type="text" placeholder="Search 60+ order types..." style="width:100%;" />
+          </label>
+        </div>
+      </div>
+
+      <div id="dashKpiGrid" class="grid-5"></div>
+
+      <div id="dash-exec" class="card" style="display:flex;flex-direction:column;gap:10px;">
+        <div class="row between">
+          <div>
+            <h2>Order Family &amp; Order Type SLA Health (ClickHouse <code>mv_exec_summary_hourly</code>)</h2>
+            <div class="xs muted">Grouped from 62 order types into 6 Executive Families. Click <b>Inspect Orders</b> to jump directly to the live User Tracker.</div>
+          </div>
+          <span id="exportToast" class="hidden pill st-ok">Exported sliced dataset (CSV)</span>
+        </div>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Order Family / Order Type</th><th>Account Slice</th><th>Volume (24h)</th><th>SLA Compliance</th><th>Jeopardy / Breach</th><th>Open Fallouts</th><th>Live P50 / P90</th><th>Action</th></tr></thead>
+            <tbody id="execTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="dash-devops" class="hidden grid-2">
+        <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="row between"><h2>Live 5-Min Failure &amp; Retry Storms</h2><span class="pill st-err">4 Active Anomalies</span></div>
+          <div id="devopsBottleneckList" style="display:flex;flex-direction:column;gap:8px;"></div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+          <h2>Fallout Management Ops Queues &amp; MTTR</h2>
+          <div id="devopsFalloutQueues" style="display:flex;flex-direction:column;gap:8px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PERSONA 2: TRACKER -->
+    <div id="view-tracker" class="hidden split-tracker">
+      <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+        <h2>Customer &amp; Order Queue</h2>
+        <input id="trackerSearch" type="text" placeholder="Search Customer, Order, Fallout..." style="width:100%;" />
+        <div id="customerQueueList" style="display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="row between" style="border-bottom:1px solid var(--border);padding-bottom:8px;">
+            <div>
+              <div class="row">
+                <h2 id="trCustTitle">-</h2>
+                <span id="trCustAcctBadge" class="pill st-active">-</span>
+                <span id="trCustImpactBadge" class="pill st-err">-</span>
+              </div>
+              <div id="trCustSub" class="xs muted" style="margin-top:3px;"></div>
+            </div>
+            <span id="trJourneyId" class="mono xs muted"></span>
+          </div>
+          <div id="trEntityTreeGrid" class="grid-4"></div>
+        </div>
+
+        <div class="card" style="display:flex;flex-direction:column;gap:12px;">
+          <div class="row between" style="border-bottom:1px solid var(--border);padding-bottom:8px;">
+            <div>
+              <div class="row"><h2 id="trSelEntityTitle">-</h2><span id="trSelEntityStatus" class="pill st-active">-</span></div>
+              <div id="trSelEntityMeta" class="xs muted" style="margin-top:3px;"></div>
+            </div>
+            <div id="trSelSlaSummary" class="sub row xs" style="gap:14px;"></div>
+          </div>
+          <div class="pipe-wrap"><div id="trMilestoneDag" class="pipe"></div></div>
+
+          <div id="trFalloutCard" class="hidden" style="background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.45);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;">
+            <div class="row between">
+              <div class="row">
+                <span class="pill st-fallout">Fallout Management BPMN</span>
+                <span id="trFalloutHeader" class="bold xs"></span>
+                <span id="trFalloutCode" class="mono xs sub" style="padding:2px 7px;"></span>
+              </div>
+              <span id="trFalloutQueue" class="mono xs muted"></span>
+            </div>
+            <div id="trFalloutSteps" class="grid-4 xs"></div>
+          </div>
+
+          <div class="sub" style="display:flex;flex-direction:column;gap:8px;">
+            <div class="row between">
+              <span class="xs bold muted">LEVEL-4 CLICKHOUSE EVENT &amp; SUB-BPMN TIMELINE</span>
+              <div class="row">
+                <button data-tr-ev="signal" class="tr-ev-btn nav-active">Signal + Fallout</button>
+                <button data-tr-ev="all" class="tr-ev-btn">All Raw BPMN Noise</button>
+              </div>
+            </div>
+            <div id="trEventLog" class="mono xs" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PERSONA 3: ADMIN CONFIG STUDIO -->
+    <div id="view-admin" class="hidden" style="display:flex;flex-direction:column;gap:14px;">
+      <div class="card row between">
+        <div class="row">
+          <button data-admin="json-search" class="admin-sub-btn nav-active">Step 1: Event Onboarding &amp; Nested JSON Search</button>
+          <button data-admin="templates" class="admin-sub-btn">Step 2: Reusable Milestone Library</button>
+          <button data-admin="stitcher" class="admin-sub-btn">Step 3: Order-Type Blueprint Stitcher</button>
+        </div>
+        <span class="pill st-ok">BroadcastState Synced (v3.3)</span>
+      </div>
+
+      <div id="admin-json-search" class="grid-2">
+        <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="row between">
+            <h2>Nested JSON Event Explorer</h2>
+            <select id="samplePayloadSelect">
+              <option value="order_multi">Sample 1: Multi-Item Order + Trade-In + Port-In</option>
+              <option value="tradein_bpmn">Sample 2: Trade-In BPMN with extra orderId</option>
+              <option value="fallout_bpmn">Sample 3: Fallout Management BPMN</option>
+            </select>
+          </div>
+          <div class="row">
+            <input id="nestedJsonSearch" type="text" placeholder="Search nested JSON keys/values (e.g. tradeIn, GOOGLE, errorCode)..." style="flex:1;" class="mono" />
+            <button id="btnClearJsonSearch">Clear</button>
+          </div>
+          <div id="jsonSearchStats" class="xs muted"></div>
+          <div id="jsonTreeContainer" class="sub mono xs" style="max-height:360px;overflow-y:auto;"></div>
+        </div>
+
+        <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="row between"><h2>Selected Path Binder &amp; Live Dry-Run</h2><span class="pill st-active">Compiled JsonPath AST</span></div>
+          <div class="sub xs" style="display:flex;flex-direction:column;gap:6px;">
+            <div class="row between"><span class="muted">Clicked JSONPath:</span><code id="selectedJsonPath" class="mono bold" style="color:var(--primary)">-</code></div>
+            <div class="row between"><span class="muted">Sample Value:</span><code id="selectedJsonValue" class="mono">-</code></div>
+            <div class="row" style="border-top:1px solid var(--border);padding-top:8px;">
+              <button data-bind-role="entityKey" class="bind-btn">+ Entity Key</button>
+              <button data-bind-role="relatedLink" class="bind-btn">+ Related Link</button>
+              <button data-bind-role="dimension" class="bind-btn">+ Slice Dim</button>
+              <button data-bind-role="milestoneTrigger" class="bind-btn nav-active">+ Milestone Detection Rule</button>
+            </div>
+          </div>
+          <div class="row between">
+            <span class="xs bold muted">ACTIVE EXTRACTION &amp; DETECTION RULES</span>
+            <button id="btnRunDryRun" class="nav-active">Run Live Dry-Run &rarr;</button>
+          </div>
+          <div id="activeBindingsList" style="display:flex;flex-direction:column;gap:6px;max-height:150px;overflow-y:auto;"></div>
+          <span class="xs bold muted">DRY-RUN OUTPUT (1-TO-N CANONICAL EVENTS)</span>
+          <pre id="dryRunOutput" class="mono" style="max-height:175px;"></pre>
+        </div>
+      </div>
+
+      <div id="admin-templates" class="hidden card" style="display:flex;flex-direction:column;gap:10px;">
+        <div class="row between"><h2>Reusable Milestone Template Library</h2><span class="pill st-ok">8 Global Templates Active</span></div>
+        <div id="templateLibraryGrid" class="grid-4"></div>
+      </div>
+
+      <div id="admin-stitcher" class="hidden grid-2">
+        <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="row between">
+            <h2>Order-Type Blueprint Stitcher</h2>
+            <select id="stitchOrderType">
+              <option value="SALES_UPGRADE">SALES_UPGRADE / HANDSET_SHIP_TO_HOME</option>
+              <option value="TRADE_IN">TRADE_IN / DEVICE_TRADE_IN (60d)</option>
+              <option value="MOBILE_PORT_IN">MOBILE_PORT_IN / WIRELESS_PORT</option>
+            </select>
+          </div>
+          <div id="stitchStepsList" style="display:flex;flex-direction:column;gap:8px;"></div>
+          <div class="row between" style="border-top:1px solid var(--border);padding-top:10px;">
+            <div class="row">
+              <select id="addTemplateSelect"></select>
+              <button id="btnAddStitchStep">+ Add Reusable Milestone</button>
+            </div>
+            <button id="btnPublishBlueprint" class="nav-active">Compile &amp; Hot-Reload to Flink</button>
+          </div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="row between"><h2>Compiled Config (<code>jeopardy.config.updates</code>)</h2><span id="publishToast" class="hidden pill st-ok">Hot-Reloaded in 0.4s!</span></div>
+          <pre id="compiledBlueprintPreview" class="mono" style="max-height:360px;"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const EXEC_DATA = [
+    { id: "r1", family: "UPGRADES_TRADEIN", familyLabel: "Upgrades & Trade-In (12 types)", orderType: "SALES_UPGRADE (iPhone 18 Ship-to-Home)", account: "RESIDENTIAL", channel: "WEB", dim: "ALL", volume: 11420, slaPct: 97.2, jeopardy: 64, fallout: 39, p50: "3.1d", p90: "4.6d", drillCustomer: "ACC-77812" },
+    { id: "r2", family: "UPGRADES_TRADEIN", familyLabel: "Upgrades & Trade-In (12 types)", orderType: "TRADE_IN (60-Day Google/iPhone)", account: "RESIDENTIAL", channel: "WEB", dim: "TRADEIN_WAREHOUSE", volume: 6890, slaPct: 93.8, jeopardy: 142, fallout: 88, p50: "21d", p90: "39d", drillCustomer: "ACC-77812" },
+    { id: "r3", family: "PORT_INS", familyLabel: "Number Port-Ins (6 types)", orderType: "MOBILE_PORT_IN (Verizon Wireless)", account: "ENTERPRISE", channel: "RETAIL", dim: "VERIZON", volume: 5340, slaPct: 98.9, jeopardy: 18, fallout: 11, p50: "5m", p90: "22m", drillCustomer: "ACC-99401" },
+    { id: "r4", family: "PORT_INS", familyLabel: "Number Port-Ins (6 types)", orderType: "MOBILE_PORT_IN (Google Voice / VoIP)", account: "ENTERPRISE", channel: "CARE", dim: "GOOGLE_VOICE", volume: 1290, slaPct: 86.4, jeopardy: 94, fallout: 52, p50: "28h", p90: "74h", drillCustomer: "ACC-99401" },
+    { id: "r5", family: "PLAN_PROMO", familyLabel: "Plan & Internal Promos (14 types)", orderType: "INTERNAL_PROMO (Auto Free Insurance)", account: "RESIDENTIAL", channel: "WEB", dim: "ALL", volume: 7810, slaPct: 95.1, jeopardy: 57, fallout: 41, p50: "3m", p90: "14m", drillCustomer: "ACC-77812" },
+    { id: "r6", family: "CHANGE_CANCEL", familyLabel: "Change & Cancel Orders (10 types)", orderType: "SUPP_PAYMENT_UPDATE (Short-Lived)", account: "VIP", channel: "CARE", dim: "ALL", volume: 2940, slaPct: 99.1, jeopardy: 9, fallout: 4, p50: "7m", p90: "19m", drillCustomer: "ACC-44219" },
+    { id: "r7", family: "WIRELESS_NEW", familyLabel: "Wireless New Activation (8 types)", orderType: "BYOD_ESIM_ACTIVATION", account: "SMB", channel: "RETAIL", dim: "ALL", volume: 3120, slaPct: 96.7, jeopardy: 31, fallout: 19, p50: "4m", p90: "16m", drillCustomer: "ACC-99401" },
+    { id: "r8", family: "BROADBAND", familyLabel: "Broadband & Fiber (12 types)", orderType: "FIBER_SELF_INSTALL_KIT", account: "SMB", channel: "WEB", dim: "ALL", volume: 1408, slaPct: 97.9, jeopardy: 12, fallout: 7, p50: "2.4d", p90: "4.1d", drillCustomer: "ACC-44219" }
+  ];
+  const DEVOPS_BOTTLENECKS = [
+    { templateId: "TMPL_ESIM_ACTIVATION", domain: "provisioning", errorCode: "E_ESIM_PROFILE_LOCKED", spike: "+340%", affected: 84, retries: "3.8 avg", p90: "29m (vs 12m)", drillCustomer: "ACC-99401" },
+    { templateId: "TMPL_INSPECTION", domain: "warehouse", errorCode: "E_GOOGLE_FRP_LOCK_ACTIVE", spike: "+115%", affected: 62, retries: "1.0 avg", p90: "4.8d (vs 2.1d)", drillCustomer: "ACC-77812" },
+    { templateId: "TMPL_PARTNER_ENROLL", domain: "partner-api", errorCode: "E_PARTNER_504_TIMEOUT", spike: "+210%", affected: 41, retries: "5.0 max", p90: "46m (vs 10m)", drillCustomer: "ACC-77812" },
+    { templateId: "TMPL_PAYMENT_AUTH", domain: "payment", errorCode: "E_CARD_3DS_DECLINED", spike: "+45%", affected: 29, retries: "3.0 max", p90: "14m (vs 2m)", drillCustomer: "ACC-44219" }
+  ];
+  const FALLOUT_QUEUES = [
+    { queue: "TradeIn-Warehouse-Ops", open: 88, inProgress: 34, mttr: "6h 12m", slaRisk: "HIGH" },
+    { queue: "Provisioning-L2-Network", open: 52, inProgress: 21, mttr: "38m", slaRisk: "HIGH" },
+    { queue: "Partner-Integrations-SRE", open: 41, inProgress: 12, mttr: "24m", slaRisk: "MED" },
+    { queue: "Payment-Fraud-Care", open: 19, inProgress: 15, mttr: "11m", slaRisk: "LOW" }
+  ];
+  const CUSTOMERS = {
+    "ACC-77812": {
+      id: "ACC-77812", name: "Alex Rivera", mdn: "215-555-0199", accountType: "RESIDENTIAL", journeyId: "JRN-2026-9941",
+      summary: "Sales Upgrade CLOSED, but 60d Trade-In & Free Insurance have active Fallouts",
+      impact: "AT RISK (2 Fallouts)", impactClass: "st-err",
+      entities: [
+        {
+          key: "ORD-88412", level: "ORDER", type: "SALES_UPGRADE", title: "Sales: iPhone 18 Pro Upgrade", relation: "PRIMARY_ORDER",
+          status: "COMPLETED", statusClass: "st-ok", p50: "3.1d", p90: "4.8d", hardMax: "10d", risk: 0, fallout: null,
+          milestones: [
+            { id: "S1", tmpl: "TMPL_ORDER_RECEIVED", name: "Upgrade Order Placed", status: "COMPLETED", st: "st-ok", elap: "12s", p50: "15s", falloutTag: null },
+            { id: "S2", tmpl: "TMPL_FRAUD_CHECK", name: "Identity & Device Fraud", status: "COMPLETED", st: "st-ok", elap: "41s", p50: "45s", falloutTag: null },
+            { id: "S3", tmpl: "TMPL_PAYMENT_AUTH", name: "Tax & Down-Payment", status: "COMPLETED", st: "st-ok", elap: "19s", p50: "20s", falloutTag: null },
+            { id: "S4", tmpl: "TMPL_FULFILLMENT_SHIP", name: "iPhone Ship-to-Home", status: "COMPLETED", st: "st-ok", elap: "2.3d", p50: "2.2d", falloutTag: null },
+            { id: "S5", tmpl: "TMPL_ESIM_ACTIVATION", name: "eSIM Activated", status: "COMPLETED", st: "st-ok", elap: "4m", p50: "4m", falloutTag: null },
+            { id: "S6", tmpl: "TMPL_BILLING_SYNC", name: "Billing Updated", status: "COMPLETED", st: "st-ok", elap: "1m", p50: "2m", falloutTag: null },
+            { id: "S7", tmpl: "TMPL_ORDER_CLOSED", name: "Sales Closed", status: "COMPLETED", st: "st-ok", elap: "8s", p50: "10s", falloutTag: null }
+          ],
+          events: [
+            { kind: "SIGNAL", time: "Day 3 14:22", topic: "domain.order", msg: "SALES_ORDER_CLOSED (RocksDB state evicted cleanly)" },
+            { kind: "SIGNAL", time: "Day 2 11:05", topic: "domain.fulfillment", msg: "SHIPMENT_DELIVERED (FedEx home delivery confirmed)" },
+            { kind: "NOISE", time: "Day 0 09:01", topic: "flowable.activity", msg: "x892 BPMN gateway/variable micro-events archived to ClickHouse" }
+          ]
+        },
+        {
+          key: "TRD-55091", level: "ORDER", type: "TRADE_IN", title: "Trade-In: Google 10 Pro ($650)", relation: "BUNDLED_FEATURE (60d)",
+          status: "IN_FALLOUT", statusClass: "st-fallout", p50: "21d", p90: "38d", hardMax: "60d", risk: 92,
+          fallout: {
+            id: "F-9921", milestone: "T4", code: "E_GOOGLE_FRP_LOCK_ACTIVE", queue: "TradeIn-Warehouse-Ops",
+            title: "Fallout #F-9921 attached to TRD-55091 / Grading & Inspection (Day 19)",
+            steps: [
+              { label: "1. Fallout Triggered", status: "DONE", detail: "warehouseGradingSubBpmn threw FRP lock error" },
+              { label: "2. Auto-Notification", status: "DONE", detail: "SMS/Email unlock guide sent to customer" },
+              { label: "3. Ops Queue Hold", status: "ACTIVE", detail: "Waiting customer Google unlock (18h elapsed)" },
+              { label: "4. Re-Inspect & Resume", status: "PENDING", detail: "Will auto-clear jeopardy & post $650 credit" }
+            ]
+          },
+          milestones: [
+            { id: "T1", tmpl: "TMPL_ORDER_RECEIVED", name: "Trade-In Quote Locked", status: "COMPLETED", st: "st-ok", elap: "18s", p50: "30s", falloutTag: null },
+            { id: "T2", tmpl: "TMPL_FULFILLMENT_SHIP", name: "Return Kit Shipped", status: "COMPLETED", st: "st-ok", elap: "2.1d", p50: "2.5d", falloutTag: null },
+            { id: "T3", tmpl: "TMPL_WAREHOUSE_RCV", name: "Google 10 Pro Received", status: "COMPLETED", st: "st-ok", elap: "15.5d", p50: "14d", falloutTag: null },
+            { id: "T4", tmpl: "TMPL_INSPECTION", name: "Grading & FRP Check", status: "IN_FALLOUT", st: "st-fallout", elap: "3.2d", p50: "2d", falloutTag: "Fallout #F-9921" },
+            { id: "T5", tmpl: "TMPL_BILLING_SYNC", name: "Bill Credits Applied", status: "PENDING", st: "st-muted", elap: "-", p50: "1d", falloutTag: null },
+            { id: "T6", tmpl: "TMPL_ORDER_CLOSED", name: "Trade-In Closed", status: "PENDING", st: "st-muted", elap: "-", p50: "1m", falloutTag: null }
+          ],
+          events: [
+            { kind: "SIGNAL", time: "Day 19 10:14", topic: "flowable.fallout", msg: "FALLOUT_OPENED #F-9921 -> correlated via parentProcessInstanceId P-501 -> TRD-55091" },
+            { kind: "SIGNAL", time: "Day 19 10:12", topic: "domain.warehouse", msg: "INSPECTION_FAILED: E_GOOGLE_FRP_LOCK_ACTIVE on Google 10 Pro" },
+            { kind: "NOISE", time: "Day 18 16:00", topic: "flowable.activity", msg: "x140 tradeInMainBpmn internal listener events archived to ClickHouse" }
+          ]
+        },
+        {
+          key: "INS-77301", level: "ORDER", type: "INTERNAL_PROMO", title: "Free Device Insurance (Perk)", relation: "INTERNAL_TRIGGERED",
+          status: "BREACHED", statusClass: "st-err", p50: "3m", p90: "12m", hardMax: "15m", risk: 99,
+          fallout: {
+            id: "F-9884", milestone: "I2", code: "E_PARTNER_504_TIMEOUT", queue: "Partner-Integrations-SRE",
+            title: "Fallout #F-9884 attached to INS-77301 / Partner Policy Sync",
+            steps: [
+              { label: "1. Fallout Triggered", status: "DONE", detail: "Partner API 504 after 5 retries" },
+              { label: "2. Backoff Retry #1", status: "DONE", detail: "Retried at +15m — still 504" },
+              { label: "3. SRE Escalation", status: "ACTIVE", detail: "Queued to Partner-Integrations-SRE (48m)" },
+              { label: "4. Replay Enrollment", status: "PENDING", detail: "Pending partner circuit recovery" }
+            ]
+          },
+          milestones: [
+            { id: "I1", tmpl: "TMPL_ORDER_RECEIVED", name: "Promo Eligibility Verified", status: "COMPLETED", st: "st-ok", elap: "15s", p50: "20s", falloutTag: null },
+            { id: "I2", tmpl: "TMPL_PARTNER_ENROLL", name: "Partner Policy Sync", status: "BREACHED", st: "st-err", elap: "48m", p50: "2m", falloutTag: "Fallout #F-9884" },
+            { id: "I3", tmpl: "TMPL_BILLING_SYNC", name: "$0/mo SOC Attached", status: "PENDING", st: "st-muted", elap: "-", p50: "30s", falloutTag: null }
+          ],
+          events: [
+            { kind: "SIGNAL", time: "Day 0 09:49", topic: "jeopardy.alerts.out", msg: "SLA_BREACHED: Exceeded 15m hardMax guardrail (48m elapsed)" },
+            { kind: "SIGNAL", time: "Day 0 09:05", topic: "flowable.fallout", msg: "FALLOUT_OPENED #F-9884 (E_PARTNER_504_TIMEOUT)" }
+          ]
+        }
+      ]
+    },
+    "ACC-99401": {
+      id: "ACC-99401", name: "Acme Corp (B2B Fleet)", mdn: "312-555-0840 (2 Lines)", accountType: "ENTERPRISE", journeyId: "JRN-2026-8810",
+      summary: "Multi-Item Order: Line 1 Verizon Port (5m OK) vs Line 2 Google Voice Port (3d ML SLA + eSIM Fallout)",
+      impact: "AT RISK (Item 2 Fallout)", impactClass: "st-err",
+      entities: [
+        {
+          key: "ORD-91002:ITM-1", level: "ORDER_ITEM", type: "MOBILE_PORT_IN", title: "Item 1: Verizon Port-In (5m SLA)", relation: "CHILD_ITEM of ORD-91002",
+          status: "COMPLETED", statusClass: "st-ok", p50: "5m", p90: "22m", hardMax: "4h", risk: 0, fallout: null,
+          milestones: [
+            { id: "P1", tmpl: "TMPL_ORDER_RECEIVED", name: "Port Request Captured", status: "COMPLETED", st: "st-ok", elap: "9s", p50: "15s", falloutTag: null },
+            { id: "P2", tmpl: "TMPL_PORT_FOC", name: "Verizon FOC Approval", status: "COMPLETED", st: "st-ok", elap: "4m 20s", p50: "5m", falloutTag: null },
+            { id: "P3", tmpl: "TMPL_ESIM_ACTIVATION", name: "Enterprise eSIM Active", status: "COMPLETED", st: "st-ok", elap: "2m", p50: "4m", falloutTag: null }
+          ],
+          events: [{ kind: "SIGNAL", time: "Day 0 10:07", topic: "domain.provisioning", msg: "ESIM_ACTIVATED on Verizon port-in within 5m ML P50" }]
+        },
+        {
+          key: "ORD-91002:ITM-2", level: "ORDER_ITEM", type: "MOBILE_PORT_IN", title: "Item 2: Google Voice Port-In (3d ML SLA)", relation: "CHILD_ITEM of ORD-91002",
+          status: "IN_FALLOUT", statusClass: "st-fallout", p50: "28h", p90: "74h", hardMax: "5d", risk: 89,
+          fallout: {
+            id: "F-9950", milestone: "P3", code: "E_ESIM_PROFILE_LOCKED", queue: "Provisioning-L2-Network",
+            title: "Fallout #F-9950 attached to Order Item ORD-91002:ITM-2 / eSIM Activation",
+            steps: [
+              { label: "1. Fallout Triggered", status: "DONE", detail: "activateEsimSubBpmn failed after 4 retries" },
+              { label: "2. L2 Network Queue", status: "ACTIVE", detail: "Assigned to Provisioning-L2 (24m elapsed)" },
+              { label: "3. HLR Force Release", status: "PENDING", detail: "Pending automated HLR unlock" },
+              { label: "4. Resume Activation", status: "PENDING", detail: "Auto-resumes Item 2 without affecting Item 1" }
+            ]
+          },
+          milestones: [
+            { id: "P1", tmpl: "TMPL_ORDER_RECEIVED", name: "VoIP Port Captured", status: "COMPLETED", st: "st-ok", elap: "14s", p50: "15s", falloutTag: null },
+            { id: "P2", tmpl: "TMPL_PORT_FOC", name: "Google Voice FOC (Adaptive Poll)", status: "COMPLETED", st: "st-ok", elap: "31h", p50: "28h", falloutTag: null },
+            { id: "P3", tmpl: "TMPL_ESIM_ACTIVATION", name: "Enterprise eSIM Push", status: "IN_FALLOUT", st: "st-fallout", elap: "24m", p50: "4m", falloutTag: "Fallout #F-9950" }
+          ],
+          events: [
+            { kind: "SIGNAL", time: "Day 2 08:19", topic: "flowable.fallout", msg: "FALLOUT_OPENED #F-9950 on ORD-91002:ITM-2 (E_ESIM_PROFILE_LOCKED)" },
+            { kind: "SIGNAL", time: "Day 2 07:55", topic: "domain.provisioning", msg: "PORT_FOC_RECEIVED from Google Voice (within 74h P90)" }
+          ]
+        }
+      ]
+    },
+    "ACC-44219": {
+      id: "ACC-44219", name: "Priya Patel", mdn: "650-555-0142", accountType: "VIP", journeyId: "JRN-2026-7720",
+      summary: "Payment Fallout auto-resolved via Short-Lived Change Order (SLA Clock Paused & Resumed)",
+      impact: "HEALTHY (Recovered)", impactClass: "st-ok",
+      entities: [
+        {
+          key: "ORD-77201", level: "ORDER", type: "SALES_UPGRADE", title: "Sales: iPhone 18 Pro Max", relation: "PRIMARY_ORDER",
+          status: "IN_PROGRESS", statusClass: "st-active", p50: "2.8d", p90: "4.2d", hardMax: "10d", risk: 8,
+          fallout: {
+            id: "F-9801", milestone: "S3", code: "E_CARD_3DS_DECLINED", queue: "Payment-Fraud-Care",
+            title: "Fallout #F-9801 (RESOLVED in 8m via Change Order CHG-10294)",
+            steps: [
+              { label: "1. Fallout Triggered", status: "DONE", detail: "Card declined on M3 Payment" },
+              { label: "2. Change Order Spawned", status: "DONE", detail: "CHG-10294 sent PAUSE_SLA_CLOCK" },
+              { label: "3. Customer Updated Card", status: "DONE", detail: "Apple Pay 3DS verified in 7m" },
+              { label: "4. Fallout Resolved", status: "DONE", detail: "Resumed M3 -> Advanced to Fulfillment" }
+            ]
+          },
+          milestones: [
+            { id: "S1", tmpl: "TMPL_ORDER_RECEIVED", name: "VIP Upgrade Placed", status: "COMPLETED", st: "st-ok", elap: "10s", p50: "15s", falloutTag: null },
+            { id: "S2", tmpl: "TMPL_FRAUD_CHECK", name: "VIP Fast Fraud Check", status: "COMPLETED", st: "st-ok", elap: "22s", p50: "30s", falloutTag: null },
+            { id: "S3", tmpl: "TMPL_PAYMENT_AUTH", name: "Payment Auth (Recovered)", status: "COMPLETED", st: "st-ok", elap: "2m net", p50: "20s", falloutTag: "Resolved #F-9801" },
+            { id: "S4", tmpl: "TMPL_FULFILLMENT_SHIP", name: "Overnight Ship-to-Home", status: "IN_PROGRESS", st: "st-active", elap: "6h", p50: "1.2d", falloutTag: null }
+          ],
+          events: [
+            { kind: "SIGNAL", time: "Day 0 11:15", topic: "flowable.fallout", msg: "FALLOUT_RESOLVED #F-9801 (Resolution: CHANGE_ORDER_AMEND)" },
+            { kind: "SIGNAL", time: "Day 0 11:08", topic: "jeopardy.cross-order.signals", msg: "PAUSE_SLA_CLOCK received from CHG-10294" }
+          ]
+        }
+      ]
+    }
+  };
+  const SAMPLE_PAYLOADS = {
+    order_multi: {
+      eventId: "evt-ord-99210", eventType: "ORDER_SUBMITTED", eventTime: "2026-11-23T15:02:11Z",
+      orderHeader: { orderId: "ORD-88412", orderType: "SALES_UPGRADE", commercialJourneyId: "JRN-2026-9941", channel: "WEB" },
+      customer: { accountId: "ACC-77812", accountType: "RESIDENTIAL", vipTier: "STANDARD" },
+      lineItems: [
+        { itemId: "ITM-1", orderItemType: "HANDSET_SHIP_TO_HOME", device: { sku: "IPHONE-18-PRO-256", fulfillmentMode: "SHIP_TO_HOME" }, tradeIn: { tradeInOrderId: "TRD-55091", deviceModel: "GOOGLE-10-PRO", promoValueUsd: 650, warehouseCode: "TEXAS_GRADING" } },
+        { itemId: "ITM-2", orderItemType: "MOBILE_PORT_IN", portIn: { donorCarrier: "GOOGLE_VOICE", portType: "VOIP", mdn: "215-555-0199" } }
+      ]
+    },
+    tradein_bpmn: {
+      eventId: "flw-501882", eventType: "ACTIVITY_COMPLETED", processDefinitionKey: "tradeInMainBpmn",
+      processInstanceId: "P-501", parentProcessInstanceId: "P-500", activityId: "warehouseGradingTask",
+      variables: { tradeInOrderId: "TRD-55091", orderId: "ORD-88412", accountId: "ACC-77812", grading: { result: "FAILED", errorCode: "E_GOOGLE_FRP_LOCK_ACTIVE", inspectorId: "WH-AUTO-12" } }
+    },
+    fallout_bpmn: {
+      eventId: "flw-fal-7721", eventType: "USER_TASK_CREATED", processDefinitionKey: "falloutManagementBpmn",
+      processInstanceId: "P-9921", parentProcessInstanceId: "P-501", activityId: "opsFalloutResolutionTask",
+      variables: { fallout: { falloutId: "F-9921", status: "IN_QUEUE", assignedQueue: "TradeIn-Warehouse-Ops", failedActivityId: "warehouseGradingTask", errorCode: "E_GOOGLE_FRP_LOCK_ACTIVE", retryCount: 2 } }
+    }
+  };
+  const MILESTONE_TEMPLATES = [
+    { id: "TMPL_ORDER_RECEIVED", defaultName: "Order Received", trigger: "$.eventType == 'ORDER_SUBMITTED'", defaultSla: "15s / Max 5m", usedIn: 62 },
+    { id: "TMPL_FRAUD_CHECK", defaultName: "Fraud Validation", trigger: "$.activityId == 'fraudCheckTask'", defaultSla: "45s / Max 30m", usedIn: 48 },
+    { id: "TMPL_PAYMENT_AUTH", defaultName: "Payment Authorization", trigger: "$.payment.status == 'AUTHORIZED'", defaultSla: "20s / Max 15m", usedIn: 51 },
+    { id: "TMPL_FULFILLMENT_SHIP", defaultName: "Fulfillment & Shipping", trigger: "$.shipment.status == 'DELIVERED'", defaultSla: "ML P50 / Max 7d", usedIn: 29 },
+    { id: "TMPL_PORT_FOC", defaultName: "Donor Carrier Port FOC", trigger: "$.portIn.status == 'FOC_RECEIVED'", defaultSla: "ML Segment (5m-72h)", usedIn: 6 },
+    { id: "TMPL_ESIM_ACTIVATION", defaultName: "Device Activation (eSIM)", trigger: "$.provisioning.state == 'ACTIVE'", defaultSla: "4m / Max 2h", usedIn: 34 },
+    { id: "TMPL_INSPECTION", defaultName: "Trade-In Grading & Inspect", trigger: "$.variables.grading.result == 'PASSED'", defaultSla: "2d / Max 10d", usedIn: 4 },
+    { id: "TMPL_BILLING_SYNC", defaultName: "Billing Updates", trigger: "$.billing.syncState == 'POSTED'", defaultSla: "2m / Max 1h", usedIn: 58 }
+  ];
+  const BLUEPRINTS = {
+    SALES_UPGRADE: [
+      { stepId: "S1", templateId: "TMPL_ORDER_RECEIVED", displayName: "iPhone Upgrade Order Placed", hardMax: "5m" },
+      { stepId: "S2", templateId: "TMPL_FRAUD_CHECK", displayName: "Identity & Device Fraud Check", hardMax: "30m" },
+      { stepId: "S3", templateId: "TMPL_PAYMENT_AUTH", displayName: "Tax & Down-Payment Capture", hardMax: "15m" },
+      { stepId: "S4", templateId: "TMPL_FULFILLMENT_SHIP", displayName: "iPhone Ship-to-Home Delivery", hardMax: "7d (ML)" },
+      { stepId: "S5", templateId: "TMPL_ESIM_ACTIVATION", displayName: "5G eSIM Activation", hardMax: "2h" },
+      { stepId: "S6", templateId: "TMPL_BILLING_SYNC", displayName: "Installment & Plan Billing Sync", hardMax: "1h" }
+    ],
+    TRADE_IN: [
+      { stepId: "T1", templateId: "TMPL_ORDER_RECEIVED", displayName: "Trade-In Quote Locked ($650)", hardMax: "15m" },
+      { stepId: "T2", templateId: "TMPL_FULFILLMENT_SHIP", displayName: "Prepaid Return Kit Shipped", hardMax: "7d" },
+      { stepId: "T3", templateId: "TMPL_INSPECTION", displayName: "Google 10 Pro Grading & FRP Check", hardMax: "10d" },
+      { stepId: "T4", templateId: "TMPL_BILLING_SYNC", displayName: "24-Mo Bill Credits Applied", hardMax: "7d" }
+    ],
+    MOBILE_PORT_IN: [
+      { stepId: "P1", templateId: "TMPL_ORDER_RECEIVED", displayName: "Port-In Request Captured", hardMax: "5m" },
+      { stepId: "P2", templateId: "TMPL_PORT_FOC", displayName: "Donor Carrier FOC Approval", hardMax: "5d (ML Segment)" },
+      { stepId: "P3", templateId: "TMPL_ESIM_ACTIVATION", displayName: "Ported Number eSIM Activation", hardMax: "2h" }
+    ]
+  };
+
+  let ui = {
+    persona: "dashboards", dashSub: "exec", selectedCustomer: "ACC-77812", selectedEntityKey: "TRD-55091",
+    trackerEvFilter: "signal", adminSub: "json-search", sampleKey: "order_multi", jsonSearch: "",
+    clickedPath: "$.lineItems[*].tradeIn.tradeInOrderId", clickedVal: "TRD-55091",
+    bindings: [
+      { role: "entityKey", path: "$.orderHeader.orderId", expr: null },
+      { role: "dimension", path: "$.customer.accountType", expr: null },
+      { role: "relatedLink", path: "$.lineItems[*].tradeIn.tradeInOrderId", expr: "BUNDLED_FEATURE" },
+      { role: "milestoneTrigger", path: "$.eventType", expr: "== 'ORDER_SUBMITTED' -> TMPL_ORDER_RECEIVED" }
+    ],
+    stitchType: "SALES_UPGRADE"
+  };
+
+  function renderDashboards() {
+    const acct = document.getElementById("sliceAccount").value, fam = document.getElementById("sliceFamily").value,
+          chan = document.getElementById("sliceChannel").value, dim = document.getElementById("sliceDim").value,
+          q = document.getElementById("sliceSearch").value.trim().toLowerCase();
+    const rows = EXEC_DATA.filter(r => (acct==="ALL"||r.account===acct) && (fam==="ALL"||r.family===fam) && (chan==="ALL"||r.channel===chan) && (dim==="ALL"||r.dim===dim) && (!q||r.orderType.toLowerCase().includes(q)||r.familyLabel.toLowerCase().includes(q)));
+    const totalVol = rows.reduce((a,r)=>a+r.volume,0), totalJep = rows.reduce((a,r)=>a+r.jeopardy,0), totalFal = rows.reduce((a,r)=>a+r.fallout,0);
+    const avgSla = rows.length ? (rows.reduce((a,r)=>a+r.slaPct*r.volume,0)/Math.max(1,totalVol)).toFixed(1) : "0.0";
+
+    document.getElementById("dashKpiGrid").innerHTML = [
+      { l: "Sliced Order Volume (24h)", v: totalVol.toLocaleString(), s: `${rows.length} active segments`, c: "var(--foreground)" },
+      { l: "SLA Compliance Rate", v: `${avgSla}%`, s: "Weighted across slice", c: Number(avgSla)>=95?"var(--success)":"var(--warning)" },
+      { l: "Active Jeopardy / Breached", v: totalJep.toLocaleString(), s: "Flink timer & failure alerts", c: "var(--error)" },
+      { l: "Open Fallout BPMN Cases", v: totalFal.toLocaleString(), s: "Across 4 Ops Queues", c: "var(--chart-4)" },
+      { l: "Avg Fallout MTTR", v: "42m", s: "ClickHouse live rollup", c: "var(--primary)" }
+    ].map(k => `<div class="card"><div class="xs muted">${k.l}</div><div class="mono bold" style="font-size:18px;color:${k.c}">${k.v}</div><div class="xs muted">${k.s}</div></div>`).join("");
+
+    const tbody = document.getElementById("execTableBody");
+    tbody.innerHTML = rows.length===0 ? `<tr><td colspan="8" style="text-align:center;padding:20px;" class="muted">No slices match filters.</td></tr>` : rows.map(r => `
+      <tr>
+        <td><div class="bold">${r.orderType}</div><div class="muted">${r.familyLabel}</div></td>
+        <td><span class="pill st-muted">${r.account} · ${r.channel}</span></td>
+        <td class="mono bold">${r.volume.toLocaleString()}</td>
+        <td class="mono bold" style="color:${r.slaPct>=96?'var(--success)':r.slaPct>=92?'var(--warning)':'var(--error)'}">${r.slaPct}%</td>
+        <td class="mono bold" style="color:var(--error)">${r.jeopardy}</td>
+        <td class="mono bold" style="color:var(--chart-4)">${r.fallout}</td>
+        <td class="mono muted">${r.p50} / ${r.p90}</td>
+        <td><button data-jump-cust="${r.drillCustomer}">Inspect Orders &rarr;</button></td>
+      </tr>`).join("");
+    tbody.querySelectorAll("[data-jump-cust]").forEach(b => b.addEventListener("click", () => { ui.selectedCustomer = b.getAttribute("data-jump-cust"); ui.selectedEntityKey = CUSTOMERS[ui.selectedCustomer].entities[0].key; switchPersona("tracker"); }));
+
+    document.getElementById("devopsBottleneckList").innerHTML = DEVOPS_BOTTLENECKS.map(b => `
+      <div class="sub row between xs">
+        <div>
+          <div class="row"><span class="mono bold" style="color:var(--error)">${b.errorCode}</span><span class="pill st-err">${b.spike} (5m)</span><span class="pill st-muted">${b.templateId}</span></div>
+          <div class="muted" style="margin-top:3px;">Domain: <b>${b.domain}</b> &middot; Affected: <b>${b.affected}</b> &middot; Retries: <b>${b.retries}</b> &middot; P90: <b class="mono">${b.p90}</b></div>
+        </div>
+        <button data-jump-cust="${b.drillCustomer}">Inspect Failing Order &rarr;</button>
+      </div>`).join("");
+    document.getElementById("devopsBottleneckList").querySelectorAll("[data-jump-cust]").forEach(b => b.addEventListener("click", () => { ui.selectedCustomer = b.getAttribute("data-jump-cust"); ui.selectedEntityKey = (CUSTOMERS[ui.selectedCustomer].entities.find(e=>e.fallout)||CUSTOMERS[ui.selectedCustomer].entities[0]).key; switchPersona("tracker"); }));
+
+    document.getElementById("devopsFalloutQueues").innerHTML = FALLOUT_QUEUES.map(q => `
+      <div class="sub xs"><div class="row between"><span class="bold">${q.queue}</span><span class="pill ${q.slaRisk==='HIGH'?'st-err':q.slaRisk==='MED'?'st-warn':'st-ok'}">${q.slaRisk} RISK</span></div>
+      <div class="row between muted mono" style="margin-top:4px;"><span>Open: ${q.open}</span><span>Working: ${q.inProgress}</span><span>MTTR: ${q.mttr}</span></div></div>`).join("");
+  }
+
+  function renderTracker() {
+    const q = document.getElementById("trackerSearch").value.trim().toLowerCase();
+    const list = Object.values(CUSTOMERS).filter(c => !q || c.id.toLowerCase().includes(q) || c.name.toLowerCase().includes(q) || c.summary.toLowerCase().includes(q));
+    const qEl = document.getElementById("customerQueueList");
+    qEl.innerHTML = list.map(c => `<button data-cust-id="${c.id}" class="sub ${c.id===ui.selectedCustomer?'selected-ring':''}" style="text-align:left;width:100%;display:flex;flex-direction:column;gap:4px;"><div class="row between"><span class="mono bold">${c.id}</span><span class="pill ${c.impactClass}">${c.accountType}</span></div><div class="bold">${c.name}</div><div class="muted">${c.summary}</div></button>`).join("");
+    qEl.querySelectorAll("[data-cust-id]").forEach(b => b.addEventListener("click", () => { ui.selectedCustomer = b.getAttribute("data-cust-id"); const ents = CUSTOMERS[ui.selectedCustomer].entities; ui.selectedEntityKey = (ents.find(e=>e.fallout)||ents[0]).key; renderTracker(); }));
+
+    const cust = CUSTOMERS[ui.selectedCustomer] || Object.values(CUSTOMERS)[0];
+    document.getElementById("trCustTitle").textContent = `${cust.name} (${cust.id})`;
+    document.getElementById("trCustAcctBadge").textContent = `${cust.accountType} · MDN ${cust.mdn}`;
+    const impEl = document.getElementById("trCustImpactBadge"); impEl.className = `pill ${cust.impactClass}`; impEl.textContent = cust.impact;
+    document.getElementById("trCustSub").textContent = cust.summary;
+    document.getElementById("trJourneyId").textContent = `Journey: ${cust.journeyId}`;
+
+    const treeEl = document.getElementById("trEntityTreeGrid");
+    treeEl.innerHTML = cust.entities.map(e => `<button data-ent-key="${e.key}" class="sub ${e.key===ui.selectedEntityKey?'selected-ring':''}" style="text-align:left;width:100%;display:flex;flex-direction:column;gap:5px;"><div class="row between"><span class="mono bold">${e.key}</span><span class="pill ${e.statusClass}">${e.status}</span></div><div class="bold">${e.title}</div><div class="muted">${e.level} · ${e.relation}</div>${e.fallout?`<span class="pill st-fallout">Fallout ${e.fallout.id}</span>`:`<div class="muted">Risk: <b class="mono">${e.risk}%</b></div>`}</button>`).join("");
+    treeEl.querySelectorAll("[data-ent-key]").forEach(b => b.addEventListener("click", () => { ui.selectedEntityKey = b.getAttribute("data-ent-key"); renderTracker(); }));
+
+    const ent = cust.entities.find(e => e.key === ui.selectedEntityKey) || cust.entities[0];
+    document.getElementById("trSelEntityTitle").textContent = `${ent.title} (${ent.key})`;
+    const stBadge = document.getElementById("trSelEntityStatus"); stBadge.className = `pill ${ent.statusClass}`; stBadge.textContent = ent.status;
+    document.getElementById("trSelEntityMeta").textContent = `Level: ${ent.level} | Type: ${ent.type} | Link: ${ent.relation}`;
+    document.getElementById("trSelSlaSummary").innerHTML = `<span>ML P50: <b class="mono">${ent.p50}</b></span><span>P90: <b class="mono">${ent.p90}</b></span><span>Hard Max: <b class="mono">${ent.hardMax}</b></span><span>Risk: <b class="mono" style="color:${ent.risk>=70?'var(--error)':'var(--success)'}">${ent.risk}%</b></span>`;
+
+    document.getElementById("trMilestoneDag").innerHTML = ent.milestones.map((m, idx) => {
+      const conn = m.status==="COMPLETED"?"ok":(m.status==="BREACHED"||m.status==="IN_FALLOUT")?"err":"";
+      return `<div class="ms-card"><div class="row between"><span class="mono bold muted">${m.id}</span><span class="pill ${m.st}">${m.status}</span></div><div class="bold xs">${m.name}</div><div class="mono xs muted">${m.tmpl}</div>${m.falloutTag?`<div><span class="pill st-fallout">${m.falloutTag}</span></div>`:""}<div class="row between xs muted mono" style="border-top:1px solid var(--border);padding-top:4px;"><span>Elap: ${m.elap}</span><span>P50: ${m.p50}</span></div></div>${idx<ent.milestones.length-1?`<div class="conn ${conn}"></div>`:""}`;
+    }).join("");
+
+    const fCard = document.getElementById("trFalloutCard");
+    if (ent.fallout) {
+      fCard.classList.remove("hidden");
+      document.getElementById("trFalloutHeader").textContent = ent.fallout.title;
+      document.getElementById("trFalloutCode").textContent = ent.fallout.code;
+      document.getElementById("trFalloutQueue").textContent = `Queue: ${ent.fallout.queue}`;
+      document.getElementById("trFalloutSteps").innerHTML = ent.fallout.steps.map(st => `<div class="sub"><div class="row between"><span class="bold">${st.label}</span><span class="pill ${st.status==='DONE'?'st-ok':st.status==='ACTIVE'?'st-fallout':'st-muted'}">${st.status}</span></div><div class="muted" style="margin-top:4px;">${st.detail}</div></div>`).join("");
+    } else fCard.classList.add("hidden");
+
+    const evs = ent.events.filter(e => ui.trackerEvFilter==="all" || e.kind==="SIGNAL");
+    document.getElementById("trEventLog").innerHTML = evs.map(e => `<div class="card" style="padding:7px;${e.kind==='NOISE'?'opacity:0.65;':''}"><span class="muted">[${e.time}]</span> <span class="bold" style="color:${e.topic.includes('fallout')?'var(--chart-4)':e.topic.includes('alerts')?'var(--error)':'var(--primary)'}">[${e.topic}]</span> ${e.msg}</div>`).join("");
+  }
+
+  function flattenJsonNodes(obj, path="$", wildcardPath="$", depth=0, out=[]) {
+    if (Array.isArray(obj)) {
+      out.push({ path, wildcardPath, key: path.split(".").pop(), value: `[Array(${obj.length})]`, isLeaf: false, depth });
+      obj.forEach((item, i) => flattenJsonNodes(item, `${path}[${i}]`, `${wildcardPath}[*]`, depth+1, out));
+    } else if (obj !== null && typeof obj === "object") {
+      if (depth > 0) out.push({ path, wildcardPath, key: path.split(".").pop(), value: "{...}", isLeaf: false, depth });
+      Object.entries(obj).forEach(([k, v]) => {
+        const nextP = `${path}.${k}`, nextW = `${wildcardPath}.${k}`;
+        if (v !== null && typeof v === "object") flattenJsonNodes(v, nextP, nextW, depth+1, out);
+        else out.push({ path: nextP, wildcardPath: nextW, key: k, value: String(v), isLeaf: true, depth: depth+1 });
+      });
+    }
+    return out;
+  }
+
+  function evalJsonPath(obj, expr) {
+    const clean = expr.replace(/^\$\.?/, ""); if (!clean) return [obj];
+    let cur = [obj];
+    for (const part of clean.split(".")) {
+      const next = [], arrM = part.match(/^([^\[]+)\[(\*|\d+)\]$/);
+      for (const node of cur) {
+        if (node === null || typeof node !== "object") continue;
+        if (arrM) { const a = node[arrM[1]]; if (!Array.isArray(a)) continue; if (arrM[2]==="*") next.push(...a); else if (a[Number(arrM[2])]!==undefined) next.push(a[Number(arrM[2])]); }
+        else if (node[part] !== undefined) next.push(node[part]);
+      }
+      cur = next;
+    }
+    return cur;
+  }
+
+  function renderAdminJsonExplorer() {
+    const nodes = flattenJsonNodes(SAMPLE_PAYLOADS[ui.sampleKey]);
+    const q = ui.jsonSearch.trim().toLowerCase();
+    let hits = 0;
+    const filtered = nodes.filter(n => { if (!q) return true; const ok = n.key.toLowerCase().includes(q)||n.value.toLowerCase().includes(q)||n.wildcardPath.toLowerCase().includes(q); if (ok) hits++; return ok; });
+    document.getElementById("jsonSearchStats").textContent = q ? `Found ${hits} matching nested JSON path(s) for "${ui.jsonSearch}". Click any row to bind.` : `Showing ${nodes.length} nested paths. Type above to search keys or values at any depth.`;
+    const treeEl = document.getElementById("jsonTreeContainer");
+    treeEl.innerHTML = filtered.map(n => {
+      const ind = q ? 0 : Math.min(n.depth*14, 70);
+      const kHtml = q && n.key.toLowerCase().includes(q) ? `<span class="json-match">${n.key}</span>` : n.key;
+      const vHtml = q && n.value.toLowerCase().includes(q) ? `<span class="json-match">${n.value}</span>` : n.value;
+      return `<div data-jpath="${n.wildcardPath}" data-jval="${n.value.replace(/"/g,'&quot;')}" class="json-row ${n.wildcardPath===ui.clickedPath?'selected-ring':''}" style="padding-left:${ind+8}px;"><div><span class="bold" style="color:var(--primary)">${kHtml}</span>: <span style="color:${n.isLeaf?'var(--success)':'var(--muted-foreground)'}">${n.isLeaf?`"${vHtml}"`:vHtml}</span></div><span class="muted">${n.wildcardPath}</span></div>`;
+    }).join("");
+    treeEl.querySelectorAll("[data-jpath]").forEach(r => r.addEventListener("click", () => { ui.clickedPath = r.getAttribute("data-jpath"); ui.clickedVal = r.getAttribute("data-jval"); renderAdminJsonExplorer(); }));
+    document.getElementById("selectedJsonPath").textContent = ui.clickedPath;
+    document.getElementById("selectedJsonValue").textContent = ui.clickedVal;
+
+    const bList = document.getElementById("activeBindingsList");
+    bList.innerHTML = ui.bindings.map((b, i) => `<div class="sub row between mono xs"><div><span class="pill ${b.role==='milestoneTrigger'?'st-ok':b.role==='relatedLink'?'st-fallout':'st-active'}">${b.role}</span> ${b.path} <span class="muted">${b.expr||""}</span></div><button data-del-bind="${i}">x</button></div>`).join("");
+    bList.querySelectorAll("[data-del-bind]").forEach(b => b.addEventListener("click", () => { ui.bindings.splice(Number(b.getAttribute("data-del-bind")),1); renderAdminJsonExplorer(); runLiveDryRun(); }));
+  }
+
+  function runLiveDryRun() {
+    const payload = SAMPLE_PAYLOADS[ui.sampleKey];
+    const out = { sourceSample: ui.sampleKey, flinkCompileMode: "Pre-Compiled JsonPath AST (<50us)", extractedValues: {}, fanOutEntitiesDetected: [], milestoneDetections: [] };
+    ui.bindings.forEach(b => {
+      const vals = evalJsonPath(payload, b.path);
+      out.extractedValues[`${b.role} (${b.path})`] = vals.length===1 ? vals[0] : vals;
+      if (b.role==="relatedLink" && vals.length) vals.forEach(v => out.fanOutEntitiesDetected.push({ entityKey: v, relation: "BUNDLED_FEATURE" }));
+      if (b.role==="milestoneTrigger" && vals.length) out.milestoneDetections.push({ matchedPath: b.path, matchedValue: vals[0], action: b.expr || "TRIGGER_MILESTONE" });
+    });
+    if (Array.isArray(payload.lineItems)) payload.lineItems.forEach(li => out.fanOutEntitiesDetected.push({ entityLevel: "ORDER_ITEM", entityKey: `${payload.orderHeader.orderId}:${li.itemId}`, itemType: li.orderItemType }));
+    document.getElementById("dryRunOutput").textContent = JSON.stringify(out, null, 2);
+  }
+
+  function renderAdminTemplates() {
+    document.getElementById("templateLibraryGrid").innerHTML = MILESTONE_TEMPLATES.map(t => `<div class="sub xs" style="display:flex;flex-direction:column;gap:5px;"><div class="row between"><span class="mono bold" style="color:var(--primary)">${t.id}</span><span class="pill st-muted">${t.usedIn} types</span></div><div class="bold">${t.defaultName}</div><div class="mono muted">Match: ${t.trigger}</div><div class="muted" style="border-top:1px solid var(--border);padding-top:4px;">Default SLA: <b class="mono">${t.defaultSla}</b></div></div>`).join("");
+  }
+
+  function renderAdminStitcher() {
+    const steps = BLUEPRINTS[ui.stitchType];
+    const el = document.getElementById("stitchStepsList");
+    el.innerHTML = steps.map((s, i) => `<div class="sub row between xs"><span class="mono bold" style="color:var(--primary);min-width:170px;">${s.stepId} · ${s.templateId}</span><input data-en="${i}" value="${s.displayName}" style="flex:1;" /><input data-es="${i}" value="${s.hardMax}" class="mono" style="width:110px;" /><button data-rm="${i}">x</button></div>`).join("");
+    el.querySelectorAll("[data-en]").forEach(x => x.addEventListener("input", () => { steps[Number(x.getAttribute("data-en"))].displayName = x.value; updateCompiledBlueprint(); }));
+    el.querySelectorAll("[data-es]").forEach(x => x.addEventListener("input", () => { steps[Number(x.getAttribute("data-es"))].hardMax = x.value; updateCompiledBlueprint(); }));
+    el.querySelectorAll("[data-rm]").forEach(x => x.addEventListener("click", () => { steps.splice(Number(x.getAttribute("data-rm")),1); renderAdminStitcher(); }));
+    document.getElementById("addTemplateSelect").innerHTML = MILESTONE_TEMPLATES.map(t => `<option value="${t.id}">${t.id} (${t.defaultName})</option>`).join("");
+    updateCompiledBlueprint();
+  }
+
+  function updateCompiledBlueprint() {
+    document.getElementById("compiledBlueprintPreview").textContent = JSON.stringify({
+      topic: "jeopardy.config.updates", orderType: ui.stitchType, version: "2026.11.23-rev4", falloutOverlayEnabled: true,
+      milestones: BLUEPRINTS[ui.stitchType].map((s, i) => ({ sequence: (i+1)*10, stepId: s.stepId, templateId: s.templateId, displayName: s.displayName, hardMaxGuardrail: s.hardMax }))
+    }, null, 2);
+  }
+
+  function switchPersona(p) {
+    ui.persona = p;
+    ["dashboards","tracker","admin"].forEach(id => document.getElementById(`view-${id}`).classList.toggle("hidden", id !== p));
+    document.querySelectorAll(".persona-btn").forEach(b => b.classList.toggle("nav-active", b.getAttribute("data-persona") === p));
+    if (p === "dashboards") renderDashboards();
+    if (p === "tracker") renderTracker();
+    if (p === "admin") { renderAdminJsonExplorer(); runLiveDryRun(); renderAdminTemplates(); renderAdminStitcher(); }
+  }
+
+  document.querySelectorAll(".persona-btn").forEach(b => b.addEventListener("click", () => switchPersona(b.getAttribute("data-persona"))));
+  document.getElementById("btnTheme").addEventListener("click", () => document.documentElement.setAttribute("data-theme", document.documentElement.getAttribute("data-theme")==="light"?"dark":"light"));
+  document.querySelectorAll(".dash-sub-btn").forEach(b => b.addEventListener("click", () => { ui.dashSub = b.getAttribute("data-dash"); document.getElementById("dash-exec").classList.toggle("hidden", ui.dashSub!=="exec"); document.getElementById("dash-devops").classList.toggle("hidden", ui.dashSub!=="devops"); document.querySelectorAll(".dash-sub-btn").forEach(x => x.classList.toggle("nav-active", x.getAttribute("data-dash")===ui.dashSub)); }));
+  ["sliceAccount","sliceFamily","sliceChannel","sliceDim"].forEach(id => document.getElementById(id).addEventListener("change", renderDashboards));
+  document.getElementById("sliceSearch").addEventListener("input", renderDashboards);
+  document.getElementById("btnExportReport").addEventListener("click", () => { const t = document.getElementById("exportToast"); t.classList.remove("hidden"); setTimeout(()=>t.classList.add("hidden"),2500); });
+  document.getElementById("trackerSearch").addEventListener("input", renderTracker);
+  document.querySelectorAll(".tr-ev-btn").forEach(b => b.addEventListener("click", () => { ui.trackerEvFilter = b.getAttribute("data-tr-ev"); document.querySelectorAll(".tr-ev-btn").forEach(x => x.classList.toggle("nav-active", x.getAttribute("data-tr-ev")===ui.trackerEvFilter)); renderTracker(); }));
+  document.querySelectorAll(".admin-sub-btn").forEach(b => b.addEventListener("click", () => { ui.adminSub = b.getAttribute("data-admin"); ["json-search","templates","stitcher"].forEach(id => document.getElementById(`admin-${id}`).classList.toggle("hidden", id!==ui.adminSub)); document.querySelectorAll(".admin-sub-btn").forEach(x => x.classList.toggle("nav-active", x.getAttribute("data-admin")===ui.adminSub)); }));
+  document.getElementById("samplePayloadSelect").addEventListener("change", (e) => {
+    ui.sampleKey = e.target.value; ui.jsonSearch = ""; document.getElementById("nestedJsonSearch").value = "";
+    if (ui.sampleKey === "tradein_bpmn") ui.bindings = [{ role:"entityKey", path:"$.variables.tradeInOrderId", expr:null }, { role:"relatedLink", path:"$.variables.orderId", expr:"BUNDLED_FEATURE" }, { role:"milestoneTrigger", path:"$.variables.grading.errorCode", expr:"== 'E_GOOGLE_FRP_LOCK_ACTIVE' -> FAIL TMPL_INSPECTION" }];
+    else if (ui.sampleKey === "fallout_bpmn") ui.bindings = [{ role:"entityKey", path:"$.parentProcessInstanceId", expr:"WALK bpmn_process_registry" }, { role:"dimension", path:"$.variables.fallout.assignedQueue", expr:null }, { role:"milestoneTrigger", path:"$.variables.fallout.status", expr:"== 'IN_QUEUE' -> ATTACH FALLOUT_OVERLAY" }];
+    else ui.bindings = [{ role:"entityKey", path:"$.orderHeader.orderId", expr:null }, { role:"dimension", path:"$.customer.accountType", expr:null }, { role:"relatedLink", path:"$.lineItems[*].tradeIn.tradeInOrderId", expr:"BUNDLED_FEATURE" }, { role:"milestoneTrigger", path:"$.eventType", expr:"== 'ORDER_SUBMITTED' -> TMPL_ORDER_RECEIVED" }];
+    renderAdminJsonExplorer(); runLiveDryRun();
+  });
+  document.getElementById("nestedJsonSearch").addEventListener("input", e => { ui.jsonSearch = e.target.value; renderAdminJsonExplorer(); });
+  document.getElementById("btnClearJsonSearch").addEventListener("click", () => { ui.jsonSearch = ""; document.getElementById("nestedJsonSearch").value = ""; renderAdminJsonExplorer(); });
+  document.querySelectorAll(".bind-btn").forEach(b => b.addEventListener("click", () => { const role = b.getAttribute("data-bind-role"); ui.bindings.push({ role, path: ui.clickedPath, expr: role==="milestoneTrigger"?`== '${ui.clickedVal}' -> TRIGGER_MILESTONE`:role==="relatedLink"?"BUNDLED_FEATURE":null }); renderAdminJsonExplorer(); runLiveDryRun(); }));
+  document.getElementById("btnRunDryRun").addEventListener("click", runLiveDryRun);
+  document.getElementById("stitchOrderType").addEventListener("change", e => { ui.stitchType = e.target.value; renderAdminStitcher(); });
+  document.getElementById("btnAddStitchStep").addEventListener("click", () => { const t = MILESTONE_TEMPLATES.find(x=>x.id===document.getElementById("addTemplateSelect").value); const l = BLUEPRINTS[ui.stitchType]; l.push({ stepId:`M${l.length+1}`, templateId:t.id, displayName:`${t.defaultName} (${ui.stitchType})`, hardMax:"1h" }); renderAdminStitcher(); });
+  document.getElementById("btnPublishBlueprint").addEventListener("click", () => { const t = document.getElementById("publishToast"); t.classList.remove("hidden"); setTimeout(()=>t.classList.add("hidden"),2500); });
+  renderDashboards();
+})();
+</script>
+</body>
+</html>

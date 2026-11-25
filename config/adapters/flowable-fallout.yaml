@@ -1,0 +1,86 @@
+# =============================================================================
+# Block 1: Event Adapter — Flowable Fallout Management BPMN Overlay
+# Source Topic: flowable.fallout.events
+# Attaches falloutManagementBpmn directly onto the failing Order, Order Item,
+# or Trade-In entity AND its impacted milestone (entity_fallouts overlay).
+# =============================================================================
+schemaVersion: "1.0"
+configType: "EVENT_ADAPTER"
+adapterId: "adapter-flowable-fallout"
+version: 1
+enabled: true
+sourceTopic: "flowable.fallout.events"
+domain: "FALLOUT"
+overlayMode: "FALLOUT_OVERLAY"
+description: >-
+  Correlates Flowable falloutManagementBpmn lifecycle events (OPEN -> IN_QUEUE
+  -> RETRYING -> RESOLVED) onto the impacted TrackedEntity via explicit fallout
+  variables or Stage 2 parentProcessInstanceId walk.
+
+includeFilter:
+  eventTypePath: "$.eventType"
+  allowedValues:
+    - "FALLOUT_OPENED"
+    - "FALLOUT_ASSIGNED"
+    - "FALLOUT_IN_QUEUE"
+    - "FALLOUT_RETRY_TRIGGERED"
+    - "FALLOUT_ESCALATED"
+    - "FALLOUT_RESOLVED"
+    - "FALLOUT_CANCELLED"
+
+redactPaths:
+  - "$.variables.customerEmail"
+  - "$.variables.customerPhone"
+  - "$.variables.agentNotesPii"
+
+commonFields:
+  eventIdPath: "$.eventId"
+  eventTimePath: "$.eventTime"
+  eventTypePath: "$.eventType"
+  processInstanceIdPath: "$.processInstanceId"
+  parentProcessInstanceIdPath: "$.parentProcessInstanceId"
+  processDefinitionKeyPath: "$.processDefinitionKey"
+  customerIdPath: "$.variables.accountId"
+  accountTypePath: "$.variables.accountType"
+
+correlation:
+  processDefinitionKey: "falloutManagementBpmn"
+  # Try explicit composite item key, then explicit entity/order key, then parent walk
+  targetEntityKeyFallbacks:
+    - whenAllPathsExist: ["$.variables.failedOrderId", "$.variables.failedOrderItemId"]
+      entityKeyTemplate: "{$.variables.failedOrderId}:{$.variables.failedOrderItemId}"
+    - whenPathExists: "$.variables.failedEntityKey"
+      entityKeyTemplate: "{$.variables.failedEntityKey}"
+    - whenPathExists: "$.variables.failedOrderId"
+      entityKeyTemplate: "{$.variables.failedOrderId}"
+  walkParentProcessInstanceId: true
+  maxParentWalkDepth: 6
+  oooBufferSeconds: 15
+  uncorrelatedDlqTopic: "jeopardy.dlq.uncorrelated"
+
+falloutExtraction:
+  falloutIdPath: "$.variables.falloutId"
+  failedActivityIdPath: "$.variables.failedActivityId"
+  failedTemplateIdPath: "$.variables.failedTemplateId"
+  errorCodePath: "$.variables.errorCode"
+  errorMessagePath: "$.variables.errorMessage"
+  severityPath: "$.variables.severity"
+  assignedQueuePath: "$.variables.assignedQueue"
+  assignedAgentPath: "$.variables.assignedAgent"
+  retryCountPath: "$.variables.retryCount"
+  resolutionActionPath: "$.variables.resolutionAction"
+  linkedChangeOrderIdPath: "$.variables.linkedChangeOrderId"
+  statusMapping:
+    FALLOUT_OPENED: "OPEN"
+    FALLOUT_ASSIGNED: "IN_QUEUE"
+    FALLOUT_IN_QUEUE: "IN_QUEUE"
+    FALLOUT_RETRY_TRIGGERED: "RETRYING"
+    FALLOUT_ESCALATED: "ESCALATED"
+    FALLOUT_RESOLVED: "RESOLVED"
+    FALLOUT_CANCELLED: "RESOLVED"
+
+dimensions:
+  error_code: "$.variables.errorCode"
+  assigned_queue: "$.variables.assignedQueue"
+  failed_activity: "$.variables.failedActivityId"
+  resolution_action: "$.variables.resolutionAction"

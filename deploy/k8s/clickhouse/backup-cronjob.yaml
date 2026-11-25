@@ -1,0 +1,106 @@
+# =============================================================================
+# ClickHouse OSS Automated Backups — altinity/clickhouse-backup CronJob
+# =============================================================================
+# 100% Open-Source (MIT/Apache 2.0):
+#   * Takes daily incremental backups (and Sunday full backups) of ClickHouse
+#     24.8 OSS (`jeopardy` DB: raw_events, milestone_telemetry, fallout_events,
+#     and AggregatingMergeTree MV target tables) directly to S3.
+#   * Enable S3 Cross-Region Replication (CRR) on the backup bucket for
+#     asynchronous historical restore in Region B during Multi-Region DR.
+# =============================================================================
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: clickhouse-backup-daily
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: clickhouse-backup
+    app.kubernetes.io/part-of: jeopardy-management
+spec:
+  schedule: "30 1 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: clickhouse-backup
+            app.kubernetes.io/part-of: jeopardy-management
+        spec:
+          serviceAccountName: jeopardy-batch-sa
+          restartPolicy: OnFailure
+          containers:
+            - name: clickhouse-backup
+              image: altinity/clickhouse-backup:2.5.24
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: CLICKHOUSE_HOST
+                  value: "chi-jeopardy-jeopardy-olap-0-0.jeopardy.svc.cluster.local"
+                - name: CLICKHOUSE_PORT
+                  value: "9000"
+                - name: CLICKHOUSE_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-db-credentials
+                      key: clickhouse-user
+                - name: CLICKHOUSE_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-db-credentials
+                      key: clickhouse-password
+                - name: REMOTE_STORAGE
+                  value: "s3"
+                - name: S3_BUCKET
+                  value: "jeopardy-clickhouse-backups"
+                - name: S3_PATH
+                  value: "prod/jeopardy-olap"
+                - name: S3_REGION
+                  value: "us-east-1"
+                - name: S3_COMPRESSION_FORMAT
+                  value: "zstd"
+                - name: BACKUPS_TO_KEEP_LOCAL
+                  value: "2"
+                - name: BACKUPS_TO_KEEP_REMOTE
+                  value: "30"
+                - name: S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-s3-credentials
+                      key: ACCESS_KEY_ID
+                - name: S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: jeopardy-s3-credentials
+                      key: ACCESS_SECRET_KEY
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  DAY_OF_WEEK="$(date -u +%u)"
+                  BACKUP_NAME="jeopardy_$(date -u +%Y%m%d_%H%M%S)"
+                  if [ "${DAY_OF_WEEK}" = "7" ]; then
+                    echo "Running weekly FULL backup: ${BACKUP_NAME}"
+                    clickhouse-backup create_remote "${BACKUP_NAME}"
+                  else
+                    LAST_REMOTE="$(clickhouse-backup list remote | awk 'END{print $1}')"
+                    if [ -n "${LAST_REMOTE}" ]; then
+                      echo "Running daily INCREMENTAL backup ${BACKUP_NAME} from ${LAST_REMOTE}"
+                      clickhouse-backup create_remote --diff-from-remote="${LAST_REMOTE}" "${BACKUP_NAME}"
+                    else
+                      echo "No previous remote backup found; running initial FULL backup: ${BACKUP_NAME}"
+                      clickhouse-backup create_remote "${BACKUP_NAME}"
+                    fi
+                  fi
+                  clickhouse-backup list remote
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "2"
+                  memory: "4Gi"

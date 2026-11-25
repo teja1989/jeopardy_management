@@ -1,0 +1,274 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-11-25T00:32:33.595536+00:00",
+  "clickhouse_source": "http://localhost:8123",
+  "onnx_opset": 15,
+  "onnx_ir_version": 9,
+  "java_predictor_contract": {
+    "class": "com.jeopardy.flink.engine.OnnxEtaPredictor",
+    "input_name": "float_input",
+    "input_shape": [
+      1,
+      6
+    ],
+    "input_dtype": "float32",
+    "features": [
+      "retry_count",
+      "hour_norm",
+      "dow_norm",
+      "dim_hash1",
+      "dim_hash2",
+      "baseline_sec"
+    ],
+    "output_name": "eta_quantiles_sec",
+    "output_shape": [
+      1,
+      3
+    ],
+    "output_unit": "seconds",
+    "java_scalar_index": 0
+  },
+  "outage_filter_stats": {
+    "raw_rows": 111,
+    "window_excluded_rows": 0,
+    "anomaly_excluded_rows": 0,
+    "clean_rows": 111,
+    "excluded_windows": []
+  },
+  "models": [
+    {
+      "template_id": "TMPL_FULFILLMENT_SHIP",
+      "filename": "fulfillment_ship_xgb_aft_v1.onnx",
+      "aliases": [],
+      "trainer_backend": "sklearn_gbr_quantile",
+      "description": "Handset & Kit Fulfillment/Shipping duration survival quantiles (P50/P80/P90)",
+      "input_name": "float_input",
+      "input_shape": [
+        null,
+        6
+      ],
+      "input_dtype": "float32",
+      "output_name": "eta_quantiles_sec",
+      "output_shape": [
+        null,
+        3
+      ],
+      "output_columns": [
+        "p50_sec",
+        "p80_sec",
+        "p90_sec"
+      ],
+      "file_size_bytes": 199135,
+      "sha256": "2cbb25e4093cec5f57d9cfb68a2eb1302090a010e544373fd3d7b1abdf1d1776",
+      "train_rows": 480,
+      "val_rows": 120,
+      "real_clickhouse_rows": 8,
+      "synthetic_rows": 592,
+      "right_censored_rows": 44,
+      "metrics": {
+        "mae_sec": 32475.25,
+        "mape_pct": 20.48,
+        "pinball_loss_p50": 16237.62,
+        "pinball_loss_p80": 13743.6,
+        "pinball_loss_p90": 8436.41
+      },
+      "latency_ms": {
+        "mean": 0.009,
+        "p50": 0.009,
+        "p99": 0.01
+      },
+      "verification_samples": {
+        "ship_to_home_standard": {
+          "p50_sec": 185519.75,
+          "p80_sec": 199536.33,
+          "p90_sec": 228462.11,
+          "p50_hours": 51.5333
+        },
+        "ship_to_home_platinum": {
+          "p50_sec": 151758.41,
+          "p80_sec": 165116.59,
+          "p90_sec": 189242.31,
+          "p50_hours": 42.1551
+        }
+      }
+    },
+    {
+      "template_id": "TMPL_PORT_FOC",
+      "filename": "port_foc_duration_aft_v1.onnx",
+      "aliases": [
+        "port_in_foc_xgb_aft_v1.onnx"
+      ],
+      "trainer_backend": "sklearn_gbr_quantile",
+      "description": "Donor Carrier Port FOC duration survival quantiles (Verizon ~5m vs Google Voice ~28h)",
+      "input_name": "float_input",
+      "input_shape": [
+        null,
+        6
+      ],
+      "input_dtype": "float32",
+      "output_name": "eta_quantiles_sec",
+      "output_shape": [
+        null,
+        3
+      ],
+      "output_columns": [
+        "p50_sec",
+        "p80_sec",
+        "p90_sec"
+      ],
+      "file_size_bytes": 178978,
+      "sha256": "9aa3d220c7e593a151b6b65020a51014a7f68aef7c6f507548ac3db8a03b949f",
+      "train_rows": 480,
+      "val_rows": 120,
+      "real_clickhouse_rows": 1,
+      "synthetic_rows": 599,
+      "right_censored_rows": 27,
+      "metrics": {
+        "mae_sec": 5268.81,
+        "mape_pct": 19.53,
+        "pinball_loss_p50": 2634.4,
+        "pinball_loss_p80": 1877.6,
+        "pinball_loss_p90": 1300.56
+      },
+      "latency_ms": {
+        "mean": 0.0086,
+        "p50": 0.0086,
+        "p99": 0.0093
+      },
+      "verification_samples": {
+        "verizon_weekday": {
+          "p50_sec": 296.49,
+          "p80_sec": 354.77,
+          "p90_sec": 441.0,
+          "p50_hours": 0.0824
+        },
+        "google_voice_weekday": {
+          "p50_sec": 102880.33,
+          "p80_sec": 123828.77,
+          "p90_sec": 150259.95,
+          "p50_hours": 28.5779
+        },
+        "google_voice_weekend": {
+          "p50_sec": 110584.47,
+          "p80_sec": 128124.59,
+          "p90_sec": 138010.48,
+          "p50_hours": 30.7179
+        }
+      }
+    },
+    {
+      "template_id": "TMPL_ESIM_ACTIVATION",
+      "filename": "esim_activation_lgbm_v1.onnx",
+      "aliases": [],
+      "trainer_backend": "sklearn_gbr_quantile",
+      "description": "eSIM Provisioning & Activation duration quantiles (retry-spike aware)",
+      "input_name": "float_input",
+      "input_shape": [
+        null,
+        6
+      ],
+      "input_dtype": "float32",
+      "output_name": "eta_quantiles_sec",
+      "output_shape": [
+        null,
+        3
+      ],
+      "output_columns": [
+        "p50_sec",
+        "p80_sec",
+        "p90_sec"
+      ],
+      "file_size_bytes": 176576,
+      "sha256": "9211b21b406cd8981979e9eff9939b7fbcbe5a7e2219cffc894dbe564a60e38c",
+      "train_rows": 480,
+      "val_rows": 120,
+      "real_clickhouse_rows": 48,
+      "synthetic_rows": 552,
+      "right_censored_rows": 30,
+      "metrics": {
+        "mae_sec": 12591.99,
+        "mape_pct": 25.57,
+        "pinball_loss_p50": 6296.0,
+        "pinball_loss_p80": 10035.64,
+        "pinball_loss_p90": 11272.24
+      },
+      "latency_ms": {
+        "mean": 0.0094,
+        "p50": 0.0088,
+        "p99": 0.0185
+      },
+      "verification_samples": {
+        "esim_0_retries": {
+          "p50_sec": 206.32,
+          "p80_sec": 280.68,
+          "p90_sec": 330.93,
+          "p50_hours": 0.0573
+        },
+        "esim_3_retries": {
+          "p50_sec": 1172.52,
+          "p80_sec": 1437.95,
+          "p90_sec": 1667.47,
+          "p50_hours": 0.3257
+        }
+      }
+    },
+    {
+      "template_id": "TMPL_WAREHOUSE_RCV",
+      "filename": "trade_in_return_aft_v1.onnx",
+      "aliases": [
+        "tradein_return_aft_v1.onnx"
+      ],
+      "trainer_backend": "sklearn_gbr_quantile",
+      "description": "60-Day Trade-In Mail-Back & Warehouse Receipt right-censored survival quantiles",
+      "input_name": "float_input",
+      "input_shape": [
+        null,
+        6
+      ],
+      "input_dtype": "float32",
+      "output_name": "eta_quantiles_sec",
+      "output_shape": [
+        null,
+        3
+      ],
+      "output_columns": [
+        "p50_sec",
+        "p80_sec",
+        "p90_sec"
+      ],
+      "file_size_bytes": 193657,
+      "sha256": "b3f90986d56849d482a392edd45b5ced32ff6cdcef1495a41179a9d910008358",
+      "train_rows": 480,
+      "val_rows": 120,
+      "real_clickhouse_rows": 0,
+      "synthetic_rows": 600,
+      "right_censored_rows": 154,
+      "metrics": {
+        "mae_sec": 383600.88,
+        "mape_pct": 33.96,
+        "pinball_loss_p50": 191800.44,
+        "pinball_loss_p80": 163968.93,
+        "pinball_loss_p90": 103343.57
+      },
+      "latency_ms": {
+        "mean": 0.0089,
+        "p50": 0.0088,
+        "p99": 0.0095
+      },
+      "verification_samples": {
+        "trade_in_standard": {
+          "p50_sec": 1308407.12,
+          "p80_sec": 1665530.12,
+          "p90_sec": 2077093.62,
+          "p50_hours": 363.4464
+        },
+        "trade_in_platinum": {
+          "p50_sec": 980669.69,
+          "p80_sec": 1444108.12,
+          "p90_sec": 1722284.75,
+          "p50_hours": 272.4082
+        }
+      }
+    }
+  ]
+}

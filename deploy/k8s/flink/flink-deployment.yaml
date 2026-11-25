@@ -1,0 +1,216 @@
+# =============================================================================
+# Apache Flink 1.20 OSS — FlinkDeployment (Apache Flink Kubernetes Operator)
+# =============================================================================
+# 100% Open-Source (Apache 2.0):
+#   * Official Apache Flink Kubernetes Operator (flink.apache.org/v1beta1)
+#   * Base image: flink:1.20-java17 (jeopardy-flink shaded fat JAR compiled to Java 17)
+#   * Native Kubernetes HA Leases (Active + Standby JobManager)
+#   * Embedded RocksDB on local SSD/NVMe ephemeral storage + 60s incremental S3 checkpoints
+#   * Flink Kubernetes Autoscaler scaling 4 -> 16 TaskManagers (16 -> 64 slots)
+#     dynamically based on Kafka consumer lag and operator busy-time
+#   * Shared ONNX models PVC mounted read-only at /opt/flink/models
+# =============================================================================
+---
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: jeopardy-flink-engine
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: jeopardy-flink
+    app.kubernetes.io/part-of: jeopardy-management
+    app.kubernetes.io/component: streaming-engine
+  annotations:
+    # Flink Kubernetes Autoscaler annotations (4 -> 16 TaskManagers @ 4 slots each)
+    autoscaler.flink.apache.org/enabled: "true"
+    autoscaler.flink.apache.org/min-replicas: "4"
+    autoscaler.flink.apache.org/max-replicas: "16"
+    autoscaler.flink.apache.org/target-utilization: "0.65"
+    autoscaler.flink.apache.org/scale-on: "kafka-lag,busy-time"
+spec:
+  # Build container FROM flink:1.20-java17 and COPY services/jeopardy-flink/target/jeopardy-flink-0.1.0-SNAPSHOT.jar
+  # to /opt/flink/usrlib/jeopardy-flink-0.1.0-SNAPSHOT.jar (plus flink-s3-fs-hadoop plugin enabled)
+  image: flink:1.20-java17
+  imagePullPolicy: IfNotPresent
+  flinkVersion: v1_20
+  serviceAccount: flink-jeopardy-sa
+  mode: native
+
+  flinkConfiguration:
+    # --- Native Kubernetes HA (Leases + S3 HA metadata) ---
+    high-availability.type: kubernetes
+    high-availability.storageDir: s3a://jeopardy-flink-ha/recovery
+
+    # --- Embedded RocksDB State Backend (Zero JVM GC pauses for 60d Trade-In timers) ---
+    state.backend.type: rocksdb
+    state.backend.incremental: "true"
+    state.backend.rocksdb.localdir: /mnt/rocksdb
+    state.backend.rocksdb.memory.managed: "true"
+    state.backend.rocksdb.timer-service.factory: ROCKSDB
+
+    # --- 60s Incremental S3 Checkpoints & Savepoints (RPO = 0 single-AZ, S3 CRR for DR) ---
+    execution.checkpointing.interval: "60000"
+    execution.checkpointing.min-pause: "15000"
+    execution.checkpointing.timeout: "300000"
+    execution.checkpointing.mode: EXACTLY_ONCE
+    execution.checkpointing.unaligned.enabled: "true"
+    execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+    state.checkpoints.dir: s3a://jeopardy-flink-checkpoints/checkpoints
+    state.savepoints.dir: s3a://jeopardy-flink-checkpoints/savepoints
+    state.checkpoints.num-retained: "3"
+
+    # --- Adaptive Scheduler & Flink K8s Autoscaler (4 -> 16 TMs @ 4 slots = 16 -> 64 parallelism) ---
+    taskmanager.numberOfTaskSlots: "4"
+    pipeline.max-parallelism: "128"
+    jobmanager.scheduler: adaptive
+    job.autoscaler.enabled: "true"
+    job.autoscaler.stabilization.interval: "1m"
+    job.autoscaler.metrics.window: "5m"
+    job.autoscaler.target.utilization: "0.65"
+    job.autoscaler.target.utilization.boundary: "0.2"
+    job.autoscaler.scale-up.grace-period: "30s"
+    job.autoscaler.scale-down.interval: "10m"
+    job.autoscaler.backlog-processing.lag-threshold: "30s"
+    job.autoscaler.vertex.min-parallelism: "16"
+    job.autoscaler.vertex.max-parallelism: "64"
+
+    # --- Restart Strategy & Observability ---
+    restart-strategy.type: exponential-delay
+    restart-strategy.exponential-delay.initial-backoff: 5s
+    restart-strategy.exponential-delay.max-backoff: 2min
+    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+    metrics.reporter.prom.port: "9249"
+    kubernetes.operator.periodic.savepoint.interval: "6h"
+
+  jobManager:
+    replicas: 2
+    resource:
+      memory: "2048m"
+      cpu: 1
+
+  taskManager:
+    resource:
+      memory: "16384m"
+      cpu: 4
+    podTemplate:
+      spec:
+        topologySpreadConstraints:
+          - maxSkew: 1
+            topologyKey: topology.kubernetes.io/zone
+            whenUnsatisfiable: ScheduleAnyway
+            labelSelector:
+              matchLabels:
+                app: jeopardy-flink-engine
+                component: taskmanager
+        containers:
+          - name: flink-main-container
+            volumeMounts:
+              # Dedicated local NVMe/gp3 ephemeral disk for Embedded RocksDB SST files
+              - name: rocksdb-local-ssd
+                mountPath: /mnt/rocksdb
+              # Shared ONNX survival models updated by jeopardy-ml CronJob
+              - name: onnx-models
+                mountPath: /opt/flink/models
+                readOnly: true
+        volumes:
+          - name: rocksdb-local-ssd
+            ephemeral:
+              volumeClaimTemplate:
+                metadata:
+                  labels:
+                    app.kubernetes.io/component: rocksdb-state
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  storageClassName: gp3-nvme
+                  resources:
+                    requests:
+                      storage: 50Gi
+          - name: onnx-models
+            persistentVolumeClaim:
+              claimName: jeopardy-onnx-models-pvc
+
+  podTemplate:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9249"
+    spec:
+      containers:
+        - name: flink-main-container
+          ports:
+            - name: metrics
+              containerPort: 9249
+              protocol: TCP
+          env:
+            # Enable bundled S3 Hadoop filesystem plugin on flink:1.20-java17
+            - name: ENABLE_BUILT_IN_PLUGINS
+              value: "flink-s3-fs-hadoop-1.20.1.jar"
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-bootstrap.jeopardy.svc.cluster.local:9092"
+            - name: KAFKA_GROUP_ID
+              value: "jeopardy-flink-engine-prod"
+            - name: POSTGRES_JDBC_URL
+              value: "jdbc:postgresql://jeopardy-pg-rw.jeopardy.svc.cluster.local:5432/jeopardy?reWriteBatchedInserts=true"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jeopardy-db-credentials
+                  key: postgres-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jeopardy-db-credentials
+                  key: postgres-password
+            - name: CLICKHOUSE_HTTP_URL
+              value: "http://clickhouse-jeopardy.jeopardy.svc.cluster.local:8123"
+            - name: CLICKHOUSE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jeopardy-db-credentials
+                  key: clickhouse-user
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jeopardy-db-credentials
+                  key: clickhouse-password
+            - name: VALKEY_SENTINEL_NODES
+              value: "valkey-sentinel.jeopardy.svc.cluster.local:26379"
+            - name: VALKEY_MASTER_NAME
+              value: "jeopardy-bpmn-cache"
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jeopardy-valkey-auth
+                  key: password
+            - name: ONNX_MODEL_DIR
+              value: "/opt/flink/models"
+            - name: CHECKPOINT_INTERVAL_MS
+              value: "60000"
+            - name: ENABLE_ROCKSDB
+              value: "true"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: jeopardy-s3-credentials
+                  key: ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jeopardy-s3-credentials
+                  key: ACCESS_SECRET_KEY
+
+  job:
+    # Shaded fat JAR packaged in custom image (or mounted via initContainer / jarURI)
+    jarURI: local:///opt/flink/usrlib/jeopardy-flink-0.1.0-SNAPSHOT.jar
+    entryClass: com.jeopardy.flink.JeopardyFlinkJob
+    parallelism: 16
+    upgradeMode: savepoint
+    state: running
+    allowNonRestoredState: false
+    args:
+      - "--checkpoint-ms"
+      - "60000"
+      - "--enable-rocksdb"
+      - "true"
+      - "--onnx-model-dir"
+      - "/opt/flink/models"

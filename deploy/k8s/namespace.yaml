@@ -1,0 +1,141 @@
+# =============================================================================
+# Jeopardy Management — Kubernetes Namespace, ServiceAccounts, RBAC & Shared PVC
+# =============================================================================
+# 100% Open-Source Kubernetes primitives for Apache Flink K8s HA Leases,
+# CloudNativePG, Altinity ClickHouse Operator, Valkey 8 Sentinel, ML Trainer,
+# and DR Timer Rehydration.
+# =============================================================================
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jeopardy
+  labels:
+    app.kubernetes.io/part-of: jeopardy-management
+    pod-security.kubernetes.io/enforce: baseline
+---
+# ServiceAccount for Apache Flink JobManager & TaskManagers (Native K8s HA Leases)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink-jeopardy-sa
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: jeopardy-flink
+    app.kubernetes.io/part-of: jeopardy-management
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flink-ha-lease-role
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: jeopardy-flink
+    app.kubernetes.io/part-of: jeopardy-management
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "endpoints", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flink-ha-lease-binding
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: jeopardy-flink
+    app.kubernetes.io/part-of: jeopardy-management
+subjects:
+  - kind: ServiceAccount
+    name: flink-jeopardy-sa
+    namespace: jeopardy
+roleRef:
+  kind: Role
+  name: flink-ha-lease-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# ServiceAccount for Python ML Survival Trainer & DR Rehydration Jobs
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jeopardy-batch-sa
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/part-of: jeopardy-management
+---
+# Shared ReadWriteMany PVC for ONNX survival models exported by jeopardy-ml
+# and loaded in-process by Apache Flink TaskManagers (/opt/flink/models).
+# Use an RWX storage class (e.g., efs-sc, rook-cephfs, nfs-client) in production.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jeopardy-onnx-models-pvc
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/part-of: jeopardy-management
+    app.kubernetes.io/component: ml-models
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 10Gi
+---
+# =============================================================================
+# Credential Secret Templates (Replace via ExternalSecrets / SealedSecrets / Vault)
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jeopardy-db-credentials
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/part-of: jeopardy-management
+type: Opaque
+stringData:
+  postgres-user: jeopardy
+  postgres-password: REPLACE_WITH_STRONG_PG_PASSWORD
+  clickhouse-user: jeopardy
+  clickhouse-password: REPLACE_WITH_STRONG_CH_PASSWORD
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jeopardy-pg-app-secret
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/part-of: jeopardy-management
+type: kubernetes.io/basic-auth
+stringData:
+  username: jeopardy
+  password: REPLACE_WITH_STRONG_PG_PASSWORD
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jeopardy-s3-credentials
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/part-of: jeopardy-management
+type: Opaque
+stringData:
+  ACCESS_KEY_ID: REPLACE_WITH_S3_ACCESS_KEY
+  ACCESS_SECRET_KEY: REPLACE_WITH_S3_SECRET_KEY
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jeopardy-valkey-auth
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/part-of: jeopardy-management
+type: Opaque
+stringData:
+  password: REPLACE_WITH_STRONG_VALKEY_PASSWORD

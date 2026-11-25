@@ -1,0 +1,97 @@
+# =============================================================================
+# ClickHouse Keeper 24.8 OSS — 3-Node Quorum (Altinity ClickHouse Operator)
+# =============================================================================
+# 100% Open-Source (Apache 2.0) — Zero ZooKeeper, Zero ClickHouse Cloud!
+# Coordinates Multi-AZ ReplicatedMergeTree metadata for the 2-replica
+# ClickHouse 24.8 OSS cluster across 3 Availability Zones.
+# =============================================================================
+---
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: chk-jeopardy
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/name: clickhouse-keeper
+    app.kubernetes.io/part-of: jeopardy-management
+spec:
+  configuration:
+    clusters:
+      - name: chk-jeopardy
+        layout:
+          replicasCount: 3
+    settings:
+      logger/level: information
+      logger/console: "true"
+      listen_host: "0.0.0.0"
+      keeper_server/tcp_port: 2181
+      keeper_server/four_letter_word_white_list: "*"
+      keeper_server/coordination_settings/operation_timeout_ms: 10000
+      keeper_server/coordination_settings/session_timeout_ms: 30000
+      keeper_server/coordination_settings/raft_logs_level: warning
+      keeper_server/coordination_settings/auto_forwarding: "true"
+      prometheus/endpoint: /metrics
+      prometheus/port: 7000
+      prometheus/metrics: "true"
+      prometheus/asynchronous_metrics: "true"
+
+  defaults:
+    templates:
+      podTemplate: chk-pod-template
+      dataVolumeClaimTemplate: chk-data-pvc
+
+  templates:
+    podTemplates:
+      - name: chk-pod-template
+        metadata:
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "7000"
+        spec:
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                      - key: clickhouse-keeper.altinity.com/chk
+                        operator: In
+                        values:
+                          - chk-jeopardy
+                  topologyKey: topology.kubernetes.io/zone
+          containers:
+            - name: clickhouse-keeper
+              image: clickhouse/clickhouse-keeper:24.8-alpine
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "1000m"
+                  memory: "2Gi"
+              readinessProbe:
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - "echo ruok | nc -w 2 127.0.0.1 2181 | grep -q imok"
+                initialDelaySeconds: 10
+                periodSeconds: 10
+              livenessProbe:
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - "echo ruok | nc -w 2 127.0.0.1 2181 | grep -q imok"
+                initialDelaySeconds: 20
+                periodSeconds: 15
+
+    volumeClaimTemplates:
+      - name: chk-data-pvc
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: gp3
+          resources:
+            requests:
+              storage: 20Gi

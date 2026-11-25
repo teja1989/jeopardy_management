@@ -1,0 +1,317 @@
+# =============================================================================
+# Block 2: Reusable Milestone Template Library (Define Once, Reuse Everywhere)
+# Stored in PostgreSQL `config_milestone_templates` and hot-reloaded to Flink.
+# Blueprints reference `templateId` and may override `displayName` and `sla`.
+# ClickHouse OLAP MVs roll up across all 60+ order types by `templateId`.
+# =============================================================================
+schemaVersion: "1.0"
+configType: "MILESTONE_TEMPLATE_LIBRARY"
+version: 1
+updatedBy: "system-seed"
+
+templates:
+  - templateId: "TMPL_ORDER_RECEIVED"
+    defaultDisplayName: "Order Received"
+    domain: "ORDER"
+    version: 1
+    falloutAttachable: true
+    startTriggers:
+      - sourceTopic: "domain.order.events"
+        predicate: { path: "$.eventType", op: "IN", values: ["ORDER_SUBMITTED", "CHANGE_ORDER_CREATED", "PROMO_ORDER_TRIGGERED"] }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PROCESS_STARTED" }
+    completeTriggers:
+      - sourceTopic: "domain.order.events"
+        predicate: { path: "$.eventType", op: "IN", values: ["ORDER_SUBMITTED", "CHANGE_ORDER_CREATED", "PROMO_ORDER_TRIGGERED"] }
+    failTriggers:
+      - sourceTopic: "domain.order.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "ORDER_CANCELLED" }
+    defaultSla:
+      mode: "STATIC"
+      hardMin: "5s"
+      expected: "30s"
+      warning: "2m"
+      jeopardy: "5m"
+      hardMax: "15m"
+
+  - templateId: "TMPL_FRAUD_CHECK"
+    defaultDisplayName: "Fraud Validation"
+    domain: "FRAUD"
+    version: 1
+    falloutAttachable: true
+    startTriggers:
+      - sourceTopic: "domain.fraud.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "FRAUD_CHECK_STARTED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_fraud_check" }
+        eventType: "ACTIVITY_STARTED"
+    completeTriggers:
+      - sourceTopic: "domain.fraud.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "FRAUD_CHECK_APPROVED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_fraud_check" }
+        eventType: "ACTIVITY_COMPLETED"
+    failTriggers:
+      - sourceTopic: "domain.fraud.events"
+        predicate: { path: "$.eventType", op: "IN", values: ["FRAUD_CHECK_REJECTED", "FRAUD_MANUAL_REVIEW"] }
+    defaultSla:
+      mode: "STATIC"
+      hardMin: "2s"
+      expected: "45s"
+      warning: "5m"
+      jeopardy: "15m"
+      hardMax: "4h"
+
+  - templateId: "TMPL_PAYMENT_AUTH"
+    defaultDisplayName: "Payment Authorization"
+    domain: "PAYMENT"
+    version: 1
+    falloutAttachable: true
+    pausableByChangeOrder: true
+    startTriggers:
+      - sourceTopic: "domain.payment.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PAYMENT_AUTH_STARTED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_payment_auth" }
+        eventType: "ACTIVITY_STARTED"
+    completeTriggers:
+      - sourceTopic: "domain.payment.events"
+        predicate: { path: "$.eventType", op: "IN", values: ["PAYMENT_AUTH_CAPTURED", "PAYMENT_REAUTH_CAPTURED"] }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_payment_auth" }
+        eventType: "ACTIVITY_COMPLETED"
+    failTriggers:
+      - sourceTopic: "domain.payment.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PAYMENT_AUTH_DECLINED" }
+    defaultSla:
+      mode: "STATIC"
+      hardMin: "2s"
+      expected: "30s"
+      warning: "5m"
+      jeopardy: "15m"
+      hardMax: "24h"
+
+  - templateId: "TMPL_FULFILLMENT_SHIP"
+    defaultDisplayName: "Fulfillment & Shipping"
+    domain: "FULFILLMENT"
+    version: 1
+    falloutAttachable: true
+    mlModelId: "fulfillment_ship_xgb_aft_v1.onnx"
+    startTriggers:
+      - sourceTopic: "domain.fulfillment.events"
+        predicate: { path: "$.eventType", op: "IN", values: ["WAREHOUSE_PICK_STARTED", "SHIPMENT_LABEL_CREATED", "TRADEIN_KIT_SHIPPED"] }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "IN", values: ["task_warehouse_pick", "task_ship_return_kit"] }
+        eventType: "ACTIVITY_STARTED"
+    completeTriggers:
+      - sourceTopic: "domain.fulfillment.events"
+        predicate: { path: "$.eventType", op: "IN", values: ["SHIPMENT_DELIVERED", "TRADEIN_KIT_SHIPPED"] }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "IN", values: ["task_delivery_confirmed", "task_ship_return_kit"] }
+        eventType: "ACTIVITY_COMPLETED"
+    failTriggers:
+      - sourceTopic: "domain.fulfillment.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "SHIPMENT_EXCEPTION" }
+    defaultSla:
+      mode: "ML_PREDICTED"
+      hardMin: "4h"
+      expected: "48h"
+      warning: "72h"
+      jeopardy: "96h"
+      hardMax: "7d"
+
+  - templateId: "TMPL_PORT_FOC"
+    defaultDisplayName: "Donor Carrier Port FOC"
+    domain: "PROVISIONING"
+    version: 1
+    falloutAttachable: true
+    mlModelId: "port_in_foc_xgb_aft_v1.onnx"
+    startTriggers:
+      - sourceTopic: "domain.provisioning.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PORT_REQUEST_SUBMITTED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_port_foc_request" }
+        eventType: "ACTIVITY_STARTED"
+    completeTriggers:
+      - sourceTopic: "domain.provisioning.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PORT_FOC_RECEIVED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_port_foc_request" }
+        eventType: "ACTIVITY_COMPLETED"
+    failTriggers:
+      - sourceTopic: "domain.provisioning.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PORT_REQUEST_REJECTED" }
+    defaultSla:
+      mode: "ML_PREDICTED"
+      hardMin: "1m"
+      expected: "15m"
+      warning: "30m"
+      jeopardy: "60m"
+      hardMax: "72h"
+
+  - templateId: "TMPL_ESIM_ACTIVATION"
+    defaultDisplayName: "Device Activation"
+    domain: "PROVISIONING"
+    version: 1
+    falloutAttachable: true
+    mlModelId: "esim_activation_lgbm_v1.onnx"
+    startTriggers:
+      - sourceTopic: "domain.provisioning.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "ESIM_DOWNLOAD_STARTED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_esim_activation" }
+        eventType: "ACTIVITY_STARTED"
+    completeTriggers:
+      - sourceTopic: "domain.provisioning.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "ESIM_ACTIVATED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_esim_activation" }
+        eventType: "ACTIVITY_COMPLETED"
+    failTriggers:
+      - sourceTopic: "domain.provisioning.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "ESIM_ACTIVATION_FAILED" }
+    defaultSla:
+      mode: "STATIC"
+      hardMin: "10s"
+      expected: "3m"
+      warning: "10m"
+      jeopardy: "20m"
+      hardMax: "2h"
+
+  - templateId: "TMPL_WAREHOUSE_RCV"
+    defaultDisplayName: "Warehouse Return Receipt"
+    domain: "FULFILLMENT"
+    version: 1
+    falloutAttachable: true
+    mlModelId: "tradein_return_aft_v1.onnx"
+    startTriggers:
+      - sourceTopic: "domain.fulfillment.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "TRADEIN_KIT_SHIPPED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_await_tradein_return" }
+        eventType: "ACTIVITY_STARTED"
+    completeTriggers:
+      - sourceTopic: "domain.fulfillment.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "TRADEIN_DEVICE_RECEIVED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_await_tradein_return" }
+        eventType: "ACTIVITY_COMPLETED"
+    failTriggers:
+      - sourceTopic: "domain.fulfillment.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "SHIPMENT_EXCEPTION" }
+    defaultSla:
+      mode: "ML_PREDICTED"
+      hardMin: "2d"
+      expected: "14d"
+      warning: "21d"
+      jeopardy: "28d"
+      hardMax: "35d"
+
+  - templateId: "TMPL_INSPECTION"
+    defaultDisplayName: "Warehouse Device Inspection"
+    domain: "FULFILLMENT"
+    version: 1
+    falloutAttachable: true
+    startTriggers:
+      - sourceTopic: "domain.fulfillment.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "TRADEIN_INSPECTION_STARTED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_tradein_inspection" }
+        eventType: "ACTIVITY_STARTED"
+    completeTriggers:
+      - sourceTopic: "domain.fulfillment.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "TRADEIN_INSPECTION_PASSED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_tradein_inspection" }
+        eventType: "ACTIVITY_COMPLETED"
+    failTriggers:
+      - sourceTopic: "domain.fulfillment.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "TRADEIN_INSPECTION_FAILED" }
+    defaultSla:
+      mode: "STATIC"
+      hardMin: "1h"
+      expected: "24h"
+      warning: "48h"
+      jeopardy: "72h"
+      hardMax: "5d"
+
+  - templateId: "TMPL_PARTNER_ENROLL"
+    defaultDisplayName: "Partner Promo Enrollment"
+    domain: "PROVISIONING"
+    version: 1
+    falloutAttachable: true
+    startTriggers:
+      - sourceTopic: "domain.provisioning.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PARTNER_PROMO_SUBMITTED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_partner_insurance_enroll" }
+        eventType: "ACTIVITY_STARTED"
+    completeTriggers:
+      - sourceTopic: "domain.provisioning.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PARTNER_PROMO_ENROLLED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "EQ", value: "task_partner_insurance_enroll" }
+        eventType: "ACTIVITY_COMPLETED"
+    failTriggers:
+      - sourceTopic: "domain.provisioning.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PARTNER_PROMO_FAILED" }
+    defaultSla:
+      mode: "STATIC"
+      hardMin: "5s"
+      expected: "2m"
+      warning: "10m"
+      jeopardy: "20m"
+      hardMax: "2h"
+
+  - templateId: "TMPL_BILLING_SYNC"
+    defaultDisplayName: "Billing Updates"
+    domain: "BILLING"
+    version: 1
+    falloutAttachable: true
+    startTriggers:
+      - sourceTopic: "domain.billing.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "BILLING_SYNC_STARTED" }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "IN", values: ["task_billing_sync", "task_apply_tradein_credit", "task_promo_billing_sync"] }
+        eventType: "ACTIVITY_STARTED"
+    completeTriggers:
+      - sourceTopic: "domain.billing.events"
+        predicate: { path: "$.eventType", op: "IN", values: ["BILLING_SYNC_COMPLETED", "TRADEIN_CREDIT_APPLIED", "PROMO_SKU_BILLED"] }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.activityId", op: "IN", values: ["task_billing_sync", "task_apply_tradein_credit", "task_promo_billing_sync"] }
+        eventType: "ACTIVITY_COMPLETED"
+    failTriggers:
+      - sourceTopic: "domain.billing.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "BILLING_SYNC_FAILED" }
+    defaultSla:
+      mode: "STATIC"
+      hardMin: "5s"
+      expected: "2m"
+      warning: "15m"
+      jeopardy: "30m"
+      hardMax: "6h"
+
+  - templateId: "TMPL_ORDER_CLOSED"
+    defaultDisplayName: "Order Closed"
+    domain: "ORDER"
+    version: 1
+    falloutAttachable: false
+    terminalMilestone: true
+    startTriggers:
+      - sourceTopic: "domain.order.events"
+        predicate: { path: "$.eventType", op: "IN", values: ["ORDER_COMPLETED", "CHANGE_ORDER_COMPLETED"] }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PROCESS_COMPLETED" }
+    completeTriggers:
+      - sourceTopic: "domain.order.events"
+        predicate: { path: "$.eventType", op: "IN", values: ["ORDER_COMPLETED", "CHANGE_ORDER_COMPLETED"] }
+      - sourceTopic: "flowable.activity.events"
+        predicate: { path: "$.eventType", op: "EQ", value: "PROCESS_COMPLETED" }
+    failTriggers: []
+    defaultSla:
+      mode: "STATIC"
+      hardMin: "1s"
+      expected: "30s"
+      warning: "5m"
+      jeopardy: "10m"
+      hardMax: "1h"

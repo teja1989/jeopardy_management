@@ -1,0 +1,294 @@
+# =============================================================================
+# Jeopardy Management & Predictive SLA Tracker — 100% Open-Source Local Stack
+# Target Core RAM Budget: ~4.0 GB total across core services
+#
+# Quickstart:
+#   docker compose up -d                          # Core stack (Kafka KRaft, Kafka UI, PG16, ClickHouse, Flink)
+#   docker compose --profile cache up -d          # Core + Valkey 8 OSS (:6379)
+#   docker compose --profile bi up -d             # Core + Grafana OSS (:3000)
+#   docker compose --profile cache --profile bi up -d
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Apache Kafka 3.8.1 (KRaft Mode — Zero Zookeeper)
+  # Internal Docker listener: kafka:9092 | Host listener: localhost:29092
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.8.1
+    container_name: jeopardy-kafka
+    restart: unless-stopped
+    mem_limit: 768m
+    ports:
+      - "${KAFKA_EXTERNAL_PORT:-29092}:29092"
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT:-29092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: "-Xms192m -Xmx320m"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - jeopardy-net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # One-shot Topic Bootstrap (8 Source Topics + 6 Internal Topics)
+  # ---------------------------------------------------------------------------
+  kafka-init:
+    image: apache/kafka:3.8.1
+    container_name: jeopardy-kafka-init
+    restart: "no"
+    mem_limit: 256m
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_REPLICATION_FACTOR: 1
+      KAFKA_HEAP_OPTS: "-Xms64m -Xmx128m"
+    volumes:
+      - ./infra/kafka/create-topics.sh:/infra/kafka/create-topics.sh:ro
+    entrypoint: ["/bin/bash", "/infra/kafka/create-topics.sh"]
+    networks:
+      - jeopardy-net
+
+  # ---------------------------------------------------------------------------
+  # Kafka UI (OSS) — Inspect Topics, Messages & Consumer Groups on :8085
+  # ---------------------------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: jeopardy-kafka-ui
+    restart: unless-stopped
+    mem_limit: 320m
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "${KAFKA_UI_PORT:-8085}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local-kraft
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+      JAVA_OPTS: "-Xms128m -Xmx224m"
+    networks:
+      - jeopardy-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 OSS — Partitioned Hot Operational Store & Admin Config Library
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: jeopardy-postgres
+    restart: unless-stopped
+    mem_limit: 512m
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jeopardy}
+      POSTGRES_USER: ${POSTGRES_USER:-jeopardy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jeopardy}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    networks:
+      - jeopardy-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jeopardy} -d ${POSTGRES_DB:-jeopardy}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # ClickHouse 24.8 OSS — Raw Event Audit, Milestone Telemetry & Real-Time MVs
+  # ---------------------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: jeopardy-clickhouse
+    restart: unless-stopped
+    mem_limit: 896m
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-jeopardy}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-jeopardy}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-jeopardy}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+      - ./db/clickhouse/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./infra/clickhouse/local-mem.xml:/etc/clickhouse-server/config.d/local-mem.xml:ro
+    networks:
+      - jeopardy-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Apache Flink 1.20 (Java 17 official image) — JobManager (Web UI on :8081)
+  # ---------------------------------------------------------------------------
+  flink-jobmanager:
+    image: flink:1.20-java17
+    container_name: jeopardy-flink-jobmanager
+    restart: unless-stopped
+    mem_limit: 896m
+    command: jobmanager
+    ports:
+      - "${FLINK_UI_PORT:-8081}:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 640m
+        jobmanager.memory.jvm-metaspace.size: 144m
+        state.backend.type: rocksdb
+        state.backend.incremental: true
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        execution.checkpointing.interval: 60000
+        execution.checkpointing.mode: EXACTLY_ONCE
+        rest.bind-address: 0.0.0.0
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - ./services/jeopardy-ml/models:/opt/flink/models:ro
+    networks:
+      - jeopardy-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/overview >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Apache Flink 1.20 (Java 17 official image) — TaskManager (2 Task Slots + RocksDB)
+  # ---------------------------------------------------------------------------
+  flink-taskmanager:
+    image: flink:1.20-java17
+    container_name: jeopardy-flink-taskmanager
+    restart: unless-stopped
+    mem_limit: 1280m
+    command: taskmanager
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: ${FLINK_TASK_SLOTS:-2}
+        taskmanager.memory.process.size: 768m
+        taskmanager.memory.managed.size: 64m
+        taskmanager.memory.jvm-metaspace.size: 144m
+        taskmanager.memory.jvm-overhead.min: 96m
+        taskmanager.memory.jvm-overhead.max: 96m
+        state.backend.type: rocksdb
+        state.backend.incremental: true
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        state.backend.rocksdb.localdir: /tmp/flink-rocksdb
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - ./services/jeopardy-ml/models:/opt/flink/models:ro
+    networks:
+      - jeopardy-net
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qa TaskManagerRunner /proc/[0-9]*/cmdline"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Optional Profile [cache]: Valkey 8 OSS (High-Throughput BPMN Registry Cache)
+  # ---------------------------------------------------------------------------
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: jeopardy-valkey
+    profiles: ["cache"]
+    restart: unless-stopped
+    mem_limit: 256m
+    command: ["valkey-server", "--appendonly", "yes", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "${VALKEY_PORT:-6379}:6379"
+    volumes:
+      - valkey-data:/data
+    networks:
+      - jeopardy-net
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # Optional Profile [bi]: Grafana OSS (Zero-ETL ClickHouse & PG Dashboards)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: jeopardy-grafana
+    profiles: ["bi"]
+    restart: unless-stopped
+    mem_limit: 384m
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - jeopardy-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+networks:
+  jeopardy-net:
+    name: jeopardy-net
+    driver: bridge
+
+volumes:
+  kafka-data:
+  postgres-data:
+  clickhouse-data:
+  clickhouse-logs:
+  flink-checkpoints:
+  valkey-data:
+  grafana-data:

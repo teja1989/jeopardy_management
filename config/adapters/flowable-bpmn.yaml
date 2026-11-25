@@ -1,0 +1,178 @@
+# =============================================================================
+# Block 1: Event Adapter — Flowable BPMN Activity Stream
+# Source Topic: flowable.activity.events
+# Guardrails:
+#   1. O(1) includeFilter drops ~95% Flowable BPMN micro-event noise in Stage 1.
+#   2. processDefinitionKey-scoped rules distinguish primary entityKey from
+#      secondary relationship links (e.g. tradeInMainBpmn).
+#   3. Wildcard "*" rule resolves deep nested Sub-BPMNs carrying ONLY
+#      (processInstanceId, parentProcessInstanceId) via Stage 2 AsyncDataStream
+#      + Caffeine LRU + PostgreSQL/Valkey bpmn_process_registry + 15s OOO buffer.
+# =============================================================================
+schemaVersion: "1.0"
+configType: "EVENT_ADAPTER"
+adapterId: "adapter-flowable-bpmn"
+version: 1
+enabled: true
+sourceTopic: "flowable.activity.events"
+domain: "BPMN"
+description: >-
+  High-volume Flowable BPMN adapter filtering ~95% micro-event noise and
+  resolving multi-level (processInstanceId, parentProcessInstanceId) hierarchies.
+
+# Stage 1 O(1) Noise Filter (~95% drop before JsonPath extraction)
+includeFilter:
+  eventTypePath: "$.eventType"
+  allowedValues:
+    - "PROCESS_STARTED"
+    - "PROCESS_COMPLETED"
+    - "PROCESS_CANCELLED"
+    - "ACTIVITY_STARTED"
+    - "ACTIVITY_COMPLETED"
+    - "TASK_COMPLETED"
+    - "ACTIVITY_SIGNALED"
+    - "JOB_EXECUTION_FAILURE"
+  excludeActivityTypes:
+    - "exclusiveGateway"
+    - "parallelGateway"
+    - "inclusiveGateway"
+    - "sequenceFlow"
+    - "scriptTask"
+    - "startEvent"
+  excludeEventTypes:
+    - "VARIABLE_CREATED"
+    - "VARIABLE_UPDATED"
+    - "VARIABLE_DELETED"
+    - "ENTITY_CREATED"
+    - "ENTITY_UPDATED"
+    - "SEQUENCEFLOW_TAKEN"
+    - "ENGINE_HEARTBEAT"
+
+redactPaths:
+  - "$.variables.customerSsn"
+  - "$.variables.customerEmail"
+  - "$.variables.paymentToken"
+  - "$.variables.accountPin"
+  - "$.variables.creditCardLast4"
+
+commonFields:
+  eventIdPath: "$.eventId"
+  eventTimePath: "$.eventTime"
+  eventTypePath: "$.eventType"
+  processInstanceIdPath: "$.processInstanceId"
+  parentProcessInstanceIdPath: "$.parentProcessInstanceId"
+  processDefinitionKeyPath: "$.processDefinitionKey"
+  activityIdPath: "$.activityId"
+  activityNamePath: "$.activityName"
+  activityTypePath: "$.activityType"
+  customerIdPath: "$.variables.accountId"
+  accountTypePath: "$.variables.accountType"
+
+# Scoped correlation rules evaluated by processDefinitionKey (exact match first, "*" fallback)
+processDefinitionRules:
+  - processDefinitionKey: "salesOrderBpmn"
+    entityLevel: "ORDER"
+    entityKeyTemplate: "{$.variables.orderId}"
+    orderTypePath: "$.variables.orderType"
+    registerInBpmnRegistry: true
+    walkParentProcessInstanceId: false
+    dimensions:
+      bpmn_process_key: "$.processDefinitionKey"
+      activity_id: "$.activityId"
+
+  - processDefinitionKey: "itemShipSubBpmn"
+    entityLevel: "ORDER_ITEM"
+    entityKeyTemplate: "{$.variables.orderId}:{$.variables.orderItemId}"
+    orderTypePath: "$.variables.orderType"
+    itemTypePath: "$.variables.itemType"
+    registerInBpmnRegistry: true
+    walkParentProcessInstanceId: true
+    relatedLinks:
+      - targetEntityKeyTemplate: "{$.variables.orderId}"
+        relationshipType: "CHILD_ITEM_OF"
+    dimensions:
+      bpmn_process_key: "$.processDefinitionKey"
+      activity_id: "$.activityId"
+      warehouse_id: "$.variables.warehouseId"
+
+  - processDefinitionKey: "portInSubBpmn"
+    entityLevel: "ORDER_ITEM"
+    entityKeyTemplate: "{$.variables.orderId}:{$.variables.orderItemId}"
+    orderTypePath: "$.variables.orderType"
+    itemTypeLiteral: "PORT_IN_LINE"
+    registerInBpmnRegistry: true
+    walkParentProcessInstanceId: true
+    relatedLinks:
+      - targetEntityKeyTemplate: "{$.variables.orderId}"
+        relationshipType: "CHILD_ITEM_OF"
+    dimensions:
+      bpmn_process_key: "$.processDefinitionKey"
+      activity_id: "$.activityId"
+      donor_carrier: "$.variables.donorCarrier"
+      port_type: "$.variables.portType"
+
+  - processDefinitionKey: "tradeInMainBpmn"
+    description: >-
+      Primary entityKey is tradeInOrderId; extra orderId variable is recorded
+      strictly as a BUNDLED_FEATURE link so Trade-In events never overwrite
+      parent Sales Upgrade milestones.
+    entityLevel: "TRADE_IN"
+    entityKeyTemplate: "{$.variables.tradeInOrderId}"
+    orderTypeLiteral: "DEVICE_TRADE_IN"
+    itemTypeLiteral: "DEVICE_TRADE_IN"
+    registerInBpmnRegistry: true
+    walkParentProcessInstanceId: false
+    extraLinks:
+      - whenPathExists: "$.variables.orderId"
+        targetEntityKeyTemplate: "{$.variables.orderId}"
+        relationshipType: "BUNDLED_FEATURE"
+    dimensions:
+      bpmn_process_key: "$.processDefinitionKey"
+      activity_id: "$.activityId"
+      trade_in_device: "$.variables.tradeInDeviceModel"
+
+  - processDefinitionKey: "changeOrderBpmn"
+    entityLevel: "CHANGE_ORDER"
+    entityKeyTemplate: "{$.variables.changeOrderId}"
+    orderTypePath: "$.variables.orderType"
+    itemTypeLiteral: "CHANGE_ORDER"
+    registerInBpmnRegistry: true
+    walkParentProcessInstanceId: false
+    extraLinks:
+      - whenPathExists: "$.variables.parentOrderId"
+        targetEntityKeyTemplate: "{$.variables.parentOrderId}"
+        relationshipType: "CHANGE_ORDER_OF"
+    dimensions:
+      bpmn_process_key: "$.processDefinitionKey"
+      activity_id: "$.activityId"
+      change_reason: "$.variables.changeReason"
+
+  - processDefinitionKey: "freeInsurancePromoBpmn"
+    entityLevel: "INTERNAL_PROMO"
+    entityKeyTemplate: "{$.variables.promoOrderId}"
+    orderTypeLiteral: "INTERNAL_PROMO_PROVISIONING"
+    itemTypeLiteral: "FREE_DEVICE_INSURANCE"
+    registerInBpmnRegistry: true
+    walkParentProcessInstanceId: false
+    extraLinks:
+      - whenPathExists: "$.variables.parentOrderId"
+        targetEntityKeyTemplate: "{$.variables.parentOrderId}"
+        relationshipType: "TRIGGERED_BY_ORDER"
+    dimensions:
+      bpmn_process_key: "$.processDefinitionKey"
+      activity_id: "$.activityId"
+      partner_name: "$.variables.partnerName"
+
+  - processDefinitionKey: "*"
+    description: >-
+      Wildcard fallback for deep nested Sub-BPMNs (e.g., warehouseLabelSubBpmn,
+      carrierApiRetrySubBpmn) carrying ONLY (processInstanceId, parentProcessInstanceId)
+      with no business orderId in variables.
+    walkParentProcessInstanceId: true
+    registerInBpmnRegistry: true
+    maxParentWalkDepth: 6
+    oooBufferSeconds: 15
+    uncorrelatedDlqTopic: "jeopardy.dlq.uncorrelated"
+    dimensions:
+      bpmn_process_key: "$.processDefinitionKey"
+      activity_id: "$.activityId"
