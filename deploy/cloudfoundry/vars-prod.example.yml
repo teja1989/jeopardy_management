@@ -1,0 +1,26 @@
+# Copy to deploy/cloudfoundry/vars-prod.yml (gitignored) and inject secrets via CI/Vault
+api_instances: 4
+api_memory: 2G
+jeopardy_api_route: jeopardy-api.apps.internal.example.com
+jeopardy_ui_route: jeopardy.apps.example.com
+jeopardy_api_url: https://jeopardy-api.apps.internal.example.com
+
+postgres_jdbc_url: jdbc:postgresql://jeopardy-pg-rw.jeopardy-prod.svc.cluster.local:5432/jeopardy
+postgres_user: jeopardy
+postgres_password: REPLACE_WITH_PROD_PG_PASSWORD
+
+clickhouse_jdbc_url: jdbc:ch://clickhouse-jeopardy.jeopardy-prod.svc.cluster.local:8123/jeopardy
+clickhouse_http_url: http://clickhouse-jeopardy.jeopardy-prod.svc.cluster.local:8123
+clickhouse_user: jeopardy
+clickhouse_password: REPLACE_WITH_PROD_CH_PASSWORD
+
+kafka_bootstrap_servers: kafka-prod-1.example.internal:9092,kafka-prod-2.example.internal:9092,kafka-prod-3.example.internal:9092
+
+auth_provider: azure-ad
+admin_username: admin
+admin_password: REPLACE_WITH_BREAKGLASS_ADMIN_PASSWORD
+auth_jwt_secret: REPLACE_WITH_64_BYTE_PROD_SIGNING_SECRET
+auth_cookie_secure: "true"
+azure_ad_tenant_id: REPLACE_WITH_AZURE_AD_TENANT_ID
+azure_ad_client_id: REPLACE_WITH_AZURE_AD_CLIENT_ID
+azure_ad_admin_role: Jeopardy.Admin

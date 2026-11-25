@@ -1,6 +1,37 @@
 # Jeopardy Management & Predictive SLA Tracker — 100% Open-Source Deployment Pack
 
-> **100% Pure Open-Source Compliance:** Every manifest in this directory deploys exclusively open-source software (**Cloud Foundry OSS buildpacks**, **Apache Flink 1.20 OSS + Flink K8s Operator**, **ClickHouse 24.8 OSS + ClickHouse Keeper + Altinity Operator**, **PostgreSQL 16 OSS + CloudNativePG**, **Valkey 8 OSS Sentinel**, **Apache Superset**, **Grafana OSS**, and **Python XGBoost/LightGBM → ONNX**). **Zero** ClickHouse Cloud, AWS Aurora, Managed Flink, or proprietary SaaS lock-in.
+> **100% Pure Open-Source Compliance:** Every manifest in this directory deploys exclusively open-source software (**OpenTofu/Terraform**, **Kubernetes Kustomize**, **Cloud Foundry OSS buildpacks**, **Apache Flink 1.20 OSS + Flink K8s Operator**, **ClickHouse 24.8 OSS + ClickHouse Keeper + Altinity Operator**, **PostgreSQL 16 OSS + CloudNativePG**, **Valkey 8 OSS Sentinel**, **Apache Superset**, **Grafana OSS**, and **Python XGBoost/LightGBM → ONNX**). **Zero** ClickHouse Cloud, AWS Aurora, Managed Flink, or proprietary SaaS lock-in.
+
+---
+
+## Quick Start: Multi-Environment Infrastructure as Code (`dev` / `qa` / `prod`)
+
+Everything is parameterized per environment using **OpenTofu/Terraform** (`deploy/terraform/`), **Kubernetes Kustomize Overlays** (`deploy/k8s-overlays/{dev,qa,prod}`), **Cloud Foundry Vars** (`deploy/cloudfoundry/vars-{dev,qa,prod}.example.yml`), and the single runner [`scripts/deploy.sh`](../scripts/deploy.sh).
+
+| Environment | Namespace | PostgreSQL 16 | Apache Flink 1.20 | ClickHouse 24.8 | Valkey 8 | API Instances | Auth Mode |
+|---|---|---|---|---|---|---|---|
+| **`dev`** | `jeopardy-dev` | 1 node (`2Gi`, `20Gi`) | 1 JM + `1→2` TMs (`p=2`) | 1 replica (`3Gi`) | 1 node | 1 (`768M`) | `local` |
+| **`qa`** | `jeopardy-qa` | 2 nodes (`8Gi`, `50Gi`) | 1 JM + `2→6` TMs (`p=8`) | 1 replica (`8Gi`) | 3 nodes | 2 (`1G`) | `local` / `azure-ad` |
+| **`prod`** | `jeopardy-prod` | 2 Multi-AZ (`16Gi`, `200Gi`) | 2 HA JMs + `4→16` TMs (`p=16→64`) | 2 Multi-AZ (`24Gi`) + 3 Keeper | 3 Sentinel HA | `4→12` (`2G`) | `azure-ad` (Entra ID) |
+
+```bash
+# 1. Dry-run preview (zero cluster mutations)
+./scripts/deploy.sh --env dev --target k8s --dry-run
+
+# 2. Bootstrap OSS K8s Operators + Namespace via OpenTofu / Terraform
+./scripts/deploy.sh --env dev --target terraform
+
+# 3. Roll out K8s Data & Streaming Pack (PG16, ClickHouse, Valkey, Flink, ML CronJob)
+./scripts/deploy.sh --env dev --target k8s
+./scripts/deploy.sh --env dev --target db-init
+
+# 4. Copy CF vars template (gitignored), inject secrets from Vault/KeyVault, and push
+cp deploy/cloudfoundry/vars-dev.example.yml deploy/cloudfoundry/vars-dev.yml
+./scripts/deploy.sh --env dev --target cf
+
+# Production (enforces placeholder-secret guard + interactive 'deploy-prod' confirmation):
+./scripts/deploy.sh --env prod --context <prod-kube-ctx> --target all
+```
 
 ---
 

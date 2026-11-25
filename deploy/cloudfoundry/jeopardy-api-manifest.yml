@@ -12,8 +12,8 @@
 # =============================================================================
 applications:
   - name: jeopardy-api
-    instances: 2
-    memory: 1G
+    instances: ((api_instances))
+    memory: ((api_memory))
     disk_quota: 1G
     buildpacks:
       - java_buildpack_offline
@@ -70,6 +70,17 @@ applications:
       JEOPARDY_TOPIC_CONFIG_UPDATES: jeopardy.config.updates
       JEOPARDY_TOPIC_UI_UPDATES: jeopardy.ui.updates
       JEOPARDY_TOPIC_ALERTS_OUT: jeopardy.alerts.out
+
+      # Authentication & RBAC (local in dev -> azure-ad in qa/prod)
+      JEOPARDY_AUTH_ENABLED: "true"
+      JEOPARDY_AUTH_PROVIDER: ((auth_provider))
+      JEOPARDY_ADMIN_USERNAME: ((admin_username))
+      JEOPARDY_ADMIN_PASSWORD: ((admin_password))
+      JEOPARDY_AUTH_SECRET: ((auth_jwt_secret))
+      JEOPARDY_AUTH_COOKIE_SECURE: ((auth_cookie_secure))
+      AZURE_AD_TENANT_ID: ((azure_ad_tenant_id))
+      AZURE_AD_CLIENT_ID: ((azure_ad_client_id))
+      AZURE_AD_ADMIN_ROLE: ((azure_ad_admin_role))
 
       # Observability & Actuator
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,prometheus,metrics

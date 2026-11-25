@@ -1,0 +1,126 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# =============================================================================
+# DEV Environment Overlay — Lightweight Cost-Optimized Footprint (~85% cheaper)
+# Usage: kubectl apply -k deploy/k8s-overlays/dev
+# =============================================================================
+namespace: jeopardy-dev
+
+resources:
+  - ../../k8s
+
+labels:
+  - pairs:
+      environment: dev
+
+patches:
+  # Rename base Namespace to jeopardy-dev
+  - target:
+      kind: Namespace
+      name: jeopardy
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: jeopardy-dev
+
+  # PostgreSQL 16 OSS (CloudNativePG): single-node dev sizing
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      name: jeopardy-pg
+    patch: |-
+      - op: replace
+        path: /spec/instances
+        value: 1
+      - op: replace
+        path: /spec/resources/requests/cpu
+        value: "500m"
+      - op: replace
+        path: /spec/resources/requests/memory
+        value: "1Gi"
+      - op: replace
+        path: /spec/resources/limits/cpu
+        value: "1"
+      - op: replace
+        path: /spec/resources/limits/memory
+        value: "2Gi"
+      - op: replace
+        path: /spec/storage/size
+        value: "20Gi"
+      - op: replace
+        path: /spec/walStorage/size
+        value: "5Gi"
+      - op: replace
+        path: /spec/postgresql/parameters/shared_buffers
+        value: "512MB"
+      - op: replace
+        path: /spec/postgresql/parameters/effective_cache_size
+        value: "1536MB"
+
+  # Apache Flink 1.20 OSS: 1 JM + 1-2 TMs for lower-env testing
+  - target:
+      group: flink.apache.org
+      version: v1beta1
+      kind: FlinkDeployment
+      name: jeopardy-flink-engine
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/autoscaler.flink.apache.org~1min-replicas
+        value: "1"
+      - op: replace
+        path: /metadata/annotations/autoscaler.flink.apache.org~1max-replicas
+        value: "2"
+      - op: replace
+        path: /spec/jobManager/replicas
+        value: 1
+      - op: replace
+        path: /spec/jobManager/resource/memory
+        value: "1024m"
+      - op: replace
+        path: /spec/jobManager/resource/cpu
+        value: 0.5
+      - op: replace
+        path: /spec/taskManager/replicas
+        value: 1
+      - op: replace
+        path: /spec/taskManager/resource/memory
+        value: "2048m"
+      - op: replace
+        path: /spec/taskManager/resource/cpu
+        value: 1
+      - op: replace
+        path: /spec/flinkConfiguration/job.autoscaler.vertex.min-parallelism
+        value: "2"
+      - op: replace
+        path: /spec/flinkConfiguration/job.autoscaler.vertex.max-parallelism
+        value: "4"
+      - op: replace
+        path: /spec/job/parallelism
+        value: 2
+
+  # ClickHouse 24.8 OSS: single-replica dev footprint
+  - target:
+      group: clickhouse.altinity.com
+      version: v1
+      kind: ClickHouseInstallation
+      name: jeopardy
+    patch: |-
+      - op: replace
+        path: /spec/configuration/clusters/0/layout/replicasCount
+        value: 1
+      - op: replace
+        path: /spec/configuration/profiles/default~1max_memory_usage
+        value: 3000000000
+
+  # Valkey 8 OSS: single node in dev
+  - target:
+      group: apps
+      version: v1
+      kind: StatefulSet
+      name: valkey
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1

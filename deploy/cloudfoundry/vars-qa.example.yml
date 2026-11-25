@@ -1,0 +1,26 @@
+# Copy to deploy/cloudfoundry/vars-qa.yml (gitignored) and inject secrets from CI/Vault
+api_instances: 2
+api_memory: 1G
+jeopardy_api_route: jeopardy-api-qa.apps.internal.example.com
+jeopardy_ui_route: jeopardy-qa.apps.example.com
+jeopardy_api_url: https://jeopardy-api-qa.apps.internal.example.com
+
+postgres_jdbc_url: jdbc:postgresql://jeopardy-pg-rw.jeopardy-qa.svc.cluster.local:5432/jeopardy
+postgres_user: jeopardy
+postgres_password: REPLACE_WITH_QA_PG_PASSWORD
+
+clickhouse_jdbc_url: jdbc:ch://clickhouse-jeopardy.jeopardy-qa.svc.cluster.local:8123/jeopardy
+clickhouse_http_url: http://clickhouse-jeopardy.jeopardy-qa.svc.cluster.local:8123
+clickhouse_user: jeopardy
+clickhouse_password: REPLACE_WITH_QA_CH_PASSWORD
+
+kafka_bootstrap_servers: kafka-qa-1.example.internal:9092,kafka-qa-2.example.internal:9092,kafka-qa-3.example.internal:9092
+
+auth_provider: local
+admin_username: admin
+admin_password: REPLACE_WITH_QA_ADMIN_PASSWORD
+auth_jwt_secret: REPLACE_WITH_32_BYTE_QA_SIGNING_SECRET
+auth_cookie_secure: "true"
+azure_ad_tenant_id: ""
+azure_ad_client_id: ""
+azure_ad_admin_role: Jeopardy.Admin

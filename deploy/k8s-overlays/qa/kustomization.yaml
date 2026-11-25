@@ -1,0 +1,102 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# =============================================================================
+# QA / Staging Environment Overlay — Realistic Load-Testing & Pre-Prod Parity
+# Usage: kubectl apply -k deploy/k8s-overlays/qa
+# =============================================================================
+namespace: jeopardy-qa
+
+resources:
+  - ../../k8s
+
+labels:
+  - pairs:
+      environment: qa
+
+patches:
+  - target:
+      kind: Namespace
+      name: jeopardy
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: jeopardy-qa
+
+  # PostgreSQL 16 OSS: Primary + 1 Read Replica (matches prod topology at 50% size)
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      name: jeopardy-pg
+    patch: |-
+      - op: replace
+        path: /spec/instances
+        value: 2
+      - op: replace
+        path: /spec/resources/requests/cpu
+        value: "1"
+      - op: replace
+        path: /spec/resources/requests/memory
+        value: "4Gi"
+      - op: replace
+        path: /spec/resources/limits/cpu
+        value: "2"
+      - op: replace
+        path: /spec/resources/limits/memory
+        value: "8Gi"
+      - op: replace
+        path: /spec/storage/size
+        value: "50Gi"
+      - op: replace
+        path: /spec/walStorage/size
+        value: "15Gi"
+      - op: replace
+        path: /spec/postgresql/parameters/shared_buffers
+        value: "2GB"
+      - op: replace
+        path: /spec/postgresql/parameters/effective_cache_size
+        value: "6GB"
+
+  # Apache Flink 1.20 OSS: 1 JM + 2 -> 6 TMs for scale & chaos soak testing
+  - target:
+      group: flink.apache.org
+      version: v1beta1
+      kind: FlinkDeployment
+      name: jeopardy-flink-engine
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/autoscaler.flink.apache.org~1min-replicas
+        value: "2"
+      - op: replace
+        path: /metadata/annotations/autoscaler.flink.apache.org~1max-replicas
+        value: "6"
+      - op: replace
+        path: /spec/jobManager/replicas
+        value: 1
+      - op: replace
+        path: /spec/taskManager/replicas
+        value: 2
+      - op: replace
+        path: /spec/flinkConfiguration/job.autoscaler.vertex.min-parallelism
+        value: "8"
+      - op: replace
+        path: /spec/flinkConfiguration/job.autoscaler.vertex.max-parallelism
+        value: "24"
+      - op: replace
+        path: /spec/job/parallelism
+        value: 8
+
+  # ClickHouse 24.8 OSS: 1 replica (or bump to 2 for replication testing), 8 GiB memory cap
+  - target:
+      group: clickhouse.altinity.com
+      version: v1
+      kind: ClickHouseInstallation
+      name: jeopardy
+    patch: |-
+      - op: replace
+        path: /spec/configuration/clusters/0/layout/replicasCount
+        value: 1
+      - op: replace
+        path: /spec/configuration/profiles/default~1max_memory_usage
+        value: 8000000000

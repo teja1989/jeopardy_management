@@ -8,6 +8,13 @@ __pycache__/
 .env
 *.log
 
+# Terraform / OpenTofu state & local Cloud Foundry secrets
+.terraform/
+*.tfstate
+*.tfstate.*
+deploy/cloudfoundry/vars-*.yml
+!deploy/cloudfoundry/vars-*.example.yml
+
 # Java / Maven / Gradle
 target/
 build/
