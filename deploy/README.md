@@ -33,6 +33,21 @@ cp deploy/cloudfoundry/vars-dev.example.yml deploy/cloudfoundry/vars-dev.yml
 ./scripts/deploy.sh --env prod --context <prod-kube-ctx> --target all
 ```
 
+### Independent Per-Component Deploys (Zero Impact on Sibling Services)
+
+Even though all services live in one monorepo, **every component has an isolated deploy boundary and release cadence**. Never redeploy databases when shipping a UI/API/Flink change:
+
+| Change Path in Repo | Deploy Command (`--component`) | Release Cadence | Impact on Other Services |
+|---|---|---|---|
+| `config/**` or Workflow Studio | `--component configs` (or **Publish Live** button) | Multiple / day | **Zero restarts anywhere** (Flink hot-reloads via `jeopardy.config.updates`) |
+| `apps/jeopardy-ui/**` | `./scripts/deploy.sh --env <env> --component ui` | Daily / PR | **Zero impact** on API, Flink, Kafka, PG, ClickHouse (rolling Nginx push) |
+| `services/jeopardy-api/**` | `./scripts/deploy.sh --env <env> --component api` | Daily / PR | **Zero impact** on Flink & DBs (rolling zero-downtime push; SSE auto-reconnects) |
+| `services/jeopardy-flink/**` | `./scripts/deploy.sh --env <env> --component flink` | Weekly / feature | **Zero impact** on UI, API & DBs (Flink Operator performs graceful savepoint upgrade) |
+| `services/jeopardy-ml/**` | `./scripts/deploy.sh --env <env> --component ml` | Weekly / scheduled | **Zero restarts** (CronJob writes `.onnx` to shared PVC; Flink hot-reloads in-process) |
+| `deploy/k8s/postgres/**` | `./scripts/deploy.sh --env <env> --component postgres` | Rare (infra only) | Isolated to CNPG cluster (rolling replica-first upgrade) |
+| `deploy/k8s/clickhouse/**` | `./scripts/deploy.sh --env <env> --component clickhouse` | Rare (infra only) | Isolated to Altinity ClickHouse cluster (Flink buffers during brief rolling restart) |
+| `deploy/k8s/valkey/**` | `./scripts/deploy.sh --env <env> --component valkey` | Rare (infra only) | Isolated to Valkey Sentinel (Flink falls back cleanly to Caffeine + PG) |
+
 ---
 
 ## Directory Layout
