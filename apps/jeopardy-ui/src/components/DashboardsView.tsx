@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Download,
+  Flame,
   Layers,
   Pause,
   Play,
@@ -14,9 +15,12 @@ import {
   X,
 } from 'lucide-react';
 import {
+  acknowledgeIncident,
   buildExportUrl,
   getDevOpsBottlenecks,
   getExecSummary,
+  listIncidents,
+  resolveIncident,
   searchTrackerQueue,
   subscribeOpsAlerts,
 } from '../api/client';
@@ -24,6 +28,7 @@ import type {
   DevOpsBottlenecksResponse,
   EntitySummaryDto,
   ExecSummaryResponse,
+  IncidentDto,
   SseConnectionState,
   UiDeltaEvent,
 } from '../api/types';
@@ -39,6 +44,7 @@ export interface DashboardDrilldownTarget {
 interface DashboardsViewProps {
   onInspectOrders: (target: DashboardDrilldownTarget) => void;
   onOnboardNewTracker?: () => void;
+  isAdminAuthenticated?: boolean;
 }
 
 const ORDER_FAMILIES = [
@@ -68,7 +74,10 @@ function prettifyLabel(raw: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export const DashboardsView: React.FC<DashboardsViewProps> = ({ onInspectOrders }) => {
+export const DashboardsView: React.FC<DashboardsViewProps> = ({
+  onInspectOrders,
+  isAdminAuthenticated = false,
+}) => {
   const [activeView, setActiveView] = useState<'health' | 'bottlenecks'>('health');
   const [windowHours, setWindowHours] = useState(24);
   const [quickOrderType, setQuickOrderType] = useState<'ALL' | 'SALES' | 'CHANGE'>('ALL');
@@ -88,6 +97,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({ onInspectOrders 
   const [summaryData, setSummaryData] = useState<ExecSummaryResponse | null>(null);
   const [opsData, setOpsData] = useState<DevOpsBottlenecksResponse | null>(null);
   const [urgentOrders, setUrgentOrders] = useState<EntitySummaryDto[]>([]);
+  const [activeIncidents, setActiveIncidents] = useState<IncidentDto[]>([]);
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
 
   const [sseState, setSseState] = useState<SseConnectionState>('CONNECTING');
@@ -106,7 +116,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({ onInspectOrders 
     setLoading(true);
     setError(null);
     try {
-      const [summaryRes, opsRes, urgentRes] = await Promise.all([
+      const [summaryRes, opsRes, urgentRes, incidentsRes] = await Promise.all([
         getExecSummary({
           hours: windowHours,
           orderFamily,
@@ -130,10 +140,12 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({ onInspectOrders 
           hasActiveFallout: true,
           limit: 4,
         }).catch(() => ({ items: [], totalCount: 0, limit: 4, offset: 0 })),
+        listIncidents(true, 6).catch(() => []),
       ]);
       setSummaryData(summaryRes);
       setOpsData(opsRes);
       setUrgentOrders(urgentRes.items);
+      setActiveIncidents(incidentsRes);
       setLastRefreshed(new Date().toISOString());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load operations metrics');
@@ -296,6 +308,110 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({ onInspectOrders 
           </a>
         </div>
       </div>
+
+      {/* Active Incident Clusters Banner (Anti-Alert-Storm Engine) */}
+      {activeIncidents.length > 0 && (
+        <div className="rounded-2xl border border-rose-300 dark:border-rose-500/40 bg-gradient-to-r from-rose-50 via-rose-50/70 to-amber-50/60 dark:from-rose-950/50 dark:via-rose-950/30 dark:to-amber-950/20 p-4 space-y-3 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="w-7 h-7 rounded-lg bg-rose-600 text-white flex items-center justify-center shadow-sm">
+                <Flame className="w-4 h-4" />
+              </span>
+              <div>
+                <div className="text-xs font-bold text-rose-900 dark:text-rose-100 flex items-center gap-2">
+                  <span>Active Incident Clusters ({activeIncidents.length})</span>
+                  <span className="rounded-full bg-violet-100 dark:bg-violet-950/70 border border-violet-300 dark:border-violet-500/40 px-2 py-0.5 text-[10px] font-semibold text-violet-700 dark:text-violet-300">
+                    Alert Storm Suppression Active
+                  </span>
+                </div>
+                <p className="text-[11px] text-rose-700/90 dark:text-rose-300/80">
+                  Correlated order failures are grouped into unified Microsoft Teams Incident Cards instead of spamming individual alerts.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+            {activeIncidents.map((inc) => (
+              <div
+                key={inc.incidentId}
+                className="rounded-xl border border-rose-200/80 dark:border-rose-500/30 bg-white/95 dark:bg-slate-900/95 p-3.5 space-y-2 shadow-sm"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                        inc.severity === 'CRITICAL'
+                          ? 'bg-rose-600 text-white'
+                          : 'bg-amber-500 text-white'
+                      }`}
+                    >
+                      {inc.severity}
+                    </span>
+                    <span className="font-mono text-[11px] text-slate-500">
+                      {inc.incidentId} · {inc.status}
+                    </span>
+                  </div>
+                  <span className="rounded-md bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-500/30 px-2 py-0.5 text-[11px] font-bold text-rose-700 dark:text-rose-300 shrink-0">
+                    {inc.spikeMultiplier.toFixed(1)}× normal
+                  </span>
+                </div>
+
+                <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                  {inc.title}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                  <span>
+                    <strong className="text-slate-800 dark:text-slate-200">
+                      {inc.impactedEntityCount}
+                    </strong>{' '}
+                    impacted orders · <code className="font-mono">{inc.errorCode}</code>
+                  </span>
+
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {inc.sampleEntityKeys.slice(0, 2).map((ek) => (
+                      <button
+                        key={ek}
+                        type="button"
+                        onClick={() => onInspectOrders({ entityKey: ek })}
+                        className="rounded-md bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950/50 px-2 py-0.5 font-mono text-[10px] text-blue-700 dark:text-blue-300 transition"
+                      >
+                        {ek}
+                      </button>
+                    ))}
+
+                    {isAdminAuthenticated && inc.status === 'OPEN' && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await acknowledgeIncident(inc.incidentId);
+                          void loadData();
+                        }}
+                        className="rounded-md border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:text-amber-200 hover:bg-amber-100"
+                      >
+                        Acknowledge
+                      </button>
+                    )}
+                    {isAdminAuthenticated && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await resolveIncident(inc.incidentId);
+                          void loadData();
+                        }}
+                        className="rounded-md border border-emerald-300 dark:border-emerald-500/40 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100"
+                      >
+                        Resolve
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Live Incoming Alerts Strip (only appears prominently when alerts arrive) */}
       {liveAlerts.length > 0 && (

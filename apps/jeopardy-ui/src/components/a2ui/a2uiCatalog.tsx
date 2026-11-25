@@ -420,3 +420,64 @@ registerA2uiComponent('OrderListItem', (def, ctx) => {
     </button>
   );
 });
+
+registerA2uiComponent('IncidentCard', (def, ctx) => {
+  const incidentId = String(resolveBoundValue(def.incidentId, ctx.dataModel, ''));
+  const title = String(resolveBoundValue(def.title, ctx.dataModel, 'Active Incident'));
+  const severity = String(resolveBoundValue(def.severity, ctx.dataModel, 'HIGH'));
+  const status = String(resolveBoundValue(def.status, ctx.dataModel, 'OPEN'));
+  const impactedCount = Number(resolveBoundValue(def.impactedCount, ctx.dataModel, 0));
+  const spikeLabel = String(resolveBoundValue(def.spikeLabel, ctx.dataModel, ''));
+  const errorCode = String(resolveBoundValue(def.errorCode, ctx.dataModel, ''));
+  const action = def.action as A2uiActionSpec | undefined;
+
+  const isCrit = severity.toUpperCase() === 'CRITICAL';
+  return (
+    <div
+      className={`rounded-xl border p-3 space-y-2 ${
+        isCrit
+          ? 'border-rose-300 dark:border-rose-500/40 bg-rose-50/70 dark:bg-rose-950/30'
+          : 'border-amber-300 dark:border-amber-500/40 bg-amber-50/70 dark:bg-amber-950/30'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span
+            className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+              isCrit ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'
+            }`}
+          >
+            {severity}
+          </span>
+          <span className="text-[10px] font-mono text-slate-600 dark:text-slate-300">
+            {incidentId} · {status}
+          </span>
+        </div>
+        {spikeLabel && (
+          <span className="rounded-md bg-white/80 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:text-rose-300 shrink-0">
+            {spikeLabel}
+          </span>
+        )}
+      </div>
+
+      <div className="text-xs font-semibold text-slate-900 dark:text-white leading-snug">
+        {title}
+      </div>
+
+      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+        <span>
+          <strong>{impactedCount}</strong> orders · <code className="font-mono">{errorCode}</code>
+        </span>
+        {action && (
+          <button
+            type="button"
+            onClick={() => ctx.dispatchAction(def.id, action)}
+            className="inline-flex items-center gap-1 font-medium text-blue-700 dark:text-blue-400 hover:underline shrink-0"
+          >
+            Inspect Sample <ArrowRight className="w-3 h-3" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+});

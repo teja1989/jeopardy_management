@@ -319,6 +319,7 @@ export const App: React.FC = () => {
           <DashboardsView
             onInspectOrders={handleInspectOrders}
             onOnboardNewTracker={handleQuickOnboard}
+            isAdminAuthenticated={isAdminAuthenticated}
           />
         )}
         {workspace === 'tracker' && (

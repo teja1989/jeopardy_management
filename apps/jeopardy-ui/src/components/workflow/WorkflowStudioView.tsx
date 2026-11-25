@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  Bell,
   Brain,
   CheckCircle2,
   ChevronDown,
@@ -36,6 +37,7 @@ import type {
 import { AdapterEditorView } from './AdapterEditorView';
 import { JsonEventPickerModal } from './JsonEventPickerModal';
 import { MilestoneInspector } from './MilestoneInspector';
+import { TeamsAlertsView } from './TeamsAlertsView';
 import {
   ORDER_FAMILY_OPTIONS,
   blueprintToDraft,
@@ -57,7 +59,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
   onConsumedAutoOpen,
   adminUsername = 'admin',
 }) => {
-  const [studioMode, setStudioMode] = useState<'workflows' | 'adapters'>('workflows');
+  const [studioMode, setStudioMode] = useState<'workflows' | 'adapters' | 'alerts'>('workflows');
 
   // Live configs from PostgreSQL
   const [adapters, setAdapters] = useState<EventAdapterRecord[]>([]);
@@ -499,6 +501,18 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
               <Database className="w-3.5 h-3.5" />
               Event Adapters ({adapters.length})
             </button>
+            <button
+              type="button"
+              onClick={() => setStudioMode('alerts')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                studioMode === 'alerts'
+                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              <Bell className="w-3.5 h-3.5" />
+              Teams Alerts &amp; Clustering
+            </button>
           </div>
 
           {studioMode === 'workflows' && (
@@ -539,6 +553,8 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
 
       {studioMode === 'adapters' ? (
         <AdapterEditorView adapters={adapters} onReload={loadAllConfigs} />
+      ) : studioMode === 'alerts' ? (
+        <TeamsAlertsView />
       ) : (
         /* 3-Column Visual Workflow Builder */
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">

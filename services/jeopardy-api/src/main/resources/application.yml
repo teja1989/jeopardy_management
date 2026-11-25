@@ -43,6 +43,17 @@ jeopardy:
       api-key: ${AZURE_OPENAI_API_KEY:}
       deployment: ${AZURE_OPENAI_DEPLOYMENT:}
       api-version: ${AZURE_OPENAI_API_VERSION:2024-10-21}
+  ui:
+    base-url: ${JEOPARDY_UI_BASE_URL:http://localhost:3000}
+  alerts:
+    enabled: ${JEOPARDY_ALERTS_ENABLED:true}
+    http-timeout-seconds: ${JEOPARDY_ALERTS_TIMEOUT_SECONDS:10}
+  incidents:
+    enabled: ${JEOPARDY_INCIDENTS_ENABLED:true}
+    poll-interval-ms: ${JEOPARDY_INCIDENTS_POLL_MS:30000}
+    min-impacted-entities: ${JEOPARDY_INCIDENTS_MIN_ENTITIES:3}
+    spike-multiplier: ${JEOPARDY_INCIDENTS_SPIKE_MULTIPLIER:2.0}
+    resolve-quiet-minutes: ${JEOPARDY_INCIDENTS_RESOLVE_MINUTES:10}
   topics:
     config-updates: ${JEOPARDY_TOPIC_CONFIG_UPDATES:jeopardy.config.updates}
     ui-updates: ${JEOPARDY_TOPIC_UI_UPDATES:jeopardy.ui.updates}

@@ -250,7 +250,9 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           ? 'Show active fallouts'
           : action.name === 'get_sla_summary'
             ? 'Live SLA summary'
-            : action.name;
+            : action.name === 'get_active_incidents'
+              ? 'Active incident clusters'
+              : action.name;
 
     void dispatchServerAction(action, label, isRefresh);
   };
@@ -422,6 +424,22 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
               className="rounded-full border border-rose-200 dark:border-rose-500/30 bg-rose-50/70 dark:bg-rose-950/30 hover:border-rose-400 px-2.5 py-0.5 text-[11px] font-medium text-rose-700 dark:text-rose-300 transition"
             >
               Active Fallouts
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                handleA2uiUserAction({
+                  name: 'get_active_incidents',
+                  surfaceId: '',
+                  sourceComponentId: 'chip-incidents',
+                  timestamp: new Date().toISOString(),
+                  context: { limit: 5 },
+                })
+              }
+              className="rounded-full border border-amber-200 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-950/30 hover:border-amber-400 px-2.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300 transition"
+            >
+              Active Incidents
             </button>
             <button
               type="button"

@@ -5,7 +5,10 @@ import type {
 } from '../components/a2ui/a2uiTypes';
 import { SUPPORTED_A2UI_CATALOGS } from '../components/a2ui/a2uiTypes';
 import type {
+  AlertDeliveryDto,
+  AlertRoutingRuleDto,
   AuthStatusResponse,
+  ClusterScanSummary,
   CustomerJourneyResponse,
   DevOpsBottlenecksResponse,
   DryRunRequest,
@@ -14,6 +17,7 @@ import type {
   EventAdapterRecord,
   EventAdapterRequest,
   ExecSummaryResponse,
+  IncidentDto,
   JourneyBlueprintRecord,
   JourneyBlueprintRequest,
   JsonSearchRequest,
@@ -21,6 +25,7 @@ import type {
   LoginResponse,
   MilestoneTemplateRecord,
   MilestoneTemplateRequest,
+  NotificationChannelDto,
   OrderFamilyRecord,
   PublishResponse,
   QueueSearchResponse,
@@ -374,6 +379,135 @@ export function listPublishHistory(limit = 10): Promise<PublishResponse[]> {
 
 export function getSseStats(): Promise<SseStatsDto> {
   return fetchJson<SseStatsDto>(`${API_BASE}/stream/stats`);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Incident Clustering & Microsoft Teams Notifications API
+// ---------------------------------------------------------------------------
+
+export function listIncidents(activeOnly = true, limit = 20): Promise<IncidentDto[]> {
+  return fetchJson<IncidentDto[]>(
+    `${API_BASE}/incidents${buildQueryString({ activeOnly, limit })}`,
+  );
+}
+
+export function evaluateIncidentsNow(): Promise<ClusterScanSummary> {
+  return fetchJson<ClusterScanSummary>(`${API_BASE}/admin/incidents/evaluate`, {
+    method: 'POST',
+  });
+}
+
+export function acknowledgeIncident(incidentId: string): Promise<IncidentDto> {
+  return fetchJson<IncidentDto>(
+    `${API_BASE}/admin/incidents/${encodeURIComponent(incidentId)}/acknowledge`,
+    { method: 'POST' },
+  );
+}
+
+export function resolveIncident(incidentId: string): Promise<IncidentDto> {
+  return fetchJson<IncidentDto>(
+    `${API_BASE}/admin/incidents/${encodeURIComponent(incidentId)}/resolve`,
+    { method: 'POST' },
+  );
+}
+
+export function simulateIncidentCluster(body?: {
+  templateId?: string;
+  errorCode?: string;
+  orderType?: string;
+  impactedCount?: number;
+  sampleEntityKeys?: string[];
+}): Promise<IncidentDto> {
+  return fetchJson<IncidentDto>(`${API_BASE}/admin/incidents/simulate`, {
+    method: 'POST',
+    body: JSON.stringify(body ?? {}),
+  });
+}
+
+export function listAlertChannels(): Promise<NotificationChannelDto[]> {
+  return fetchJson<NotificationChannelDto[]>(`${API_BASE}/admin/alerts/channels`);
+}
+
+export function saveAlertChannel(body: {
+  channelId?: string;
+  name: string;
+  channelType?: 'TEAMS_WEBHOOK' | 'GENERIC_WEBHOOK';
+  webhookUrl: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+}): Promise<NotificationChannelDto> {
+  return fetchJson<NotificationChannelDto>(`${API_BASE}/admin/alerts/channels`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteAlertChannel(channelId: string): Promise<{ deleted: boolean }> {
+  return fetchJson<{ deleted: boolean }>(
+    `${API_BASE}/admin/alerts/channels/${encodeURIComponent(channelId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function sendTestAlertChannel(channelId: string): Promise<AlertDeliveryDto> {
+  return fetchJson<AlertDeliveryDto>(
+    `${API_BASE}/admin/alerts/channels/${encodeURIComponent(channelId)}/test`,
+    { method: 'POST' },
+  );
+}
+
+export function listAlertRules(): Promise<AlertRoutingRuleDto[]> {
+  return fetchJson<AlertRoutingRuleDto[]>(`${API_BASE}/admin/alerts/rules`);
+}
+
+export function saveAlertRule(body: {
+  ruleId?: string;
+  name: string;
+  priority?: number;
+  match?: Record<string, unknown>;
+  channelIds: string[];
+  dedupeWindowMinutes?: number;
+  quietHours?: Record<string, unknown>;
+  enabled?: boolean;
+}): Promise<AlertRoutingRuleDto> {
+  return fetchJson<AlertRoutingRuleDto>(`${API_BASE}/admin/alerts/rules`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteAlertRule(ruleId: string): Promise<{ deleted: boolean }> {
+  return fetchJson<{ deleted: boolean }>(
+    `${API_BASE}/admin/alerts/rules/${encodeURIComponent(ruleId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function listAlertDeliveries(limit = 50): Promise<AlertDeliveryDto[]> {
+  return fetchJson<AlertDeliveryDto[]>(
+    `${API_BASE}/admin/alerts/deliveries${buildQueryString({ limit })}`,
+  );
+}
+
+export function simulateOrderAlert(body: {
+  entityKey: string;
+  customerId?: string;
+  orderType?: string;
+  itemType?: string;
+  accountType?: string;
+  milestoneId?: string;
+  templateId?: string;
+  displayName?: string;
+  severity?: string;
+  status?: string;
+  errorCode?: string;
+  assignedQueue?: string;
+  message?: string;
+}): Promise<AlertDeliveryDto[]> {
+  return fetchJson<AlertDeliveryDto[]>(`${API_BASE}/admin/alerts/simulate`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 // ---------------------------------------------------------------------------

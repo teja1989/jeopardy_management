@@ -402,3 +402,131 @@ INSERT INTO config_order_families (order_type, order_family, description) VALUES
     ('FIBER_SELF_INSTALL_KIT',      'BROADBAND',        'Fiber residential/SMB self-install gateway kit delivery & activation'),
     ('FWA_HOME_INTERNET',           'BROADBAND',        '5G Fixed Wireless Access home internet gateway fulfillment')
 ON CONFLICT (order_type) DO NOTHING;
+
+
+-- -----------------------------------------------------------------------------
+-- 9. PHASE 2: MICROSOFT TEAMS NOTIFICATIONS, ROUTING & INCIDENT CLUSTERING
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS config_notification_channels (
+    channel_id    VARCHAR(128)  PRIMARY KEY,
+    name          VARCHAR(256)  NOT NULL,
+    channel_type  VARCHAR(32)   NOT NULL DEFAULT 'TEAMS_WEBHOOK'
+                                CHECK (channel_type IN ('TEAMS_WEBHOOK', 'GENERIC_WEBHOOK')),
+    webhook_url   TEXT          NOT NULL,
+    config_jsonb  JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    enabled       BOOLEAN       NOT NULL DEFAULT TRUE,
+    created_by    VARCHAR(128)  NOT NULL DEFAULT 'system',
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS config_alert_routing_rules (
+    rule_id               VARCHAR(128)  PRIMARY KEY,
+    name                  VARCHAR(256)  NOT NULL,
+    priority              INT           NOT NULL DEFAULT 100,
+    match_jsonb           JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    channel_ids           JSONB         NOT NULL DEFAULT '[]'::jsonb,
+    dedupe_window_minutes INT           NOT NULL DEFAULT 30,
+    quiet_hours_jsonb     JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    enabled               BOOLEAN       NOT NULL DEFAULT TRUE,
+    created_by            VARCHAR(128)  NOT NULL DEFAULT 'system',
+    created_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_routing_rules_enabled_prio
+    ON config_alert_routing_rules (enabled, priority);
+
+CREATE TABLE IF NOT EXISTS ops_incidents (
+    incident_id              VARCHAR(128)      PRIMARY KEY,
+    fingerprint              VARCHAR(256)      NOT NULL,
+    domain                   VARCHAR(64)       NOT NULL DEFAULT 'ORDER',
+    template_id              VARCHAR(128)      NOT NULL DEFAULT 'UNKNOWN',
+    error_code               VARCHAR(128)      NOT NULL DEFAULT 'UNKNOWN',
+    order_type               VARCHAR(64)       NOT NULL DEFAULT 'ALL',
+    status                   VARCHAR(24)       NOT NULL DEFAULT 'OPEN'
+                                               CHECK (status IN ('OPEN', 'ACKNOWLEDGED', 'RESOLVED')),
+    severity                 VARCHAR(24)       NOT NULL DEFAULT 'HIGH'
+                                               CHECK (severity IN ('HIGH', 'CRITICAL')),
+    title                    VARCHAR(512)      NOT NULL,
+    current_5m_count         INT               NOT NULL DEFAULT 0,
+    baseline_5m_avg          DOUBLE PRECISION  NOT NULL DEFAULT 0,
+    spike_multiplier         DOUBLE PRECISION  NOT NULL DEFAULT 1.0,
+    impacted_entity_count    INT               NOT NULL DEFAULT 0,
+    sample_entity_keys_jsonb JSONB             NOT NULL DEFAULT '[]'::jsonb,
+    acknowledged_by          VARCHAR(128),
+    acknowledged_at          TIMESTAMPTZ,
+    opened_at                TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+    last_seen_at             TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+    resolved_at              TIMESTAMPTZ,
+    updated_at               TIMESTAMPTZ       NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ops_incidents_open_fp
+    ON ops_incidents (fingerprint)
+    WHERE status IN ('OPEN', 'ACKNOWLEDGED');
+
+CREATE INDEX IF NOT EXISTS idx_ops_incidents_status_opened
+    ON ops_incidents (status, opened_at DESC);
+
+CREATE TABLE IF NOT EXISTS alert_delivery_log (
+    delivery_id           VARCHAR(128)  PRIMARY KEY,
+    dedupe_key            VARCHAR(256)  NOT NULL,
+    rule_id               VARCHAR(128),
+    channel_id            VARCHAR(128),
+    entity_key            VARCHAR(256),
+    incident_id           VARCHAR(128),
+    alert_kind            VARCHAR(32)   NOT NULL DEFAULT 'ORDER_ALERT'
+                                        CHECK (alert_kind IN ('ORDER_ALERT', 'INCIDENT_CLUSTER', 'TEST')),
+    severity              VARCHAR(24),
+    status                VARCHAR(32)   NOT NULL
+                                        CHECK (status IN ('SENT', 'DRY_RUN', 'SUPPRESSED_DEDUPE', 'SUPPRESSED_QUIET', 'SUPPRESSED_INCIDENT', 'FAILED')),
+    http_status           INT,
+    error_message         TEXT,
+    payload_preview_jsonb JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    sent_at               TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_delivery_dedupe
+    ON alert_delivery_log (dedupe_key, sent_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_alert_delivery_sent_at
+    ON alert_delivery_log (sent_at DESC);
+
+-- Starter Microsoft Teams Dry-Run Channel & Anti-Fatigue Routing Rules (safe local defaults)
+INSERT INTO config_notification_channels (channel_id, name, channel_type, webhook_url, config_jsonb, enabled, created_by)
+VALUES (
+    'teams-ops-noc',
+    'Teams — Order Ops NOC (Dry-Run Preview)',
+    'TEAMS_WEBHOOK',
+    'dry-run://teams/order-ops-noc',
+    '{"description":"Replace webhook_url with your Microsoft Teams Workflows Incoming Webhook URL to deliver live cards."}'::jsonb,
+    TRUE,
+    'system'
+) ON CONFLICT (channel_id) DO NOTHING;
+
+INSERT INTO config_alert_routing_rules (rule_id, name, priority, match_jsonb, channel_ids, dedupe_window_minutes, quiet_hours_jsonb, enabled, created_by)
+VALUES
+    (
+        'rule-incident-clusters-teams',
+        'Active Incident Clusters (Anti-Storm Escalation)',
+        10,
+        '{"alertKinds":["INCIDENT_CLUSTER"],"severities":["HIGH","CRITICAL"]}'::jsonb,
+        '["teams-ops-noc"]'::jsonb,
+        15,
+        '{"enabled":false,"bypassSeverities":["CRITICAL","HIGH"]}'::jsonb,
+        TRUE,
+        'system'
+    ),
+    (
+        'rule-high-priority-breaches-teams',
+        'VIP & Critical SLA Breaches / Fallouts',
+        20,
+        '{"alertKinds":["ORDER_ALERT"],"severities":["BREACHED","JEOPARDY","IN_FALLOUT","CRITICAL","HIGH"]}'::jsonb,
+        '["teams-ops-noc"]'::jsonb,
+        30,
+        '{"enabled":false,"startUtc":"03:00","endUtc":"08:00","bypassSeverities":["BREACHED","CRITICAL"]}'::jsonb,
+        TRUE,
+        'system'
+    )
+ON CONFLICT (rule_id) DO NOTHING;

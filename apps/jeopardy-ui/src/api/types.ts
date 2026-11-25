@@ -514,3 +514,86 @@ export interface LoginResponse {
   token: string;
   user: AuthUser;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2: Incident Clustering & Microsoft Teams Notifications DTOs
+// ---------------------------------------------------------------------------
+
+export interface IncidentDto {
+  incidentId: string;
+  fingerprint: string;
+  domain: string;
+  templateId: string;
+  errorCode: string;
+  orderType: string;
+  status: 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
+  severity: 'HIGH' | 'CRITICAL';
+  title: string;
+  current5mCount: number;
+  baseline5mAvg: number;
+  spikeMultiplier: number;
+  impactedEntityCount: number;
+  sampleEntityKeys: string[];
+  acknowledgedBy: string | null;
+  acknowledgedAt: string | null;
+  openedAt: string;
+  lastSeenAt: string;
+  resolvedAt: string | null;
+  updatedAt: string;
+}
+
+export interface ClusterScanSummary {
+  detectedClusters: number;
+  newlyOpened: number;
+  updatedExisting: number;
+  autoResolved: number;
+  activeIncidents: IncidentDto[];
+}
+
+export interface NotificationChannelDto {
+  channelId: string;
+  name: string;
+  channelType: 'TEAMS_WEBHOOK' | 'GENERIC_WEBHOOK';
+  webhookUrl: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AlertRoutingRuleDto {
+  ruleId: string;
+  name: string;
+  priority: number;
+  match: Record<string, unknown>;
+  channelIds: string[];
+  dedupeWindowMinutes: number;
+  quietHours: Record<string, unknown>;
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AlertDeliveryDto {
+  deliveryId: string;
+  dedupeKey: string;
+  ruleId: string | null;
+  channelId: string | null;
+  entityKey: string | null;
+  incidentId: string | null;
+  alertKind: 'ORDER_ALERT' | 'INCIDENT_CLUSTER' | 'TEST';
+  severity: string | null;
+  status:
+    | 'SENT'
+    | 'DRY_RUN'
+    | 'SUPPRESSED_DEDUPE'
+    | 'SUPPRESSED_QUIET'
+    | 'SUPPRESSED_INCIDENT'
+    | 'FAILED';
+  httpStatus: number | null;
+  errorMessage: string | null;
+  payloadPreview: Record<string, unknown>;
+  sentAt: string;
+}
