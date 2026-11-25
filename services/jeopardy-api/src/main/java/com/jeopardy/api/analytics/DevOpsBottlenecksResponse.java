@@ -13,8 +13,25 @@ public record DevOpsBottlenecksResponse(
         Map<String, String> appliedFilters,
         List<BottleneckItem> bottlenecks,
         List<ErrorStormPoint> errorStorm5m,
-        List<FalloutQueueMetric> falloutQueues
+        List<FalloutQueueMetric> falloutQueues,
+        FalloutRecoverySummary falloutRecovery
 ) {
+    public DevOpsBottlenecksResponse(
+            Instant generatedAt,
+            int windowHours,
+            String querySource,
+            boolean clickhouseAvailable,
+            String clickhouseWarning,
+            Map<String, String> appliedFilters,
+            List<BottleneckItem> bottlenecks,
+            List<ErrorStormPoint> errorStorm5m,
+            List<FalloutQueueMetric> falloutQueues) {
+        this(
+                generatedAt, windowHours, querySource, clickhouseAvailable, clickhouseWarning,
+                appliedFilters, bottlenecks, errorStorm5m, falloutQueues,
+                new FalloutRecoverySummary(0, 0, 0, 0, List.of()));
+    }
+
     public record BottleneckItem(
             String domain,
             String templateId,
@@ -42,5 +59,25 @@ public record DevOpsBottlenecksResponse(
             long historicalFalloutEvents,
             double avgMttrMs,
             double p90MttrMs
+    ) {}
+
+    public record FalloutRecoverySummary(
+            long openFallouts,
+            long awaitingProgress,
+            long stalledAfterResolution,
+            long recoveredAndMoving,
+            List<FalloutRecoveryItem> recentRecoveries
+    ) {}
+
+    public record FalloutRecoveryItem(
+            String falloutId,
+            String entityKey,
+            String errorCode,
+            String assignedQueue,
+            String resolutionAction,
+            Instant resolvedAt,
+            Long mttrMs,
+            String entityStatus,
+            String recoveryState
     ) {}
 }

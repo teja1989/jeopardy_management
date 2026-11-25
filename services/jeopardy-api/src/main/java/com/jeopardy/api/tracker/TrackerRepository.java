@@ -63,10 +63,31 @@ public class TrackerRepository {
                 hasActiveFallout, null, null, "attention", limit, offset);
     }
 
+    public QueueSearchResponse searchQueue(
+            String q,
+            String status,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            Boolean hasActiveFallout,
+            Instant from,
+            Instant to,
+            String sortBy,
+            int limit,
+            int offset) {
+        return searchQueue(
+                q, status, orderFamily, orderType, itemType, accountType, channel, region,
+                hasActiveFallout, null, null, Map.of(), from, to, sortBy, limit, offset);
+    }
+
     /**
      * High-performance partition-pruned order search supporting calendar time range
-     * ({@code from}..{@code to}), multi-facet filters (itemType, channel, region),
-     * B-tree prefix fast-path for Order IDs, and query latency telemetry.
+     * ({@code from}..{@code to}), multi-facet filters (itemType, channel, region, errorCode,
+     * assignedQueue, dynamic {@code dim.*} JSONB attributes), B-tree prefix fast-path for Order IDs,
+     * and query latency telemetry.
      */
     public QueueSearchResponse searchQueue(
             String q,
@@ -78,6 +99,9 @@ public class TrackerRepository {
             String channel,
             String region,
             Boolean hasActiveFallout,
+            String errorCode,
+            String assignedQueue,
+            Map<String, String> dimensions,
             Instant from,
             Instant to,
             String sortBy,
@@ -159,6 +183,28 @@ public class TrackerRepository {
         if (hasActiveFallout != null) {
             where.append(" AND has_active_fallout = :hasActiveFallout");
             params.addValue("hasActiveFallout", hasActiveFallout);
+        }
+        if (errorCode != null && !errorCode.isBlank()) {
+            where.append(" AND (EXISTS (SELECT 1 FROM entity_fallouts ef WHERE ef.entity_key = tracked_entities.entity_key AND ef.error_code = :errorCode)"
+                    + " OR EXISTS (SELECT 1 FROM entity_milestones em WHERE em.entity_key = tracked_entities.entity_key AND em.last_error_code = :errorCode))");
+            params.addValue("errorCode", errorCode.trim());
+        }
+        if (assignedQueue != null && !assignedQueue.isBlank()) {
+            where.append(" AND EXISTS (SELECT 1 FROM entity_fallouts ef WHERE ef.entity_key = tracked_entities.entity_key AND ef.assigned_group = :assignedQueue)");
+            params.addValue("assignedQueue", assignedQueue.trim());
+        }
+        if (dimensions != null && !dimensions.isEmpty()) {
+            int dimIdx = 0;
+            for (Map.Entry<String, String> entry : dimensions.entrySet()) {
+                if (entry.getKey() != null && !entry.getKey().isBlank()
+                        && entry.getValue() != null && !entry.getValue().isBlank()) {
+                    where.append(" AND attributes_jsonb ->> :qDimKey_").append(dimIdx)
+                            .append(" = :qDimVal_").append(dimIdx);
+                    params.addValue("qDimKey_" + dimIdx, entry.getKey().trim());
+                    params.addValue("qDimVal_" + dimIdx, entry.getValue().trim());
+                    dimIdx++;
+                }
+            }
         }
 
         Long total = postgresJdbc.queryForObject(

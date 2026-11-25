@@ -142,6 +142,18 @@ public class AnalyticsService {
         List<DevOpsBottlenecksResponse.FalloutQueueMetric> mergedFallouts =
                 queryBuilder.mergeLiveAndHistoricalFalloutQueues(liveFallouts, histFallouts);
 
+        DevOpsBottlenecksResponse.FalloutRecoverySummary falloutRecovery =
+                new DevOpsBottlenecksResponse.FalloutRecoverySummary(0, 0, 0, 0, List.of());
+        try {
+            DevOpsBottlenecksResponse.FalloutRecoverySummary queried =
+                    repository.queryPostgresFalloutRecoverySummary();
+            if (queried != null) {
+                falloutRecovery = queried;
+            }
+        } catch (Exception ex) {
+            log.debug("Fallout recovery summary skipped: {}", ex.getMessage());
+        }
+
         Map<String, String> appliedFilters = collectAppliedFilters(
                 null, orderType, accountType, null, domain, templateId, errorCode, assignedQueue, dimensions);
 
@@ -154,7 +166,8 @@ public class AnalyticsService {
                 appliedFilters,
                 bottlenecks,
                 errorStorm,
-                mergedFallouts
+                mergedFallouts,
+                falloutRecovery
         );
     }
 

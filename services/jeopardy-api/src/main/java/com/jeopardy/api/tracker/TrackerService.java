@@ -58,7 +58,30 @@ public class TrackerService {
             int offset) {
         return repository.searchQueue(
                 q, status, orderFamily, orderType, itemType, accountType, channel, region,
-                hasActiveFallout, from, to, sortBy, limit, offset);
+                hasActiveFallout, null, null, Map.of(), from, to, sortBy, limit, offset);
+    }
+
+    public QueueSearchResponse searchQueue(
+            String q,
+            String status,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            Boolean hasActiveFallout,
+            String errorCode,
+            String assignedQueue,
+            Map<String, String> dimensions,
+            java.time.Instant from,
+            java.time.Instant to,
+            String sortBy,
+            int limit,
+            int offset) {
+        return repository.searchQueue(
+                q, status, orderFamily, orderType, itemType, accountType, channel, region,
+                hasActiveFallout, errorCode, assignedQueue, dimensions, from, to, sortBy, limit, offset);
     }
 
     public TimelineHistogramResponse getTimelineHistogram(

@@ -202,6 +202,14 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   const [accountTypeFilter, setAccountTypeFilter] = useState<string | undefined>(
     initialFilter?.accountType,
   );
+  const [errorCodeFilter, setErrorCodeFilter] = useState<string | undefined>(
+    initialFilter?.errorCode,
+  );
+  const [assignedQueueFilter, setAssignedQueueFilter] = useState<string | undefined>(
+    initialFilter?.assignedQueue,
+  );
+  const [dimKeyFilter, setDimKeyFilter] = useState<string | undefined>(initialFilter?.dimKey);
+  const [dimValFilter, setDimValFilter] = useState<string | undefined>(initialFilter?.dimVal);
   const [sortBy, setSortBy] = useState<'attention' | 'newest' | 'oldest'>('attention');
   const [showFacetFilters, setShowFacetFilters] = useState(false);
   const [showTimelineBar, setShowTimelineBar] = useState(true);
@@ -286,7 +294,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
       });
   }, []);
 
-  // Sync incoming drill-down filters (including calendar range & slices!) from Overview
+  // Sync incoming drill-down filters (including calendar range, errorCode, queue & custom attrs!) from Overview
   useEffect(() => {
     if (!initialFilter) return;
     if (initialFilter.orderFamily) setOrderFamilyFilter(initialFilter.orderFamily);
@@ -295,6 +303,12 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     if (initialFilter.channel) setChannelFilter(initialFilter.channel);
     if (initialFilter.region) setRegionFilter(initialFilter.region);
     if (initialFilter.accountType) setAccountTypeFilter(initialFilter.accountType);
+    if (initialFilter.errorCode) setErrorCodeFilter(initialFilter.errorCode);
+    if (initialFilter.assignedQueue) setAssignedQueueFilter(initialFilter.assignedQueue);
+    if (initialFilter.dimKey && initialFilter.dimVal) {
+      setDimKeyFilter(initialFilter.dimKey);
+      setDimValFilter(initialFilter.dimVal);
+    }
     if (initialFilter.from && initialFilter.to) {
       setTimeRange({
         preset: 'custom',
@@ -318,6 +332,10 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
         channel: channelFilter,
         region: regionFilter,
         accountType: accountTypeFilter,
+        errorCode: errorCodeFilter,
+        assignedQueue: assignedQueueFilter,
+        dimKey: dimKeyFilter,
+        dimVal: dimValFilter,
         from: timeRange.from,
         to: timeRange.to,
         sortBy,
@@ -359,6 +377,10 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     channelFilter,
     regionFilter,
     accountTypeFilter,
+    errorCodeFilter,
+    assignedQueueFilter,
+    dimKeyFilter,
+    dimValFilter,
     timeRange.from,
     timeRange.to,
     sortBy,
@@ -981,32 +1003,38 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                     </option>
                   ))}
                 </select>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <select
-                    value={channelFilter ?? ''}
-                    onChange={(e) => setChannelFilter(e.target.value || undefined)}
-                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px]"
-                  >
-                    <option value="">All Channels</option>
-                    {(facets?.channels ?? []).map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={regionFilter ?? ''}
-                    onChange={(e) => setRegionFilter(e.target.value || undefined)}
-                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px]"
-                  >
-                    <option value="">All Regions</option>
-                    {(facets?.regions ?? []).map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {((facets?.channels ?? []).length > 0 || (facets?.regions ?? []).length > 0) && (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(facets?.channels ?? []).length > 0 && (
+                      <select
+                        value={channelFilter ?? ''}
+                        onChange={(e) => setChannelFilter(e.target.value || undefined)}
+                        className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px]"
+                      >
+                        <option value="">All Channels</option>
+                        {(facets?.channels ?? []).map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {(facets?.regions ?? []).length > 0 && (
+                      <select
+                        value={regionFilter ?? ''}
+                        onChange={(e) => setRegionFilter(e.target.value || undefined)}
+                        className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px]"
+                      >
+                        <option value="">All Regions</option>
+                        {(facets?.regions ?? []).map((r) => (
+                          <option key={r} value={r}>
+                            {r}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
                 <select
                   value={sortBy}
                   onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
@@ -1026,10 +1054,28 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
               {queueQueryMs !== null && <span>{queueQueryMs}ms</span>}
             </div>
 
-            {(orderFamilyFilter || orderTypeFilter || itemTypeFilter || channelFilter || regionFilter || accountTypeFilter) && (
-              <div className="flex items-center justify-between rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-500/30 px-2.5 py-1 text-[11px] text-blue-700 dark:text-blue-300">
+            {(orderFamilyFilter ||
+              orderTypeFilter ||
+              itemTypeFilter ||
+              channelFilter ||
+              regionFilter ||
+              accountTypeFilter ||
+              errorCodeFilter ||
+              assignedQueueFilter ||
+              (dimKeyFilter && dimValFilter)) && (
+              <div className="flex items-center justify-between rounded-lg bg-[#E8F0FE] dark:bg-[#004A77]/50 border border-[#C2E7FF] dark:border-[#004A77] px-2.5 py-1 text-[11px] text-[#041E49] dark:text-[#C2E7FF]">
                 <span className="truncate">
-                  {[orderTypeFilter, itemTypeFilter, channelFilter, regionFilter, accountTypeFilter, orderFamilyFilter]
+                  {[
+                    orderTypeFilter,
+                    itemTypeFilter,
+                    channelFilter,
+                    regionFilter,
+                    accountTypeFilter,
+                    orderFamilyFilter,
+                    errorCodeFilter ? `Error: ${errorCodeFilter}` : null,
+                    assignedQueueFilter ? `Queue: ${assignedQueueFilter}` : null,
+                    dimKeyFilter && dimValFilter ? `${dimKeyFilter}=${dimValFilter}` : null,
+                  ]
                     .filter(Boolean)
                     .join(' · ')}
                 </span>
@@ -1042,6 +1088,10 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                     setChannelFilter(undefined);
                     setRegionFilter(undefined);
                     setAccountTypeFilter(undefined);
+                    setErrorCodeFilter(undefined);
+                    setAssignedQueueFilter(undefined);
+                    setDimKeyFilter(undefined);
+                    setDimValFilter(undefined);
                     onClearInitialFilter();
                   }}
                 >
@@ -1562,11 +1612,49 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                               </div>
                             </div>
 
-                            {flt.mttrMs !== null && (
-                              <span className="rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-2.5 py-0.5 text-[11px] font-medium">
-                                Resolved in {formatDurationMs(flt.mttrMs)}
-                              </span>
-                            )}
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {resolved && (() => {
+                                const attrState = String(entity.attributes?.fallout_recovery_state ?? '').toUpperCase();
+                                const hasProgressed =
+                                  attrState === 'RECOVERED' ||
+                                  entity.status === 'COMPLETED' ||
+                                  entity.status === 'CANCELLED' ||
+                                  Boolean(
+                                    flt.resolvedAt &&
+                                      entity.lastEventTime &&
+                                      Date.parse(entity.lastEventTime) > Date.parse(flt.resolvedAt) + 5000,
+                                  );
+                                const isStalled =
+                                  attrState === 'STALLED' ||
+                                  (!hasProgressed &&
+                                    Boolean(
+                                      flt.resolvedAt &&
+                                        Date.now() - Date.parse(flt.resolvedAt) > 15 * 60 * 1000,
+                                    ));
+                                return (
+                                  <span
+                                    className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                                      isStalled
+                                        ? 'bg-[#FCE8E6] text-[#C5221F] dark:bg-[#3C1919] dark:text-[#F28B82]'
+                                        : hasProgressed
+                                          ? 'bg-[#E6F4EA] text-[#137333] dark:bg-[#132E1C] dark:text-[#81C995]'
+                                          : 'bg-[#FEF7E0] text-[#B06000] dark:bg-[#332609] dark:text-[#FDD663]'
+                                    }`}
+                                  >
+                                    {isStalled
+                                      ? 'Stalled Post-Resolve'
+                                      : hasProgressed
+                                        ? 'Recovered & Moving Forward'
+                                        : 'Awaiting Forward Progress'}
+                                  </span>
+                                );
+                              })()}
+                              {flt.mttrMs !== null && (
+                                <span className="rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-2.5 py-0.5 text-[11px] font-medium">
+                                  Resolved in {formatDurationMs(flt.mttrMs)}
+                                </span>
+                              )}
+                            </div>
                           </div>
 
                           {/* 4-Stage Mini Resolution Track */}

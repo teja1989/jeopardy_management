@@ -2,7 +2,9 @@ package com.jeopardy.api.tracker;
 
 import com.jeopardy.api.admin.AdminConfigService;
 import com.jeopardy.api.admin.dto.JourneyBlueprintRecord;
+import com.jeopardy.api.analytics.AnalyticsQueryBuilder;
 import java.util.List;
+import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -15,10 +17,15 @@ public class TrackerController {
 
     private final TrackerService trackerService;
     private final AdminConfigService adminConfigService;
+    private final AnalyticsQueryBuilder analyticsQueryBuilder;
 
-    public TrackerController(TrackerService trackerService, AdminConfigService adminConfigService) {
+    public TrackerController(
+            TrackerService trackerService,
+            AdminConfigService adminConfigService,
+            AnalyticsQueryBuilder analyticsQueryBuilder) {
         this.trackerService = trackerService;
         this.adminConfigService = adminConfigService;
+        this.analyticsQueryBuilder = analyticsQueryBuilder;
     }
 
     /**
@@ -41,14 +48,19 @@ public class TrackerController {
             @RequestParam(required = false) String channel,
             @RequestParam(required = false) String region,
             @RequestParam(required = false) Boolean hasActiveFallout,
+            @RequestParam(required = false) String errorCode,
+            @RequestParam(required = false) String assignedQueue,
             @RequestParam(required = false) String from,
             @RequestParam(required = false) String to,
             @RequestParam(defaultValue = "attention") String sortBy,
             @RequestParam(defaultValue = "50") int limit,
-            @RequestParam(defaultValue = "0") int offset) {
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam Map<String, String> allQueryParams) {
+        Map<String, String> dims = analyticsQueryBuilder.extractAndValidateDimensions(allQueryParams);
         return trackerService.searchQueue(
                 q, status, orderFamily, orderType, itemType, accountType, channel, region,
-                hasActiveFallout, parseInstant(from), parseInstant(to), sortBy, limit, offset);
+                hasActiveFallout, errorCode, assignedQueue, dims, parseInstant(from), parseInstant(to),
+                sortBy, limit, offset);
     }
 
     @GetMapping("/tracker/timeline-histogram")

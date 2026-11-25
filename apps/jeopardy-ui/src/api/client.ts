@@ -72,6 +72,10 @@ export interface TrackerQueueQuery {
   channel?: string;
   region?: string;
   hasActiveFallout?: boolean;
+  errorCode?: string;
+  assignedQueue?: string;
+  dimKey?: string;
+  dimVal?: string;
   from?: string;
   to?: string;
   sortBy?: 'attention' | 'newest' | 'oldest';
@@ -287,12 +291,17 @@ export function searchTrackerQueue(query: TrackerQueueQuery = {}): Promise<Queue
     channel: query.channel,
     region: query.region,
     hasActiveFallout: query.hasActiveFallout,
+    errorCode: query.errorCode?.trim() || undefined,
+    assignedQueue: query.assignedQueue?.trim() || undefined,
     from: query.from,
     to: query.to,
     sortBy: query.sortBy,
     limit: query.limit ?? 50,
     offset: query.offset ?? 0,
   };
+  if (query.dimKey && query.dimKey.trim() && query.dimVal && query.dimVal.trim()) {
+    params[`dim.${query.dimKey.trim()}`] = query.dimVal.trim();
+  }
   return fetchJson<QueueSearchResponse>(`${API_BASE}/tracker/queue${buildQueryString(params)}`);
 }
 

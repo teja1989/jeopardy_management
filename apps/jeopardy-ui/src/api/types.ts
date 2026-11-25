@@ -81,6 +81,26 @@ export interface FalloutQueueMetric {
   p90MttrMs: number;
 }
 
+export interface FalloutRecoveryItem {
+  falloutId: string;
+  entityKey: string;
+  errorCode: string;
+  assignedQueue: string;
+  resolutionAction: string | null;
+  resolvedAt: string | null;
+  mttrMs: number | null;
+  entityStatus: string;
+  recoveryState: 'OPEN' | 'AWAITING_PROGRESS' | 'STALLED' | 'RECOVERED' | string;
+}
+
+export interface FalloutRecoverySummary {
+  openFallouts: number;
+  awaitingProgress: number;
+  stalledAfterResolution: number;
+  recoveredAndMoving: number;
+  recentRecoveries: FalloutRecoveryItem[];
+}
+
 export interface DevOpsBottlenecksResponse {
   generatedAt: string;
   windowHours: number;
@@ -91,6 +111,7 @@ export interface DevOpsBottlenecksResponse {
   bottlenecks: BottleneckItem[];
   errorStorm5m: ErrorStormPoint[];
   falloutQueues: FalloutQueueMetric[];
+  falloutRecovery?: FalloutRecoverySummary;
 }
 
 export interface EntitySummaryDto {
@@ -149,6 +170,14 @@ export interface TimelineHistogramResponse {
   buckets: TimelineHistogramBucket[];
 }
 
+export interface DimensionDescriptor {
+  id: string;
+  label: string;
+  source: 'native' | 'attr' | string;
+  distinctCount: number;
+  sampleValues: string[];
+}
+
 export interface AnalyticsFacetsResponse {
   generatedAt: string;
   queryMs: number;
@@ -160,6 +189,7 @@ export interface AnalyticsFacetsResponse {
   regions: string[];
   statuses: string[];
   customAttributeKeys: string[];
+  availableDimensions?: DimensionDescriptor[];
 }
 
 export interface SliceBreakdownRow {

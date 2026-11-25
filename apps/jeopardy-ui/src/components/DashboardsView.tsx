@@ -21,6 +21,7 @@ import {
   getDevOpsBottlenecks,
   getExecSummary,
   getSliceBreakdown,
+  getTimelineHistogram,
   listIncidents,
   resolveIncident,
   searchTrackerQueue,
@@ -29,11 +30,13 @@ import {
 import type {
   AnalyticsFacetsResponse,
   DevOpsBottlenecksResponse,
+  DimensionDescriptor,
   EntitySummaryDto,
   ExecSummaryResponse,
   IncidentDto,
   SliceBreakdownResponse,
   SseConnectionState,
+  TimelineHistogramResponse,
   UiDeltaEvent,
 } from '../api/types';
 import { formatDurationMs, formatPct, formatShortTime } from '../utils/format';
@@ -51,6 +54,10 @@ export interface DashboardDrilldownTarget {
   channel?: string;
   region?: string;
   status?: string;
+  errorCode?: string;
+  assignedQueue?: string;
+  dimKey?: string;
+  dimVal?: string;
   customerId?: string;
   entityKey?: string;
   from?: string;
@@ -64,26 +71,11 @@ interface DashboardsViewProps {
   isAdminAuthenticated?: boolean;
 }
 
-const ORDER_FAMILIES = [
-  { id: 'ALL', label: 'All Order Families' },
-  { id: 'WIRELESS_NEW', label: 'New Wireless & Sales' },
-  { id: 'CHANGE_CANCEL', label: 'Change & Cancel Orders' },
-  { id: 'UPGRADES_TRADEIN', label: 'Upgrades & Trade-Ins' },
-  { id: 'PORT_INS', label: 'Wireless & Wireline Port-Ins' },
-  { id: 'PLAN_PROMO', label: 'Plans, Promos & Perks' },
-  { id: 'BROADBAND', label: '5G Home & Fiber Broadband' },
+const FALLBACK_SLICE_DIMENSIONS: DimensionDescriptor[] = [
+  { id: 'item_type', label: 'Item Type', source: 'native', distinctCount: 0, sampleValues: [] },
+  { id: 'order_type', label: 'Order Type', source: 'native', distinctCount: 0, sampleValues: [] },
+  { id: 'status', label: 'Status', source: 'native', distinctCount: 0, sampleValues: [] },
 ];
-
-const ACCOUNT_TYPES = ['ALL', 'CONSUMER', 'VIP', 'SMB', 'ENTERPRISE', 'GOV'];
-const CHANNELS = ['ALL', 'WEB', 'MOBILE_APP', 'RETAIL', 'CARE_AGENT'];
-const SLICE_DIMENSIONS = [
-  { id: 'order_type', label: 'Order Type' },
-  { id: 'item_type', label: 'Item Type' },
-  { id: 'channel', label: 'Channel' },
-  { id: 'region', label: 'Region' },
-  { id: 'account_type', label: 'Account Type' },
-  { id: 'status', label: 'Status' },
-] as const;
 
 function prettifyLabel(raw: string): string {
   if (!raw) return '—';
@@ -122,7 +114,9 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [summaryData, setSummaryData] = useState<ExecSummaryResponse | null>(null);
   const [sliceData, setSliceData] = useState<SliceBreakdownResponse | null>(null);
+  const [trendHistogram, setTrendHistogram] = useState<TimelineHistogramResponse | null>(null);
   const [opsData, setOpsData] = useState<DevOpsBottlenecksResponse | null>(null);
+  const [errorsOnly, setErrorsOnly] = useState(true);
   const [urgentOrders, setUrgentOrders] = useState<EntitySummaryDto[]>([]);
   const [activeIncidents, setActiveIncidents] = useState<IncidentDto[]>([]);
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
@@ -134,9 +128,38 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
     void getAnalyticsFacets()
       .then((res) => setFacets(res))
       .catch(() => {
-        // fallback to static defaults
+        // fallback to defaults
       });
   }, []);
+
+  // Strictly data-driven dimensions: only native columns that actually have data + custom JSONB attrs!
+  const availableDimensions = useMemo<DimensionDescriptor[]>(() => {
+    if (facets?.availableDimensions && facets.availableDimensions.length > 0) {
+      return facets.availableDimensions;
+    }
+    return FALLBACK_SLICE_DIMENSIONS;
+  }, [facets]);
+
+  const primarySliceChips = useMemo(
+    () => availableDimensions.slice(0, 6),
+    [availableDimensions],
+  );
+  const overflowDimensions = useMemo(
+    () => availableDimensions.slice(6),
+    [availableDimensions],
+  );
+  const activeSliceLabel = useMemo(() => {
+    const found = availableDimensions.find((d) => d.id === sliceBy);
+    if (found) return found.label;
+    return sliceBy.startsWith('dim:') ? prettifyLabel(sliceBy.slice(4)) : prettifyLabel(sliceBy);
+  }, [availableDimensions, sliceBy]);
+
+  // If the current sliceBy dimension disappears because data doesn't contain it, auto-switch to first populated dimension
+  useEffect(() => {
+    if (availableDimensions.length > 0 && !availableDimensions.some((d) => d.id === sliceBy)) {
+      setSliceBy(availableDimensions[0].id);
+    }
+  }, [availableDimensions, sliceBy]);
 
   const activeAdvancedFilterCount = useMemo(() => {
     let count = 0;
@@ -154,7 +177,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const [summaryRes, sliceRes, opsRes, urgentRes, incidentsRes] = await Promise.all([
+      const [summaryRes, sliceRes, histRes, urgentRes, incidentsRes] = await Promise.all([
         getExecSummary({
           hours: windowHours,
           orderFamily,
@@ -180,14 +203,16 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
           dimVal,
           limit: 50,
         }),
-        getDevOpsBottlenecks({
-          hours: windowHours,
+        getTimelineHistogram({
+          orderFamily: orderFamily === 'ALL' ? undefined : orderFamily,
           orderType: quickOrderType === 'ALL' ? undefined : quickOrderType,
-          accountType,
-          dimKey,
-          dimVal,
-          limit: 40,
-        }),
+          itemType: itemTypeFilter === 'ALL' ? undefined : itemTypeFilter,
+          accountType: accountType === 'ALL' ? undefined : accountType,
+          channel: channel === 'ALL' ? undefined : channel,
+          region: regionFilter === 'ALL' ? undefined : regionFilter,
+          from: timeRange.from,
+          to: timeRange.to,
+        }).catch(() => null),
         searchTrackerQueue({
           orderFamily: orderFamily === 'ALL' ? undefined : orderFamily,
           orderType: quickOrderType === 'ALL' ? undefined : quickOrderType,
@@ -203,9 +228,22 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
       ]);
       setSummaryData(summaryRes);
       setSliceData(sliceRes);
-      setOpsData(opsRes);
+      setTrendHistogram(histRes);
       setUrgentOrders(urgentRes.items);
       setActiveIncidents(incidentsRes);
+
+      // Lazy-load Bottlenecks & Fallouts ONLY when user is viewing that tab!
+      if (activeView === 'bottlenecks') {
+        const opsRes = await getDevOpsBottlenecks({
+          hours: windowHours,
+          orderType: quickOrderType === 'ALL' ? undefined : quickOrderType,
+          accountType,
+          dimKey,
+          dimVal,
+          limit: 50,
+        });
+        setOpsData(opsRes);
+      }
       setLastRefreshed(new Date().toISOString());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load operations metrics');
@@ -213,6 +251,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
       setLoading(false);
     }
   }, [
+    activeView,
     windowHours,
     timeRange.from,
     timeRange.to,
@@ -256,7 +295,8 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
   }, [sliceData, searchQuery]);
 
   const filteredBottlenecks = useMemo(() => {
-    const list = opsData?.bottlenecks ?? [];
+    const raw = opsData?.bottlenecks ?? [];
+    const list = errorsOnly ? raw.filter((b) => b.errorCode && b.errorCode.trim() !== '') : raw;
     const q = searchQuery.trim().toLowerCase();
     if (!q) return list;
     return list.filter(
@@ -266,7 +306,12 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
         b.errorCode.toLowerCase().includes(q) ||
         b.domain.toLowerCase().includes(q),
     );
-  }, [opsData, searchQuery]);
+  }, [opsData, errorsOnly, searchQuery]);
+
+  const maxHistBucket = useMemo(
+    () => Math.max(1, ...(trendHistogram?.buckets ?? []).map((b) => b.totalCount)),
+    [trendHistogram],
+  );
 
   const csvUrl = buildExportUrl({
     format: 'csv',
@@ -281,10 +326,6 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
 
   const totals = summaryData?.totals;
   const attentionCount = (totals?.liveJeopardyCount ?? 0) + (totals?.liveBreachedCount ?? 0);
-  const maxTrend = useMemo(
-    () => Math.max(1, ...(summaryData?.hourlyTrend ?? []).map((p) => p.eventCount)),
-    [summaryData],
-  );
   const maxStorm = useMemo(
     () => Math.max(1, ...(opsData?.errorStorm5m ?? []).map((p) => p.eventCount)),
     [opsData],
@@ -733,89 +774,100 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
           </div>
         </div>
 
-        {/* Collapsible Advanced Filters Panel (Live Facet-Populated) */}
+        {/* Collapsible Advanced Filters Panel (Strictly Data-Driven: hides empty fields!) */}
         {showFilters && (
           <div className="mt-3 pt-3 border-t border-slate-200/80 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
-            <div>
-              <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                Order Family
-              </label>
-              <select
-                value={orderFamily}
-                onChange={(e) => setOrderFamily(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
-              >
-                {ORDER_FAMILIES.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                Item Type ({facets?.itemTypes.length ?? 0})
-              </label>
-              <select
-                value={itemTypeFilter}
-                onChange={(e) => setItemTypeFilter(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
-              >
-                <option value="ALL">All Item Types</option>
-                {(facets?.itemTypes ?? []).map((it) => (
-                  <option key={it} value={it}>
-                    {it}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                Account Type
-              </label>
-              <select
-                value={accountType}
-                onChange={(e) => setAccountType(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
-              >
-                <option value="ALL">All Account Types</option>
-                {(facets?.accountTypes.length ? facets.accountTypes : ACCOUNT_TYPES.filter((a) => a !== 'ALL')).map((a) => (
-                  <option key={a} value={a}>
-                    {a}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[11px] font-medium text-slate-500 mb-1">Channel</label>
-              <select
-                value={channel}
-                onChange={(e) => setChannel(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
-              >
-                <option value="ALL">All Channels</option>
-                {(facets?.channels.length ? facets.channels : CHANNELS.filter((c) => c !== 'ALL')).map((c) => (
-                  <option key={c} value={c}>
-                    {prettifyLabel(c)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[11px] font-medium text-slate-500 mb-1">Region</label>
-              <select
-                value={regionFilter}
-                onChange={(e) => setRegionFilter(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
-              >
-                <option value="ALL">All Regions</option>
-                {(facets?.regions ?? []).map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {(facets?.orderFamilies ?? []).length > 0 && (
+              <div>
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                  Order Family
+                </label>
+                <select
+                  value={orderFamily}
+                  onChange={(e) => setOrderFamily(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
+                >
+                  <option value="ALL">All Order Families</option>
+                  {(facets?.orderFamilies ?? []).map((f) => (
+                    <option key={f} value={f}>
+                      {prettifyLabel(f)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {(facets?.itemTypes ?? []).length > 0 && (
+              <div>
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                  Item Type ({facets?.itemTypes.length ?? 0})
+                </label>
+                <select
+                  value={itemTypeFilter}
+                  onChange={(e) => setItemTypeFilter(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
+                >
+                  <option value="ALL">All Item Types</option>
+                  {(facets?.itemTypes ?? []).map((it) => (
+                    <option key={it} value={it}>
+                      {it}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {(facets?.accountTypes ?? []).length > 0 && (
+              <div>
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                  Account Type
+                </label>
+                <select
+                  value={accountType}
+                  onChange={(e) => setAccountType(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
+                >
+                  <option value="ALL">All Account Types</option>
+                  {(facets?.accountTypes ?? []).map((a) => (
+                    <option key={a} value={a}>
+                      {a}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {(facets?.channels ?? []).length > 0 && (
+              <div>
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">Channel</label>
+                <select
+                  value={channel}
+                  onChange={(e) => setChannel(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
+                >
+                  <option value="ALL">All Channels</option>
+                  {(facets?.channels ?? []).map((c) => (
+                    <option key={c} value={c}>
+                      {prettifyLabel(c)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {(facets?.regions ?? []).length > 0 && (
+              <div>
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">Region</label>
+                <select
+                  value={regionFilter}
+                  onChange={(e) => setRegionFilter(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs"
+                >
+                  <option value="ALL">All Regions</option>
+                  {(facets?.regions ?? []).map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div>
               <label className="block text-[11px] font-medium text-slate-500 mb-1">Status</label>
               <select
@@ -834,7 +886,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
             </div>
             <div>
               <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                Custom Attribute (Key = Value)
+                Custom Event Field (e.g. SalesChannel)
               </label>
               <div className="flex gap-1.5">
                 <input
@@ -842,7 +894,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                   list="jeopardy-custom-attr-keys"
                   value={dimKey}
                   onChange={(e) => setDimKey(e.target.value)}
-                  placeholder="donor_carrier"
+                  placeholder="SalesChannel"
                   className="w-1/2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1.5 text-xs font-mono"
                 />
                 <datalist id="jeopardy-custom-attr-keys">
@@ -852,11 +904,19 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                 </datalist>
                 <input
                   type="text"
+                  list="jeopardy-custom-attr-vals"
                   value={dimVal}
                   onChange={(e) => setDimVal(e.target.value)}
-                  placeholder="VERIZON"
+                  placeholder="Value..."
                   className="w-1/2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1.5 text-xs font-mono"
                 />
+                <datalist id="jeopardy-custom-attr-vals">
+                  {(
+                    availableDimensions.find((d) => d.id === `dim:${dimKey.trim()}`)?.sampleValues ?? []
+                  ).map((v) => (
+                    <option key={v} value={v} />
+                  ))}
+                </datalist>
               </div>
             </div>
             <div className="flex justify-end">
@@ -894,10 +954,10 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                 </span>
               </div>
 
-              {/* M3 Expressive Filter Chips (Slice-By Dimension Pills + Dynamic JSONB Attribute Picker) */}
+              {/* Data-Driven M3 Filter Chips (Auto-discovered populated fields + custom event attributes!) */}
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6] mr-1">Slice by:</span>
-                {SLICE_DIMENSIONS.map((dim) => (
+                {primarySliceChips.map((dim) => (
                   <button
                     key={dim.id}
                     type="button"
@@ -905,28 +965,33 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                     className={`m3-chip ${
                       sliceBy === dim.id ? 'm3-chip-active' : 'm3-chip-idle'
                     }`}
+                    title={
+                      dim.source === 'attr'
+                        ? `Custom event attribute (${dim.id.slice(4)})`
+                        : `${dim.distinctCount} distinct values`
+                    }
                   >
                     {sliceBy === dim.id && <span className="text-[11px]">✓</span>}
                     {dim.label}
                   </button>
                 ))}
-                {(facets?.customAttributeKeys ?? []).length > 0 && (
+                {overflowDimensions.length > 0 && (
                   <select
-                    value={sliceBy.startsWith('dim:') ? sliceBy : ''}
+                    value={overflowDimensions.some((d) => d.id === sliceBy) ? sliceBy : ''}
                     onChange={(e) => {
                       if (e.target.value) setSliceBy(e.target.value);
                     }}
                     className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
-                      sliceBy.startsWith('dim:')
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
-                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300'
+                      overflowDimensions.some((d) => d.id === sliceBy)
+                        ? 'border-[#1A73E8] bg-[#E8F0FE] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF]'
+                        : 'border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] text-[#444746] dark:text-[#C4C7C5]'
                     }`}
-                    title="Slice dynamically by any JSONB order attribute with zero extra storage"
+                    title="Slice dynamically by any additional event field with zero extra storage"
                   >
-                    <option value="">+ Custom Attribute...</option>
-                    {(facets?.customAttributeKeys ?? []).map((k) => (
-                      <option key={k} value={`dim:${k}`}>
-                        Attr: {k}
+                    <option value="">+ {overflowDimensions.length} more fields...</option>
+                    {overflowDimensions.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.source === 'attr' ? `Field: ${d.label}` : d.label}
                       </option>
                     ))}
                   </select>
@@ -938,11 +1003,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-slate-800 text-[11px] font-medium text-slate-500 uppercase tracking-wider">
-                    <th className="py-2.5 px-5">
-                      {sliceBy.startsWith('dim:')
-                        ? `Attribute: ${sliceBy.slice(4)}`
-                        : SLICE_DIMENSIONS.find((d) => d.id === sliceBy)?.label || sliceBy}
-                    </th>
+                    <th className="py-2.5 px-5">{activeSliceLabel}</th>
                     <th className="py-2.5 px-3 text-right">Volume</th>
                     <th className="py-2.5 px-3 text-right">In-Flight</th>
                     <th className="py-2.5 px-3 text-right">At Risk</th>
@@ -974,11 +1035,16 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                       };
                       if (row.sliceKey !== 'UNSPECIFIED') {
                         if (sliceBy === 'order_type') drillTarget.orderType = row.sliceKey;
+                        if (sliceBy === 'order_family') drillTarget.orderFamily = row.sliceKey;
                         if (sliceBy === 'item_type') drillTarget.itemType = row.sliceKey;
                         if (sliceBy === 'channel') drillTarget.channel = row.sliceKey;
                         if (sliceBy === 'region') drillTarget.region = row.sliceKey;
                         if (sliceBy === 'account_type') drillTarget.accountType = row.sliceKey;
                         if (sliceBy === 'status') drillTarget.status = row.sliceKey;
+                        if (sliceBy.startsWith('dim:')) {
+                          drillTarget.dimKey = sliceBy.slice(4);
+                          drillTarget.dimVal = row.sliceKey;
+                        }
                       }
 
                       return (
@@ -1071,50 +1137,86 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
             </div>
           </div>
 
-          {/* Right: Clean Hourly Volume Trend */}
-          <div className="xl:col-span-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm flex flex-col">
+          {/* Right: Calendar-Synced Order Volume & Fallout Trend (Click any bucket to drill down!) */}
+          <div className="xl:col-span-4 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)] flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Milestone Volume Trend
+                <h2 className="text-sm font-semibold text-[#1F1F1F] dark:text-white">
+                  Order Volume &amp; Fallout Trend
                 </h2>
-                <p className="text-[11px] text-slate-500">Hourly throughput &amp; fallouts</p>
+                <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                  {timeRange.label} · {trendHistogram?.granularity === 'day' ? 'Daily' : 'Hourly'} buckets (click bar to inspect)
+                </p>
               </div>
-              <span className="text-xs font-mono text-slate-500">
-                {(totals?.historicalEventCount ?? 0).toLocaleString()} events
+              <span className="text-xs font-mono text-[#5F6368] dark:text-[#9AA0A6]">
+                {(trendHistogram?.totalOrders ?? sliceData?.totals.totalOrders ?? 0).toLocaleString()} orders
               </span>
             </div>
 
-            {(summaryData?.hourlyTrend ?? []).length === 0 ? (
+            {(trendHistogram?.buckets ?? []).length === 0 ? (
               <div className="flex-1 flex items-center justify-center text-xs text-slate-400 py-12">
-                No trend data in selected window
+                No orders in selected calendar range
               </div>
             ) : (
               <div className="space-y-2.5 flex-1">
-                {(summaryData?.hourlyTrend ?? []).slice(-10).map((pt) => {
-                  const pct = Math.max(4, Math.round((pt.eventCount / maxTrend) * 100));
+                {(trendHistogram?.buckets ?? []).slice(-10).map((b) => {
+                  const pct = Math.max(6, Math.round((b.totalCount / maxHistBucket) * 100));
+                  const falloutPct =
+                    b.totalCount > 0 ? Math.round((b.falloutCount / b.totalCount) * 100) : 0;
+                  const label =
+                    trendHistogram?.granularity === 'day'
+                      ? b.bucketStart.slice(5, 10)
+                      : `${b.bucketStart.slice(5, 10)} ${b.bucketStart.slice(11, 16)}`;
                   return (
-                    <div key={pt.hour} className="space-y-1">
+                    <button
+                      key={b.bucketStart}
+                      type="button"
+                      onClick={() =>
+                        onInspectOrders({
+                          from: b.bucketStart,
+                          to: b.bucketEnd,
+                          rangeLabel: label,
+                          orderFamily: orderFamily === 'ALL' ? undefined : orderFamily,
+                          orderType: quickOrderType === 'ALL' ? undefined : quickOrderType,
+                          itemType: itemTypeFilter === 'ALL' ? undefined : itemTypeFilter,
+                          accountType: accountType === 'ALL' ? undefined : accountType,
+                          channel: channel === 'ALL' ? undefined : channel,
+                          region: regionFilter === 'ALL' ? undefined : regionFilter,
+                        })
+                      }
+                      className="w-full text-left space-y-1 group rounded-lg p-1 -mx-1 hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] transition"
+                    >
                       <div className="flex items-center justify-between text-[11px]">
-                        <span className="font-mono text-slate-500">
-                          {pt.hour.slice(11, 16) || pt.hour}
+                        <span className="font-mono text-[#5F6368] dark:text-[#9AA0A6] group-hover:text-[#1A73E8] dark:group-hover:text-[#8AB4F8]">
+                          {label}
                         </span>
-                        <span className="font-mono text-slate-700 dark:text-slate-300">
-                          {pt.eventCount.toLocaleString()}
-                          {pt.falloutCount > 0 && (
-                            <span className="text-rose-500 ml-1.5">
-                              · {pt.falloutCount} fallout
+                        <span className="font-mono text-[#1F1F1F] dark:text-[#E3E3E3]">
+                          {b.totalCount.toLocaleString()}
+                          {b.falloutCount > 0 && (
+                            <span className="text-[#C5221F] dark:text-[#F28B82] ml-1.5 font-semibold">
+                              · {b.falloutCount} fallout
+                            </span>
+                          )}
+                          {b.attentionCount > 0 && b.falloutCount === 0 && (
+                            <span className="text-[#B06000] dark:text-[#FDD663] ml-1.5">
+                              · {b.attentionCount} risk
                             </span>
                           )}
                         </span>
                       </div>
-                      <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                      <div className="h-2 rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] overflow-hidden flex">
                         <div
-                          className="h-full rounded-full bg-blue-500/85"
-                          style={{ width: `${pct}%` }}
+                          className="h-full bg-[#1A73E8] dark:bg-[#8AB4F8] transition-all"
+                          style={{ width: `${Math.max(0, pct - Math.round((pct * falloutPct) / 100))}%` }}
                         />
+                        {falloutPct > 0 && (
+                          <div
+                            className="h-full bg-[#D93025] dark:bg-[#F28B82]"
+                            style={{ width: `${Math.max(4, Math.round((pct * falloutPct) / 100))}%` }}
+                          />
+                        )}
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -1123,16 +1225,112 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
         </div>
       )}
 
-      {/* Content View 2: Bottlenecks & Fallouts */}
+      {/* Content View 2: Bottlenecks, Actionable Error Codes & Fallout Recovery Tracker */}
       {activeView === 'bottlenecks' && (
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
-          {/* Milestone Bottlenecks */}
-          <div className="xl:col-span-7 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                Top Milestone Bottlenecks &amp; Error Codes
-              </h2>
-              <span className="text-xs text-slate-500">{filteredBottlenecks.length} hotspots</span>
+        <div className="space-y-5">
+          {/* Fallout Resolution & Forward-Progress Tracker (Answers: "Is the resolved order actually moving forward?") */}
+          {opsData?.falloutRecovery && (
+            <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)] space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-semibold text-[#1F1F1F] dark:text-white">
+                    Fallout BPMN Resolution &amp; Forward-Progress Tracker
+                  </h2>
+                  <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                    Verifies that orders whose Fallout BPMN was resolved actually resume and move forward (flags silent stalls after 15m).
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="rounded-full bg-[#FCE8E6] dark:bg-[#3C1919] text-[#C5221F] dark:text-[#F28B82] px-3 py-1 font-semibold">
+                    {opsData.falloutRecovery.openFallouts} Open
+                  </span>
+                  <span className="rounded-full bg-[#E8F0FE] dark:bg-[#004A77] text-[#1967D2] dark:text-[#C2E7FF] px-3 py-1 font-semibold">
+                    {opsData.falloutRecovery.awaitingProgress} Awaiting Progress
+                  </span>
+                  <span className="rounded-full bg-[#FEF7E0] dark:bg-[#332609] text-[#B06000] dark:text-[#FDD663] px-3 py-1 font-semibold">
+                    {opsData.falloutRecovery.stalledAfterResolution} Stalled Post-Resolve
+                  </span>
+                  <span className="rounded-full bg-[#E6F4EA] dark:bg-[#132E1C] text-[#137333] dark:text-[#81C995] px-3 py-1 font-semibold">
+                    {opsData.falloutRecovery.recoveredAndMoving} Recovered &amp; Moving
+                  </span>
+                </div>
+              </div>
+
+              {opsData.falloutRecovery.recentRecoveries.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+                  {opsData.falloutRecovery.recentRecoveries.slice(0, 6).map((rec) => {
+                    const isStalled = rec.recoveryState === 'STALLED';
+                    const isRecovered = rec.recoveryState === 'RECOVERED';
+                    return (
+                      <button
+                        key={`${rec.falloutId}-${rec.entityKey}`}
+                        type="button"
+                        onClick={() => onInspectOrders({ entityKey: rec.entityKey })}
+                        className="text-left rounded-2xl border border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314] hover:border-[#1A73E8] p-3 transition group"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-xs font-semibold text-[#1F1F1F] dark:text-white truncate">
+                            {rec.entityKey}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold shrink-0 ${
+                              isStalled
+                                ? 'bg-[#FCE8E6] text-[#C5221F] dark:bg-[#3C1919] dark:text-[#F28B82]'
+                                : isRecovered
+                                  ? 'bg-[#E6F4EA] text-[#137333] dark:bg-[#132E1C] dark:text-[#81C995]'
+                                  : 'bg-[#FEF7E0] text-[#B06000] dark:bg-[#332609] dark:text-[#FDD663]'
+                            }`}
+                          >
+                            {isStalled
+                              ? 'Stalled After Resolve'
+                              : isRecovered
+                                ? 'Recovered'
+                                : 'Awaiting Progress'}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                          <span className="font-mono truncate">{rec.errorCode}</span>
+                          <span className="shrink-0">
+                            {rec.resolutionAction ? prettifyLabel(rec.resolutionAction) : 'Resolved'}
+                            {rec.mttrMs ? ` · ${formatDurationMs(rec.mttrMs)}` : ''}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
+          {/* Actionable Error Codes & Milestone Bottlenecks */}
+          <div className="xl:col-span-7 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-[#1F1F1F] dark:text-white">
+                  Error Codes &amp; Milestone Bottlenecks
+                </h2>
+                <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                  From both Fallout BPMN &amp; Domain milestone failures · Click any error code to view affected orders
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setErrorsOnly(true)}
+                  className={`m3-chip ${errorsOnly ? 'm3-chip-active' : 'm3-chip-idle'}`}
+                >
+                  Errors Only
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setErrorsOnly(false)}
+                  className={`m3-chip ${!errorsOnly ? 'm3-chip-active' : 'm3-chip-idle'}`}
+                >
+                  All Milestones
+                </button>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
@@ -1149,14 +1347,25 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                   {filteredBottlenecks.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="py-10 text-center text-slate-500">
-                        No milestone bottlenecks detected in this window.
+                        {errorsOnly
+                          ? 'No error codes recorded in this window. Switch to "All Milestones" to inspect slowest steps.'
+                          : 'No milestone bottlenecks detected in this window.'}
                       </td>
                     </tr>
                   ) : (
                     filteredBottlenecks.slice(0, 15).map((b, idx) => (
                       <tr
                         key={`${b.templateId}-${b.errorCode}-${b.orderType}-${idx}`}
-                        className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40"
+                        onClick={() =>
+                          onInspectOrders({
+                            errorCode: b.errorCode || undefined,
+                            orderType: b.orderType || undefined,
+                            from: timeRange.from,
+                            to: timeRange.to,
+                            rangeLabel: timeRange.label,
+                          })
+                        }
+                        className="hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] cursor-pointer transition"
                       >
                         <td className="py-3 px-5">
                           <div className="font-medium text-slate-900 dark:text-white">
@@ -1168,11 +1377,12 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                         </td>
                         <td className="py-3 px-3">
                           {b.errorCode ? (
-                            <span className="inline-flex rounded-md bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-500/30 px-2 py-0.5 font-mono text-[11px] text-rose-700 dark:text-rose-300">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-[#FCE8E6] dark:bg-[#3C1919] px-2.5 py-0.5 font-mono text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82]">
                               {b.errorCode}
+                              <ArrowUpRight className="w-3 h-3" />
                             </span>
                           ) : (
-                            <span className="text-slate-400">None</span>
+                            <span className="text-slate-400">No Error</span>
                           )}
                         </td>
                         <td className="py-3 px-3 text-right font-mono">{b.eventCount}</td>
@@ -1190,13 +1400,16 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
             </div>
           </div>
 
-          {/* Right Column: Fallout Queues + 5-min Spikes */}
+          {/* Right Column: Clickable Fallout Queues + 5-min Spikes */}
           <div className="xl:col-span-5 space-y-5">
-            <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+            <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] overflow-hidden">
               <div className="px-5 py-3.5 border-b border-slate-100 dark:border-slate-800">
-                <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+                <h2 className="text-sm font-semibold text-[#1F1F1F] dark:text-white">
                   Fallout Ops Queues &amp; MTTR
                 </h2>
+                <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                  Click any queue to inspect its impacted orders
+                </p>
               </div>
               <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
                 {(opsData?.falloutQueues ?? []).length === 0 ? (
@@ -1205,34 +1418,42 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                   </div>
                 ) : (
                   (opsData?.falloutQueues ?? []).slice(0, 8).map((q, idx) => (
-                    <div
+                    <button
                       key={`${q.assignedQueue}-${q.errorCode}-${idx}`}
-                      className="px-5 py-3 flex items-center justify-between gap-3"
+                      type="button"
+                      onClick={() =>
+                        onInspectOrders({
+                          assignedQueue: q.assignedQueue !== 'UNASSIGNED' ? q.assignedQueue : undefined,
+                          errorCode: q.errorCode && q.errorCode !== 'UNKNOWN' ? q.errorCode : undefined,
+                        })
+                      }
+                      className="w-full text-left px-5 py-3 flex items-center justify-between gap-3 hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] transition"
                     >
                       <div className="min-w-0">
                         <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                           {prettifyLabel(q.assignedQueue)}
                         </div>
-                        <div className="text-[11px] font-mono text-rose-600 dark:text-rose-400 truncate">
+                        <div className="text-[11px] font-mono text-[#C5221F] dark:text-[#F28B82] truncate">
                           {q.errorCode || 'UNCLASSIFIED'}
                         </div>
                       </div>
                       <div className="text-right shrink-0">
-                        <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                        <div className="text-xs font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1">
                           {q.liveOpenFallouts} open
+                          <ArrowUpRight className="w-3 h-3 text-[#1A73E8]" />
                         </div>
                         <div className="text-[11px] text-slate-500">
                           MTTR {formatDurationMs(q.avgMttrMs)}
                         </div>
                       </div>
-                    </div>
+                    </button>
                   ))
                 )}
               </div>
             </div>
 
-            <div className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-white mb-3">
+            <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+              <h2 className="text-sm font-semibold text-[#1F1F1F] dark:text-white mb-3">
                 5-Minute Error Spikes
               </h2>
               {(opsData?.errorStorm5m ?? []).length === 0 ? (
@@ -1248,7 +1469,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                         title={`${pt.bucket5m}: ${pt.eventCount} events (${pt.uniqueEntities} entities)`}
                       >
                         <div
-                          className="w-full rounded-t bg-amber-500/80 hover:bg-amber-500 transition"
+                          className="w-full rounded-t bg-[#F9AB00]/80 hover:bg-[#F9AB00] transition"
                           style={{ height: `${h}%` }}
                         />
                       </div>
@@ -1257,6 +1478,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                 </div>
               )}
             </div>
+          </div>
           </div>
         </div>
       )}

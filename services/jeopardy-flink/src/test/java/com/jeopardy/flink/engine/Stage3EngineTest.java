@@ -305,6 +305,71 @@ class Stage3EngineTest {
         assertFalse(resolved.isHasActiveFallout(), "Active fallout flag must clear upon resolution");
         assertEquals("IN_PROGRESS", resolved.getEntityStatus(), "Entity should recover from IN_FALLOUT");
         assertEquals("IN_PROGRESS", resolved.getMilestoneStatus(), "Milestone should recover from IN_FALLOUT");
+        assertEquals("AWAITING_PROGRESS", resolved.getAttributes().get("fallout_recovery_state"));
+    }
+
+    @Test
+    void postFalloutWatchdogAlertsOnStallAndClearsWhenOrderMovesForward() throws Exception {
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "5m", "10m", "1h", "5m", "10m", "1h");
+        long t0 = 1_760_000_500_000L;
+
+        // Entity A: Fallout resolved with RETRY, but NO forward event arrives -> POST_FALLOUT_STALL alert must fire!
+        CanonicalEvent stallOrder = domainEvent("ORD-STALL:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0);
+        stallOrder.setChannel(null); // Verify missing channel is NOT defaulted to fake "WEB"
+        stallOrder.setAccountType(null);
+        CanonicalEvent stallStart = domainEvent("ORD-STALL:ITM-1", "domain.payment.events", "PAYMENT_AUTH_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 1_000);
+        stallStart.setChannel(null);
+        stallStart.setAccountType(null);
+
+        // Entity B: Fallout resolved with RETRY, and PAYMENT_AUTH_CAPTURED arrives quickly -> RECOVERED, ZERO stall alert!
+        CanonicalEvent recoverOrder = domainEvent("ORD-RECOVER:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0);
+
+        List<TimedEvent> events = Arrays.asList(
+                new TimedEvent(0, stallOrder),
+                new TimedEvent(0, stallStart),
+                new TimedEvent(0, falloutEvent("ORD-STALL:ITM-1", "FLT-STALL", "FALLOUT_OPENED", "OPEN", "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS", null, t0 + 5_000)),
+                new TimedEvent(0, falloutEvent("ORD-STALL:ITM-1", "FLT-STALL", "FALLOUT_RESOLVED", "RESOLVED", "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS", "RETRY_ACTIVITY", t0 + 15_000)),
+
+                new TimedEvent(0, recoverOrder),
+                new TimedEvent(0, domainEvent("ORD-RECOVER:ITM-1", "domain.payment.events", "PAYMENT_AUTH_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 1_000)),
+                new TimedEvent(0, falloutEvent("ORD-RECOVER:ITM-1", "FLT-REC", "FALLOUT_OPENED", "OPEN", "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS", null, t0 + 5_000)),
+                new TimedEvent(0, falloutEvent("ORD-RECOVER:ITM-1", "FLT-REC", "FALLOUT_RESOLVED", "RESOLVED", "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS", "RETRY_ACTIVITY", t0 + 15_000)),
+                new TimedEvent(30, domainEvent("ORD-RECOVER:ITM-1", "domain.payment.events", "PAYMENT_AUTH_CAPTURED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 25_000)),
+                // Wait past 150ms watchdog grace period
+                new TimedEvent(320, null)
+        );
+
+        RunResult res = runMiniClusterWithGrace(bundle, Collections.emptyList(), events, 150L);
+
+        // Verify null channel is preserved (no invented "WEB" default)
+        EntityMutation firstStall = res.mutations.stream()
+                .filter(m -> "ORD-STALL:ITM-1".equals(m.getEntityKey()))
+                .findFirst().orElseThrow();
+        assertEquals(null, firstStall.getChannel(), "Missing channel must stay null, never default to WEB");
+
+        // Verify POST_FALLOUT_STALL fired for ORD-STALL
+        EntityMutation stallAlert = res.mutations.stream()
+                .filter(m -> "ORD-STALL:ITM-1".equals(m.getEntityKey())
+                        && "POST_FALLOUT_STALL".equals(m.getAlertReasonCode()))
+                .findFirst().orElse(null);
+        assertNotNull(stallAlert, "Stalled order after fallout resolution must trigger POST_FALLOUT_STALL alert");
+        assertEquals("JEOPARDY", stallAlert.getMilestoneStatus());
+        assertEquals("STALLED", stallAlert.getAttributes().get("fallout_recovery_state"));
+
+        // Verify ORD-RECOVER marked RECOVERED with ZERO POST_FALLOUT_STALL alert
+        long recoverStallAlerts = res.mutations.stream()
+                .filter(m -> "ORD-RECOVER:ITM-1".equals(m.getEntityKey())
+                        && "POST_FALLOUT_STALL".equals(m.getAlertReasonCode()))
+                .count();
+        assertEquals(0, recoverStallAlerts, "Recovered order must cancel post-fallout watchdog");
+
+        EntityMutation recovered = res.mutations.stream()
+                .filter(m -> "ORD-RECOVER:ITM-1".equals(m.getEntityKey())
+                        && "S3".equals(m.getMilestoneId())
+                        && "COMPLETED".equals(m.getMilestoneStatus()))
+                .findFirst().orElse(null);
+        assertNotNull(recovered);
+        assertEquals("RECOVERED", recovered.getAttributes().get("fallout_recovery_state"));
     }
 
     @Test
@@ -342,6 +407,15 @@ class Stage3EngineTest {
             String initialBundle,
             List<TimedString> broadcastUpdates,
             List<TimedEvent> timedEvents) throws Exception {
+        return runMiniClusterWithGrace(
+                initialBundle, broadcastUpdates, timedEvents, Stage3MilestoneEngineFunction.DEFAULT_POST_FALLOUT_GRACE_MS);
+    }
+
+    private static RunResult runMiniClusterWithGrace(
+            String initialBundle,
+            List<TimedString> broadcastUpdates,
+            List<TimedEvent> timedEvents,
+            long postFalloutGraceMs) throws Exception {
         String runId = UUID.randomUUID().toString();
         MUTATION_RESULTS.put(runId, new CopyOnWriteArrayList<>());
         SIGNAL_RESULTS.put(runId, new CopyOnWriteArrayList<>());
@@ -358,7 +432,7 @@ class Stage3EngineTest {
             SingleOutputStreamOperator<EntityMutation> out = eventStream
                     .keyBy(CanonicalEvent::getEntityKey)
                     .connect(configBroadcast)
-                    .process(new Stage3MilestoneEngineFunction(initialBundle));
+                    .process(new Stage3MilestoneEngineFunction(initialBundle, null, postFalloutGraceMs));
 
             out.addSink(new CollectMutationSink(runId));
             out.getSideOutput(FlinkTags.CROSS_ORDER_SIGNAL_TAG).addSink(new CollectSignalSink(runId));

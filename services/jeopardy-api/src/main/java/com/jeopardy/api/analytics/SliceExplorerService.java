@@ -76,7 +76,33 @@ public class SliceExplorerService {
         List<String> channels = queryDistinctNonBlank("channel", 30);
         List<String> regions = queryDistinctNonBlank("region", 40);
         List<String> statuses = queryDistinctNonBlank("status", 20);
-        List<String> customAttrKeys = queryTopAttributeKeys(20);
+        List<String> customAttrKeys = queryTopAttributeKeys(20).stream()
+                .filter(k -> !isInternalAttributeKey(k))
+                .toList();
+
+        // Build strictly data-driven availableDimensions:
+        // - Only include native columns that actually have non-null data (e.g. omits Region if events lack region)
+        // - Automatically promote populated custom JSONB attributes (e.g. SalesChannel, donor_carrier)
+        List<AnalyticsFacetsResponse.DimensionDescriptor> availableDims = new ArrayList<>();
+        addNativeDimIfPopulated(availableDims, "item_type", "Item Type", itemTypes);
+        addNativeDimIfPopulated(availableDims, "order_type", "Order Type", orderTypes);
+        addNativeDimIfPopulated(availableDims, "channel", "Channel", channels);
+        addNativeDimIfPopulated(availableDims, "region", "Region", regions);
+        addNativeDimIfPopulated(availableDims, "account_type", "Account Type", accountTypes);
+        addNativeDimIfPopulated(availableDims, "order_family", "Order Family", orderFamilies);
+        addNativeDimIfPopulated(availableDims, "status", "Status", statuses);
+
+        Map<String, List<String>> attrValuesByKey = querySampleValuesForAttributeKeys(
+                customAttrKeys.stream().limit(10).toList(), 15);
+        for (String attrKey : customAttrKeys) {
+            List<String> vals = attrValuesByKey.getOrDefault(attrKey, List.of());
+            availableDims.add(new AnalyticsFacetsResponse.DimensionDescriptor(
+                    "dim:" + attrKey,
+                    prettifyDimensionLabel(attrKey),
+                    "attr",
+                    vals.size(),
+                    vals));
+        }
 
         long queryMs = Math.max(1L, (System.nanoTime() - startNs) / 1_000_000L);
         AnalyticsFacetsResponse res = new AnalyticsFacetsResponse(
@@ -89,7 +115,8 @@ public class SliceExplorerService {
                 channels,
                 regions,
                 statuses,
-                customAttrKeys);
+                customAttrKeys,
+                availableDims);
         facetsCache.set(new CachedFacets(res, nowMs + FACETS_CACHE_TTL_MS));
         return res;
     }
@@ -394,6 +421,90 @@ public class SliceExplorerService {
         } catch (Exception ex) {
             return List.of();
         }
+    }
+
+    private Map<String, List<String>> querySampleValuesForAttributeKeys(List<String> keys, int maxPerKey) {
+        if (keys == null || keys.isEmpty()) {
+            return Map.of();
+        }
+        String sql = """
+                SELECT kv.key AS attr_key, kv.value AS attr_val
+                FROM (
+                    SELECT attributes_jsonb
+                    FROM tracked_entities
+                    WHERE attributes_jsonb IS NOT NULL AND attributes_jsonb <> '{}'::jsonb
+                    ORDER BY created_at DESC
+                    LIMIT 400
+                ) sample,
+                LATERAL jsonb_each_text(sample.attributes_jsonb) AS kv(key, value)
+                WHERE kv.key IN (:keys) AND kv.value IS NOT NULL AND kv.value <> ''
+                GROUP BY kv.key, kv.value
+                ORDER BY kv.key ASC, COUNT(*) DESC, kv.value ASC
+                """;
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        try {
+            postgresJdbc.query(sql, new MapSqlParameterSource("keys", keys), rs -> {
+                String k = rs.getString("attr_key");
+                String v = rs.getString("attr_val");
+                if (k != null && v != null && !v.isBlank()) {
+                    List<String> list = result.computeIfAbsent(k, ignored -> new ArrayList<>());
+                    if (list.size() < maxPerKey) {
+                        list.add(v);
+                    }
+                }
+            });
+        } catch (Exception ex) {
+            log.debug("Sample attribute value lookup skipped: {}", ex.getMessage());
+        }
+        return result;
+    }
+
+    private static void addNativeDimIfPopulated(
+            List<AnalyticsFacetsResponse.DimensionDescriptor> out,
+            String id,
+            String label,
+            List<String> values) {
+        if (values != null && !values.isEmpty()) {
+            out.add(new AnalyticsFacetsResponse.DimensionDescriptor(
+                    id, label, "native", values.size(), values.stream().limit(25).toList()));
+        }
+    }
+
+    private static boolean isInternalAttributeKey(String key) {
+        if (key == null || key.isBlank()) {
+            return true;
+        }
+        String lower = key.toLowerCase(Locale.ROOT);
+        return lower.startsWith("fallout_recovery")
+                || lower.equals("fallout_resolved_at")
+                || lower.equals("fallout_recovered_at")
+                || lower.equals("fallout_resolution_action");
+    }
+
+    static String prettifyDimensionLabel(String rawKey) {
+        if (rawKey == null || rawKey.isBlank()) {
+            return "";
+        }
+        // Split camelCase and snake_case into clean Title Case (e.g. SalesChannel -> Sales Channel)
+        String spaced = rawKey
+                .replaceAll("([a-z0-9])([A-Z])", "$1 $2")
+                .replace('_', ' ')
+                .replace('-', ' ')
+                .trim();
+        String[] parts = spaced.split("\\s+");
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < parts.length; i++) {
+            String p = parts[i];
+            if (p.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            if (p.length() <= 3 && p.equals(p.toUpperCase(Locale.ROOT))) {
+                sb.append(p);
+            } else {
+                sb.append(Character.toUpperCase(p.charAt(0)))
+                        .append(p.substring(1).toLowerCase(Locale.ROOT));
+            }
+        }
+        return sb.toString();
     }
 
     private static void appendPgEq(

@@ -52,9 +52,11 @@ public class Stage3MilestoneEngineFunction
     public static final String EVENT_CROSS_ORDER_PAUSE = "CROSS_ORDER_PAUSE_SLA";
     public static final String EVENT_CROSS_ORDER_RESUME = "CROSS_ORDER_RESUME_SLA";
     public static final String EVENT_CROSS_ORDER_CANCEL = "CROSS_ORDER_CANCEL_ENTITY";
+    public static final long DEFAULT_POST_FALLOUT_GRACE_MS = 15L * 60L * 1000L;
 
     private final String initialBundleJson;
     private final String onnxModelDir;
+    private final long postFalloutGraceMs;
 
     private transient ValueState<EntityState> entityState;
     private transient MapState<Long, String> activeTimersState;
@@ -63,12 +65,20 @@ public class Stage3MilestoneEngineFunction
     private transient String lastBundleJson;
 
     public Stage3MilestoneEngineFunction(String initialBundleJson) {
-        this(initialBundleJson, null);
+        this(initialBundleJson, null, DEFAULT_POST_FALLOUT_GRACE_MS);
     }
 
     public Stage3MilestoneEngineFunction(String initialBundleJson, String onnxModelDir) {
+        this(initialBundleJson, onnxModelDir, DEFAULT_POST_FALLOUT_GRACE_MS);
+    }
+
+    public Stage3MilestoneEngineFunction(
+            String initialBundleJson,
+            String onnxModelDir,
+            long postFalloutGraceMs) {
         this.initialBundleJson = initialBundleJson;
         this.onnxModelDir = onnxModelDir;
+        this.postFalloutGraceMs = postFalloutGraceMs > 0 ? postFalloutGraceMs : DEFAULT_POST_FALLOUT_GRACE_MS;
     }
 
     @Override
@@ -143,7 +153,7 @@ public class Stage3MilestoneEngineFunction
 
         // 3. Branch A: First-Class Fallout Management BPMN Overlay
         if (event.isFalloutOverlay()) {
-            handleFalloutOverlay(state, event, registry, eventTimeMs, out);
+            handleFalloutOverlay(state, event, registry, eventTimeMs, nowProcTime, ctx.timerService(), out);
             entityState.update(state);
             return;
         }
@@ -225,6 +235,7 @@ public class Stage3MilestoneEngineFunction
                     if (!matchedComplete) {
                         registerMilestoneTimers(ms, nowProcTime, prediction, ctx.timerService());
                     }
+                    markForwardProgressAfterFallout(state, eventTimeMs, ctx.timerService());
                     changed = true;
                 }
 
@@ -247,6 +258,7 @@ public class Stage3MilestoneEngineFunction
                     ms.setLastEventTimeMs(Math.max(ms.getLastEventTimeMs(), eventTimeMs));
 
                     cancelMilestoneTimers(ms, ctx.timerService());
+                    markForwardProgressAfterFallout(state, eventTimeMs, ctx.timerService());
 
                     if (ms.isTerminalMilestone()) {
                         state.setEntityStatus("COMPLETED");
@@ -374,6 +386,21 @@ public class Stage3MilestoneEngineFunction
                     alertMsg = "Milestone '" + ms.getDisplayName() + "' BREACHED hardMax SLA threshold";
                     escalated = true;
                 }
+            } else if ("POST_FALLOUT".equals(level) && Long.valueOf(timestamp).equals(ms.getPostFalloutWatchdogTs())) {
+                ms.setPostFalloutWatchdogTs(null);
+                if (!state.isHasActiveFallout()
+                        && !"COMPLETED".equals(ms.getStatus())
+                        && !"CANCELLED".equals(ms.getStatus())
+                        && !"SKIPPED".equals(ms.getStatus())) {
+                    ms.setStatus("JEOPARDY");
+                    ms.setLastErrorCode("POST_FALLOUT_STALL");
+                    ms.setBreachProbability(Math.max(0.95, ms.getBreachProbability()));
+                    state.getAttributes().put("fallout_recovery_state", "STALLED");
+                    reasonCode = "POST_FALLOUT_STALL";
+                    alertMsg = "Fallout BPMN resolved, but milestone '" + ms.getDisplayName()
+                            + "' received no forward progress within recovery grace window";
+                    escalated = true;
+                }
             }
 
             if (escalated) {
@@ -420,8 +447,8 @@ public class Stage3MilestoneEngineFunction
         state.setParentEntityKey(event.getParentEntityKey());
         state.setCustomerId(event.getCustomerId());
         state.setSubscriberId(event.getSubscriberId());
-        state.setAccountType(firstNonBlank(event.getAccountType(), "RESIDENTIAL"));
-        state.setChannel(firstNonBlank(event.getChannel(), "WEB"));
+        state.setAccountType(event.getAccountType());
+        state.setChannel(event.getChannel());
         state.setRegion(event.getRegion());
         state.setJourneyId(firstNonBlank(event.getJourneyId(), deriveJourneyId(event)));
         state.setEntityStatus("IN_PROGRESS");
@@ -469,6 +496,12 @@ public class Stage3MilestoneEngineFunction
         }
         if (isBlank(state.getRegion()) && !isBlank(event.getRegion())) {
             state.setRegion(event.getRegion());
+        }
+        if (isBlank(state.getChannel()) && !isBlank(event.getChannel())) {
+            state.setChannel(event.getChannel());
+        }
+        if (isBlank(state.getAccountType()) && !isBlank(event.getAccountType())) {
+            state.setAccountType(event.getAccountType());
         }
         if (isBlank(state.getJourneyId()) && !isBlank(event.getJourneyId())) {
             state.setJourneyId(event.getJourneyId());
@@ -543,7 +576,9 @@ public class Stage3MilestoneEngineFunction
             CanonicalEvent event,
             CompiledBlueprintRegistry registry,
             long eventTimeMs,
-            Collector<EntityMutation> out) {
+            long nowProcTime,
+            TimerService timerService,
+            Collector<EntityMutation> out) throws Exception {
         String falloutId = firstNonBlank(
                 event.getFalloutId(),
                 event.getProcessInstanceId(),
@@ -603,20 +638,97 @@ public class Stage3MilestoneEngineFunction
         }
         state.setHasActiveFallout(anyActiveFallout);
 
-        if (targetMs != null) {
-            targetMs.setLastEventTimeMs(Math.max(targetMs.getLastEventTimeMs(), eventTimeMs));
-            if (!isBlank(flt.getErrorCode())) {
-                targetMs.setLastErrorCode(flt.getErrorCode());
+        String actionUpper = flt.getResolutionAction() != null
+                ? flt.getResolutionAction().trim().toUpperCase(Locale.ROOT)
+                : "";
+
+        if (!isResolved) {
+            state.getAttributes().put("fallout_recovery_state", "OPEN");
+            if (targetMs != null) {
+                if (targetMs.getPostFalloutWatchdogTs() != null) {
+                    removeSingleTimer(
+                            targetMs.getPostFalloutWatchdogTs(),
+                            "POST_FALLOUT:" + targetMs.getMilestoneId(),
+                            timerService);
+                    targetMs.setPostFalloutWatchdogTs(null);
+                }
+                targetMs.setLastEventTimeMs(Math.max(targetMs.getLastEventTimeMs(), eventTimeMs));
+                if (!isBlank(flt.getErrorCode())) {
+                    targetMs.setLastErrorCode(flt.getErrorCode());
+                }
+                if (event.getRetryCount() > targetMs.getRetryCount()) {
+                    targetMs.setRetryCount(event.getRetryCount());
+                }
+                if (!"COMPLETED".equals(targetMs.getStatus()) && !"BREACHED".equals(targetMs.getStatus())) {
+                    targetMs.setStatus("IN_FALLOUT");
+                    targetMs.setBreachProbability(Math.max(0.90, targetMs.getBreachProbability()));
+                    ensureCaseId(state, targetMs, eventTimeMs);
+                }
             }
-            if (event.getRetryCount() > targetMs.getRetryCount()) {
-                targetMs.setRetryCount(event.getRetryCount());
-            }
-            if (!isResolved && !"COMPLETED".equals(targetMs.getStatus()) && !"BREACHED".equals(targetMs.getStatus())) {
-                targetMs.setStatus("IN_FALLOUT");
-                targetMs.setBreachProbability(Math.max(0.90, targetMs.getBreachProbability()));
-                ensureCaseId(state, targetMs, eventTimeMs);
-            } else if (isResolved && !anyActiveFallout && "IN_FALLOUT".equals(targetMs.getStatus())) {
-                targetMs.setStatus("IN_PROGRESS");
+        } else if (!anyActiveFallout) {
+            // Fallout BPMN resolved: honor resolutionAction and guard forward progress!
+            if (actionUpper.contains("CANCEL_ORDER") || "CANCEL".equals(actionUpper)) {
+                cancelAllEntityTimers(state, timerService);
+                for (MilestoneState ms : state.getMilestones().values()) {
+                    if (!"COMPLETED".equals(ms.getStatus())) {
+                        ms.setStatus("CANCELLED");
+                        ms.setLastEventTimeMs(Math.max(ms.getLastEventTimeMs(), eventTimeMs));
+                    }
+                }
+                state.setEntityStatus("CANCELLED");
+                state.setClosedAtMs(eventTimeMs);
+                state.getAttributes().put("fallout_recovery_state", "CANCELLED");
+            } else if (actionUpper.contains("MANUAL_COMPLETE")
+                    || actionUpper.contains("FORCE_COMPLETE")
+                    || actionUpper.contains("SKIP_STEP")) {
+                if (targetMs != null && !"COMPLETED".equals(targetMs.getStatus())) {
+                    if (targetMs.getStartedAtMs() == null) {
+                        targetMs.setStartedAtMs(eventTimeMs);
+                    }
+                    targetMs.setCompletedAtMs(eventTimeMs);
+                    targetMs.setStatus("COMPLETED");
+                    targetMs.setDurationMs(Math.max(0L, eventTimeMs - targetMs.getStartedAtMs() - targetMs.getPausedDurationMs()));
+                    targetMs.setLastEventTimeMs(Math.max(targetMs.getLastEventTimeMs(), eventTimeMs));
+                    cancelMilestoneTimers(targetMs, timerService);
+                    if (targetMs.isTerminalMilestone()) {
+                        state.setEntityStatus("COMPLETED");
+                        state.setClosedAtMs(eventTimeMs);
+                        cancelAllEntityTimers(state, timerService);
+                    }
+                }
+                state.getAttributes().put("fallout_recovery_state", "RECOVERED");
+                state.getAttributes().put("fallout_recovered_at", java.time.Instant.ofEpochMilli(eventTimeMs).toString());
+            } else {
+                // Standard Ops recovery (RETRY / REPROCESS / FIX_DATA):
+                // Reset milestone to IN_PROGRESS and arm Post-Fallout Forward-Progress Watchdog!
+                if (targetMs != null) {
+                    targetMs.setLastEventTimeMs(Math.max(targetMs.getLastEventTimeMs(), eventTimeMs));
+                    if (!isBlank(flt.getErrorCode())) {
+                        targetMs.setLastErrorCode(flt.getErrorCode());
+                    }
+                    if ("IN_FALLOUT".equals(targetMs.getStatus())
+                            || "JEOPARDY".equals(targetMs.getStatus())
+                            || "BREACHED".equals(targetMs.getStatus())) {
+                        targetMs.setStatus("IN_PROGRESS");
+                    }
+                    targetMs.setFalloutResolvedAtMs(eventTimeMs);
+                    if (!"COMPLETED".equals(targetMs.getStatus()) && !"CANCELLED".equals(targetMs.getStatus())) {
+                        if (targetMs.getPostFalloutWatchdogTs() != null) {
+                            removeSingleTimer(
+                                    targetMs.getPostFalloutWatchdogTs(),
+                                    "POST_FALLOUT:" + targetMs.getMilestoneId(),
+                                    timerService);
+                        }
+                        long watchdogTs = nowProcTime + postFalloutGraceMs;
+                        registerSingleTimer(watchdogTs, "POST_FALLOUT:" + targetMs.getMilestoneId(), timerService);
+                        targetMs.setPostFalloutWatchdogTs(watchdogTs);
+                    }
+                }
+                state.getAttributes().put("fallout_recovery_state", "AWAITING_PROGRESS");
+                state.getAttributes().put("fallout_resolved_at", java.time.Instant.ofEpochMilli(eventTimeMs).toString());
+                if (!isBlank(flt.getResolutionAction())) {
+                    state.getAttributes().put("fallout_resolution_action", flt.getResolutionAction());
+                }
             }
         }
 
@@ -950,6 +1062,27 @@ public class Stage3MilestoneEngineFunction
         }
     }
 
+    private void markForwardProgressAfterFallout(
+            EntityState state,
+            long eventTimeMs,
+            TimerService timerService) throws Exception {
+        String recovery = state.getAttributes().get("fallout_recovery_state");
+        if (!"AWAITING_PROGRESS".equals(recovery) && !"STALLED".equals(recovery)) {
+            return;
+        }
+        for (MilestoneState ms : state.getMilestones().values()) {
+            if (ms.getPostFalloutWatchdogTs() != null) {
+                removeSingleTimer(
+                        ms.getPostFalloutWatchdogTs(),
+                        "POST_FALLOUT:" + ms.getMilestoneId(),
+                        timerService);
+                ms.setPostFalloutWatchdogTs(null);
+            }
+        }
+        state.getAttributes().put("fallout_recovery_state", "RECOVERED");
+        state.getAttributes().put("fallout_recovered_at", java.time.Instant.ofEpochMilli(eventTimeMs).toString());
+    }
+
     private void cancelMilestoneTimers(MilestoneState ms, TimerService timerService) throws Exception {
         removeSingleTimer(ms.getWarningTimerTs(), "WARN:" + ms.getMilestoneId(), timerService);
         ms.setWarningTimerTs(null);
@@ -957,6 +1090,8 @@ public class Stage3MilestoneEngineFunction
         ms.setJeopardyTimerTs(null);
         removeSingleTimer(ms.getBreachTimerTs(), "BREACH:" + ms.getMilestoneId(), timerService);
         ms.setBreachTimerTs(null);
+        removeSingleTimer(ms.getPostFalloutWatchdogTs(), "POST_FALLOUT:" + ms.getMilestoneId(), timerService);
+        ms.setPostFalloutWatchdogTs(null);
     }
 
     private void cancelAllEntityTimers(EntityState state, TimerService timerService) throws Exception {

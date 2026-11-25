@@ -128,6 +128,86 @@ public class AnalyticsRepository {
                 ));
     }
 
+    /**
+     * Tracks full Fallout BPMN lifecycle including post-resolution forward progress:
+     * Open -> Resolved (Awaiting Progress) -> Stalled After Resolution vs. Recovered &amp; Moving.
+     */
+    public DevOpsBottlenecksResponse.FalloutRecoverySummary queryPostgresFalloutRecoverySummary() {
+        String sql = """
+                WITH latest_entities AS (
+                    SELECT DISTINCT ON (entity_key)
+                           entity_key, status, last_event_time, attributes_jsonb
+                    FROM tracked_entities
+                    ORDER BY entity_key, last_event_time DESC, created_at DESC
+                ),
+                classified AS (
+                    SELECT f.fallout_id,
+                           f.entity_key,
+                           COALESCE(f.error_code, 'UNCLASSIFIED') AS error_code,
+                           COALESCE(f.assigned_group, 'UNASSIGNED') AS assigned_queue,
+                           f.resolution_action,
+                           f.fallout_status,
+                           f.opened_at,
+                           f.resolved_at,
+                           f.mttr_ms,
+                           COALESCE(e.status, 'UNKNOWN') AS entity_status,
+                           CASE
+                               WHEN f.fallout_status IN ('OPEN', 'IN_QUEUE', 'RETRYING', 'ESCALATED')
+                                   THEN 'OPEN'
+                               WHEN COALESCE(e.attributes_jsonb ->> 'fallout_recovery_state', '') = 'STALLED'
+                                   THEN 'STALLED'
+                               WHEN COALESCE(e.attributes_jsonb ->> 'fallout_recovery_state', '') = 'RECOVERED'
+                                    OR e.status IN ('COMPLETED', 'CANCELLED')
+                                    OR (f.resolved_at IS NOT NULL AND e.last_event_time IS NOT NULL
+                                        AND e.last_event_time > f.resolved_at + INTERVAL '5 seconds')
+                                   THEN 'RECOVERED'
+                               WHEN f.resolved_at IS NOT NULL
+                                    AND f.resolved_at < NOW() - INTERVAL '15 minutes'
+                                   THEN 'STALLED'
+                               ELSE 'AWAITING_PROGRESS'
+                           END AS recovery_state
+                    FROM entity_fallouts f
+                    LEFT JOIN latest_entities e ON e.entity_key = f.entity_key
+                )
+                SELECT fallout_id, entity_key, error_code, assigned_queue, resolution_action,
+                       resolved_at, mttr_ms, entity_status, recovery_state
+                FROM classified
+                ORDER BY CASE recovery_state
+                             WHEN 'STALLED' THEN 0
+                             WHEN 'AWAITING_PROGRESS' THEN 1
+                             WHEN 'OPEN' THEN 2
+                             ELSE 3
+                         END,
+                         COALESCE(resolved_at, opened_at) DESC
+                """;
+        List<DevOpsBottlenecksResponse.FalloutRecoveryItem> rows = postgresJdbc.query(
+                sql,
+                new org.springframework.jdbc.core.namedparam.MapSqlParameterSource(),
+                (rs, idx) -> new DevOpsBottlenecksResponse.FalloutRecoveryItem(
+                        rs.getString("fallout_id"),
+                        rs.getString("entity_key"),
+                        rs.getString("error_code"),
+                        rs.getString("assigned_queue"),
+                        rs.getString("resolution_action"),
+                        toInstant(rs, "resolved_at"),
+                        rs.getObject("mttr_ms") != null ? rs.getLong("mttr_ms") : null,
+                        rs.getString("entity_status"),
+                        rs.getString("recovery_state")));
+
+        long open = rows.stream().filter(r -> "OPEN".equals(r.recoveryState())).count();
+        long awaiting = rows.stream().filter(r -> "AWAITING_PROGRESS".equals(r.recoveryState())).count();
+        long stalled = rows.stream().filter(r -> "STALLED".equals(r.recoveryState())).count();
+        long recovered = rows.stream().filter(r -> "RECOVERED".equals(r.recoveryState())).count();
+
+        List<DevOpsBottlenecksResponse.FalloutRecoveryItem> recentResolved = rows.stream()
+                .filter(r -> !"OPEN".equals(r.recoveryState()))
+                .limit(12)
+                .toList();
+
+        return new DevOpsBottlenecksResponse.FalloutRecoverySummary(
+                open, awaiting, stalled, recovered, recentResolved);
+    }
+
     private Instant toInstant(ResultSet rs, String column) throws SQLException {
         Object val = rs.getObject(column);
         if (val == null) {

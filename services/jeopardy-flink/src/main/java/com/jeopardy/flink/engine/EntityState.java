@@ -158,6 +158,8 @@ public class EntityState implements Serializable {
         private Long warningTimerTs;
         private Long jeopardyTimerTs;
         private Long breachTimerTs;
+        private Long falloutResolvedAtMs;
+        private Long postFalloutWatchdogTs;
 
         // Remaining Processing-Time durations saved when PAUSE_SLA_CLOCK arrives
         private Long remainingWarningMs;
@@ -226,6 +228,10 @@ public class EntityState implements Serializable {
         public void setJeopardyTimerTs(Long jeopardyTimerTs) { this.jeopardyTimerTs = jeopardyTimerTs; }
         public Long getBreachTimerTs() { return breachTimerTs; }
         public void setBreachTimerTs(Long breachTimerTs) { this.breachTimerTs = breachTimerTs; }
+        public Long getFalloutResolvedAtMs() { return falloutResolvedAtMs; }
+        public void setFalloutResolvedAtMs(Long falloutResolvedAtMs) { this.falloutResolvedAtMs = falloutResolvedAtMs; }
+        public Long getPostFalloutWatchdogTs() { return postFalloutWatchdogTs; }
+        public void setPostFalloutWatchdogTs(Long postFalloutWatchdogTs) { this.postFalloutWatchdogTs = postFalloutWatchdogTs; }
         public Long getRemainingWarningMs() { return remainingWarningMs; }
         public void setRemainingWarningMs(Long remainingWarningMs) { this.remainingWarningMs = remainingWarningMs; }
         public Long getRemainingJeopardyMs() { return remainingJeopardyMs; }

@@ -39,4 +39,12 @@ class SliceExplorerServiceTest {
         assertThatThrownBy(() -> service.normalizeAndValidateGroupBy("non_existent_column"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void prettifiesCamelCaseAndSnakeCaseCustomDimensionLabels() {
+        assertThat(SliceExplorerService.prettifyDimensionLabel("SalesChannel")).isEqualTo("Sales Channel");
+        assertThat(SliceExplorerService.prettifyDimensionLabel("donor_carrier")).isEqualTo("Donor Carrier");
+        assertThat(SliceExplorerService.prettifyDimensionLabel("dealerCode")).isEqualTo("Dealer Code");
+        assertThat(SliceExplorerService.prettifyDimensionLabel("SKU")).isEqualTo("SKU");
+    }
 }
