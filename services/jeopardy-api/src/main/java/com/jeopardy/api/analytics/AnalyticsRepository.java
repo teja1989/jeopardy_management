@@ -129,8 +129,10 @@ public class AnalyticsRepository {
     }
 
     /**
-     * Tracks full Fallout BPMN lifecycle including post-resolution forward progress:
-     * Open -> Resolved (Awaiting Progress) -> Stalled After Resolution vs. Recovered &amp; Moving.
+     * Tracks full Fallout BPMN lifecycle including post-resolution forward progress
+     * and repeat/boomerang fallout detection:
+     * Open -> Resolved (Awaiting Progress) -> Stalled After Resolution vs. Recovered &amp; Moving,
+     * plus Repeat / Boomerang recurrence across the same (entity, milestone/activity, errorCode).
      */
     public DevOpsBottlenecksResponse.FalloutRecoverySummary queryPostgresFalloutRecoverySummary() {
         String sql = """
@@ -139,6 +141,22 @@ public class AnalyticsRepository {
                            entity_key, status, last_event_time, attributes_jsonb
                     FROM tracked_entities
                     ORDER BY entity_key, last_event_time DESC, created_at DESC
+                ),
+                numbered_fallouts AS (
+                    SELECT f.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY f.entity_key,
+                                            COALESCE(f.milestone_id, f.template_id, f.failed_activity_id, 'ANY'),
+                                            COALESCE(f.error_code, 'UNKNOWN')
+                               ORDER BY f.opened_at ASC, f.fallout_id ASC
+                           ) AS seq_occurrence,
+                           LAG(f.fallout_id) OVER (
+                               PARTITION BY f.entity_key,
+                                            COALESCE(f.milestone_id, f.template_id, f.failed_activity_id, 'ANY'),
+                                            COALESCE(f.error_code, 'UNKNOWN')
+                               ORDER BY f.opened_at ASC, f.fallout_id ASC
+                           ) AS prev_fallout_id
+                    FROM entity_fallouts f
                 ),
                 classified AS (
                     SELECT f.fallout_id,
@@ -165,17 +183,33 @@ public class AnalyticsRepository {
                                     AND f.resolved_at < NOW() - INTERVAL '15 minutes'
                                    THEN 'STALLED'
                                ELSE 'AWAITING_PROGRESS'
-                           END AS recovery_state
-                    FROM entity_fallouts f
+                           END AS recovery_state,
+                           GREATEST(
+                               CASE
+                                   WHEN (f.details_jsonb ->> 'occurrenceCount') ~ '^[0-9]+$'
+                                       THEN (f.details_jsonb ->> 'occurrenceCount')::int
+                                   ELSE 1
+                               END,
+                               f.seq_occurrence::int
+                           ) AS occurrence_count,
+                           (COALESCE(LOWER(f.details_jsonb ->> 'isRepeatFallout') = 'true', FALSE)
+                               OR f.seq_occurrence > 1) AS is_repeat_fallout,
+                           COALESCE(
+                               NULLIF(f.details_jsonb ->> 'previousFalloutId', ''),
+                               f.prev_fallout_id
+                           ) AS previous_fallout_id
+                    FROM numbered_fallouts f
                     LEFT JOIN latest_entities e ON e.entity_key = f.entity_key
                 )
                 SELECT fallout_id, entity_key, error_code, assigned_queue, resolution_action,
-                       resolved_at, mttr_ms, entity_status, recovery_state
+                       resolved_at, mttr_ms, entity_status, recovery_state,
+                       occurrence_count, is_repeat_fallout, previous_fallout_id
                 FROM classified
-                ORDER BY CASE recovery_state
+                ORDER BY CASE WHEN is_repeat_fallout OR occurrence_count > 1 THEN 0 ELSE 1 END,
+                         CASE recovery_state
                              WHEN 'STALLED' THEN 0
-                             WHEN 'AWAITING_PROGRESS' THEN 1
-                             WHEN 'OPEN' THEN 2
+                             WHEN 'OPEN' THEN 1
+                             WHEN 'AWAITING_PROGRESS' THEN 2
                              ELSE 3
                          END,
                          COALESCE(resolved_at, opened_at) DESC
@@ -192,20 +226,24 @@ public class AnalyticsRepository {
                         toInstant(rs, "resolved_at"),
                         rs.getObject("mttr_ms") != null ? rs.getLong("mttr_ms") : null,
                         rs.getString("entity_status"),
-                        rs.getString("recovery_state")));
+                        rs.getString("recovery_state"),
+                        Math.max(1, rs.getInt("occurrence_count")),
+                        rs.getBoolean("is_repeat_fallout"),
+                        rs.getString("previous_fallout_id")));
 
         long open = rows.stream().filter(r -> "OPEN".equals(r.recoveryState())).count();
         long awaiting = rows.stream().filter(r -> "AWAITING_PROGRESS".equals(r.recoveryState())).count();
         long stalled = rows.stream().filter(r -> "STALLED".equals(r.recoveryState())).count();
         long recovered = rows.stream().filter(r -> "RECOVERED".equals(r.recoveryState())).count();
+        long repeatFallouts = rows.stream().filter(r -> r.repeatFallout() || r.occurrenceCount() > 1).count();
 
-        List<DevOpsBottlenecksResponse.FalloutRecoveryItem> recentResolved = rows.stream()
-                .filter(r -> !"OPEN".equals(r.recoveryState()))
-                .limit(12)
+        List<DevOpsBottlenecksResponse.FalloutRecoveryItem> recentRecoveries = rows.stream()
+                .filter(r -> r.repeatFallout() || r.occurrenceCount() > 1 || !"OPEN".equals(r.recoveryState()))
+                .limit(15)
                 .toList();
 
         return new DevOpsBottlenecksResponse.FalloutRecoverySummary(
-                open, awaiting, stalled, recovered, recentResolved);
+                open, awaiting, stalled, recovered, repeatFallouts, recentRecoveries);
     }
 
     private Instant toInstant(ResultSet rs, String column) throws SQLException {

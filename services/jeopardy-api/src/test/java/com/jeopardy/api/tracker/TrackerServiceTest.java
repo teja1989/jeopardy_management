@@ -186,6 +186,75 @@ class TrackerServiceTest {
         assertThat(tradeInOrder.hasActiveFallout()).isTrue();
     }
 
+    @Test
+    void getCustomerOrdersStitchesCompanionOrderMissingCustomerIdViaParentRelationship() {
+        Instant now = Instant.now();
+        EntitySummaryDto salesOrder = entity(
+                "ORD-88412", "ORDER", "UPGRADES_TRADEIN", "SALES_UPGRADE",
+                "ACC-88412", "JRN-88412", "IN_PROGRESS", "NONE", false, 0.12, now);
+        EntitySummaryDto companionInsurance = entity(
+                "INS-9001", "ORDER", "INTERNAL_COMPANION", "INTERNAL_INSURANCE_ORDER",
+                null, null, "IN_PROGRESS", "NONE", false, 0.08, now.plusSeconds(5));
+
+        EntityRelationshipDto rel = new EntityRelationshipDto(
+                "INS-9001", "ORD-88412", "TRIGGERED_BY_ORDER", "INDEPENDENT", "JRN-88412", now);
+
+        when(repository.findEntitiesByCustomerId("ACC-88412")).thenReturn(List.of(salesOrder));
+        when(repository.findRelationshipsByEntityKeys(anyCollection())).thenReturn(List.of(rel));
+        when(repository.findEntitiesByKeys(anyCollection())).thenReturn(List.of(companionInsurance));
+
+        CustomerOrdersResponse res = service.getCustomerOrders("ACC-88412");
+
+        assertThat(res.accountId()).isEqualTo("ACC-88412");
+        assertThat(res.totalOrders()).isEqualTo(2);
+
+        CustomerOrdersResponse.OrderCard salesCard = res.orders().stream()
+                .filter(o -> "ORD-88412".equals(o.orderId()))
+                .findFirst().orElseThrow();
+        assertThat(salesCard.linkedCompanionCount()).isEqualTo(1);
+        assertThat(salesCard.isCompanionOrder()).isFalse();
+
+        CustomerOrdersResponse.OrderCard companionCard = res.orders().stream()
+                .filter(o -> "INS-9001".equals(o.orderId()))
+                .findFirst().orElseThrow();
+        assertThat(companionCard.isCompanionOrder()).isTrue();
+        assertThat(companionCard.orderType()).isEqualTo("INTERNAL_INSURANCE_ORDER");
+    }
+
+    @Test
+    void getEntityTimelineOnLineItemIncludesCompanionLinkedToParentOrder() {
+        Instant now = Instant.now();
+        EntitySummaryDto rootOrder = entity(
+                "ORD-88412", "ORDER", "UPGRADES_TRADEIN", "SALES_UPGRADE",
+                "ACC-88412", "JRN-88412", "IN_PROGRESS", "NONE", false, 0.10, now);
+        EntitySummaryDto lineItem = entity(
+                "ORD-88412:ITM-1", "ORDER_ITEM", "UPGRADES_TRADEIN", "SALES_UPGRADE",
+                "ACC-88412", "JRN-88412", "IN_PROGRESS", "NONE", false, 0.15, now);
+        EntitySummaryDto companionInsurance = entity(
+                "INS-9001", "ORDER", "INTERNAL_COMPANION", "INTERNAL_INSURANCE_ORDER",
+                null, "JRN-88412", "IN_PROGRESS", "NONE", false, 0.05, now);
+
+        EntityRelationshipDto parentLink = new EntityRelationshipDto(
+                "INS-9001", "ORD-88412", "TRIGGERED_BY_ORDER", "INDEPENDENT", "JRN-88412", now);
+
+        when(repository.findEntityByKey("ORD-88412:ITM-1")).thenReturn(Optional.of(lineItem));
+        when(repository.findMilestonesByEntityKey("ORD-88412:ITM-1")).thenReturn(List.of());
+        when(repository.findFalloutsByEntityKey("ORD-88412:ITM-1")).thenReturn(List.of());
+        when(repository.findJeopardyCasesByEntityKey("ORD-88412:ITM-1")).thenReturn(List.of());
+        when(repository.findEntitiesByOrderId("ORD-88412")).thenReturn(List.of(rootOrder, lineItem));
+        when(repository.findRelationshipsByEntityKeys(anyCollection())).thenReturn(List.of(parentLink));
+        when(repository.findEntitiesByKeys(anyCollection())).thenReturn(List.of(companionInsurance));
+        when(repository.findRawEventsByEntityKey("ORD-88412:ITM-1", false, 50)).thenReturn(List.of());
+
+        EntityTimelineResponse timeline = service.getEntityTimeline("ORD-88412:ITM-1", false, 50);
+
+        assertThat(timeline.entity().entityKey()).isEqualTo("ORD-88412:ITM-1");
+        assertThat(timeline.relationships()).containsExactly(parentLink);
+        assertThat(timeline.orderEntities())
+                .extracting(EntitySummaryDto::entityKey)
+                .containsExactlyInAnyOrder("ORD-88412", "ORD-88412:ITM-1", "INS-9001");
+    }
+
     private EntitySummaryDto entity(
             String key,
             String level,

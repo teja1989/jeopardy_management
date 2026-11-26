@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   ArrowRight,
+  BookOpen,
   GitBranch,
   Lock,
   Plug,
@@ -18,6 +19,7 @@ export type CommandPaletteDestination =
   | 'overview'
   | 'orders'
   | 'fallouts'
+  | 'guide'
   | 'workflows'
   | 'integrations';
 
@@ -240,6 +242,17 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               >
                 <ShieldAlert className="w-3.5 h-3.5 text-[#C5221F] dark:text-[#F28B82] shrink-0" />
                 <span>Fallouts &amp; Incidents</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onNavigate('guide');
+                  onClose();
+                }}
+                className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-[#444746] dark:text-[#C4C7C5] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] transition"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-[#007B83] dark:text-[#78D9EC] shrink-0" />
+                <span>Guide &amp; Playbook</span>
               </button>
               <button
                 type="button"

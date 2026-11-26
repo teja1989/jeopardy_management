@@ -122,22 +122,40 @@ public class TrackerService {
     }
 
     public CustomerJourneyResponse getCustomerJourneys(String customerId) {
-        List<EntitySummaryDto> entities = repository.findEntitiesByCustomerId(customerId);
-        if (entities.isEmpty()) {
+        List<EntitySummaryDto> baseEntities = repository.findEntitiesByCustomerId(customerId);
+        if (baseEntities == null || baseEntities.isEmpty()) {
             return new CustomerJourneyResponse(customerId, "HEALTHY", 0, 0, List.of());
         }
 
+        List<String> initialKeys = baseEntities.stream()
+                .map(EntitySummaryDto::entityKey)
+                .distinct()
+                .toList();
+
+        List<EntityRelationshipDto> allRelationships =
+                deduplicateRelationships(repository.findRelationshipsByEntityKeys(initialKeys));
+
+        // Stitch companion/internal orders that carry parent order context (via entity_relationships)
+        // even when their source BPMN payload omitted customerId.
+        List<EntitySummaryDto> entities = stitchMissingLinkedEntities(baseEntities, allRelationships);
         List<String> allEntityKeys = entities.stream()
                 .map(EntitySummaryDto::entityKey)
                 .distinct()
                 .toList();
 
-        List<EntityRelationshipDto> allRelationships = repository.findRelationshipsByEntityKeys(allEntityKeys);
-        List<FalloutDto> allFallouts = repository.findFalloutsByEntityKeys(allEntityKeys);
+        List<FalloutDto> rawFallouts = repository.findFalloutsByEntityKeys(allEntityKeys);
+        List<FalloutDto> allFallouts = rawFallouts != null ? rawFallouts : List.of();
+
+        Map<String, String> journeyGroupByEntityKey = new LinkedHashMap<>();
+        for (EntitySummaryDto entity : entities) {
+            if (entity.journeyId() != null && !entity.journeyId().isBlank()) {
+                journeyGroupByEntityKey.put(entity.entityKey(), entity.journeyId());
+            }
+        }
 
         Map<String, List<EntitySummaryDto>> groupedEntities = new LinkedHashMap<>();
         for (EntitySummaryDto entity : entities) {
-            String groupKey = resolveJourneyGroupKey(entity);
+            String groupKey = resolveJourneyGroupKey(entity, allRelationships, journeyGroupByEntityKey);
             groupedEntities.computeIfAbsent(groupKey, k -> new ArrayList<>()).add(entity);
         }
 
@@ -197,9 +215,9 @@ public class TrackerService {
         List<MilestoneDto> milestones = repository.findMilestonesByEntityKey(entityKey);
         List<FalloutDto> fallouts = repository.findFalloutsByEntityKey(entityKey);
         List<JeopardyCaseDto> jeopardyCases = repository.findJeopardyCasesByEntityKey(entityKey);
-        List<EntityRelationshipDto> relationships = repository.findRelationshipsByEntityKey(entityKey);
 
-        // Fetch strictly ORDER-SCOPED entities (root order + sibling line items + directly linked companion BPMNs)
+        // Fetch strictly ORDER-SCOPED entities FIRST so viewing a line item (ORD-88412:ITM-1)
+        // also discovers companion BPMNs linked to its parent order (ORD-88412) and vice versa.
         String rootOrderId = extractRootOrderId(entityKey);
         Map<String, EntitySummaryDto> orderScopedMap = new LinkedHashMap<>();
         orderScopedMap.put(entity.entityKey(), entity);
@@ -211,20 +229,39 @@ public class TrackerService {
                 }
             }
         }
+
+        Set<String> orderMemberKeys = new LinkedHashSet<>();
+        if (entityKey != null && !entityKey.isBlank()) {
+            orderMemberKeys.add(entityKey);
+        }
+        if (rootOrderId != null && !rootOrderId.isBlank()) {
+            orderMemberKeys.add(rootOrderId);
+        }
+        orderMemberKeys.addAll(orderScopedMap.keySet());
+
+        List<EntityRelationshipDto> rawRelationships = repository.findRelationshipsByEntityKeys(orderMemberKeys);
+        if (rawRelationships == null || rawRelationships.isEmpty()) {
+            rawRelationships = repository.findRelationshipsByEntityKey(entityKey);
+        }
+        List<EntityRelationshipDto> relationships = deduplicateRelationships(rawRelationships);
+
         Set<String> relatedKeys = new LinkedHashSet<>();
-        if (relationships != null) {
-            for (EntityRelationshipDto rel : relationships) {
-                if (rel.sourceEntityKey() != null && !orderScopedMap.containsKey(rel.sourceEntityKey())) {
-                    relatedKeys.add(rel.sourceEntityKey());
-                }
-                if (rel.targetEntityKey() != null && !orderScopedMap.containsKey(rel.targetEntityKey())) {
-                    relatedKeys.add(rel.targetEntityKey());
-                }
+        for (EntityRelationshipDto rel : relationships) {
+            if (rel.sourceEntityKey() != null && !rel.sourceEntityKey().isBlank()
+                    && !orderScopedMap.containsKey(rel.sourceEntityKey())) {
+                relatedKeys.add(rel.sourceEntityKey());
+            }
+            if (rel.targetEntityKey() != null && !rel.targetEntityKey().isBlank()
+                    && !orderScopedMap.containsKey(rel.targetEntityKey())) {
+                relatedKeys.add(rel.targetEntityKey());
             }
         }
+
+        List<EntitySummaryDto> fetchedLinked = List.of();
         if (!relatedKeys.isEmpty()) {
             List<EntitySummaryDto> relRows = repository.findEntitiesByKeys(relatedKeys);
-            if (relRows != null) {
+            if (relRows != null && !relRows.isEmpty()) {
+                fetchedLinked = relRows;
                 for (EntitySummaryDto row : relRows) {
                     if (row != null && row.entityKey() != null) {
                         orderScopedMap.putIfAbsent(row.entityKey(), row);
@@ -232,6 +269,44 @@ public class TrackerService {
                 }
             }
         }
+
+        // Bi-directional stitching: if any fetched linked entity belongs to a parent order
+        // (e.g., viewing companion INS-77301 linked to ORD-88412), include that parent order's
+        // sibling line items as well (bounded to max 3 linked roots for sub-10ms latency).
+        Set<String> linkedParentRoots = new LinkedHashSet<>();
+        for (EntityRelationshipDto rel : relationships) {
+            if (rel.targetEntityKey() != null && !rel.targetEntityKey().isBlank()) {
+                String tgtRoot = extractRootOrderId(rel.targetEntityKey());
+                if (!tgtRoot.isBlank() && !tgtRoot.equals(rootOrderId) && relatedKeys.contains(rel.targetEntityKey())) {
+                    linkedParentRoots.add(tgtRoot);
+                }
+            }
+        }
+        for (EntitySummaryDto linked : fetchedLinked) {
+            if (linked != null && linked.entityKey() != null
+                    && ("ORDER".equalsIgnoreCase(linked.entityLevel()) || !linked.entityKey().contains(":"))) {
+                String linkedRoot = extractRootOrderId(linked.entityKey());
+                if (!linkedRoot.isBlank() && !linkedRoot.equals(rootOrderId)) {
+                    linkedParentRoots.add(linkedRoot);
+                }
+            }
+        }
+        int expandedRoots = 0;
+        for (String linkedRoot : linkedParentRoots) {
+            if (expandedRoots >= 3) {
+                break;
+            }
+            expandedRoots++;
+            List<EntitySummaryDto> linkedOrderRows = repository.findEntitiesByOrderId(linkedRoot);
+            if (linkedOrderRows != null) {
+                for (EntitySummaryDto row : linkedOrderRows) {
+                    if (row != null && row.entityKey() != null) {
+                        orderScopedMap.putIfAbsent(row.entityKey(), row);
+                    }
+                }
+            }
+        }
+
         List<EntitySummaryDto> orderEntities = new ArrayList<>(orderScopedMap.values());
 
         List<RawEventDto> rawEvents = List.of();
@@ -266,16 +341,16 @@ public class TrackerService {
      * so users can view all Orders placed by a customer and jump into any specific Order.
      */
     public CustomerOrdersResponse getCustomerOrders(String customerId) {
-        List<EntitySummaryDto> entities = repository.findEntitiesByCustomerId(customerId);
-        if (entities == null || entities.isEmpty()) {
+        List<EntitySummaryDto> baseEntities = repository.findEntitiesByCustomerId(customerId);
+        if (baseEntities == null || baseEntities.isEmpty()) {
             return new CustomerOrdersResponse(customerId, null, 0, 0, 0, 0, List.of());
         }
 
-        List<String> allKeys = entities.stream().map(EntitySummaryDto::entityKey).distinct().toList();
-        List<EntityRelationshipDto> rels = repository.findRelationshipsByEntityKeys(allKeys);
-        if (rels == null) {
-            rels = List.of();
-        }
+        List<String> allKeys = baseEntities.stream().map(EntitySummaryDto::entityKey).distinct().toList();
+        List<EntityRelationshipDto> rels = deduplicateRelationships(repository.findRelationshipsByEntityKeys(allKeys));
+
+        // Stitch linked companion/internal orders that omitted customerId (only carried parent salesOrderId)
+        List<EntitySummaryDto> entities = stitchMissingLinkedEntities(baseEntities, rels);
 
         // Group entities strictly by root Order ID (ORD-88412 + ORD-88412:ITM-1 + ORD-88412:ITM-2 -> ORD-88412)
         Map<String, List<EntitySummaryDto>> byOrderId = new LinkedHashMap<>();
@@ -634,12 +709,93 @@ public class TrackerService {
         return entity.breachProbability() != null && entity.breachProbability() >= 0.50;
     }
 
-    private String resolveJourneyGroupKey(EntitySummaryDto entity) {
+    private List<EntitySummaryDto> stitchMissingLinkedEntities(
+            List<EntitySummaryDto> baseEntities,
+            List<EntityRelationshipDto> relationships) {
+        Map<String, EntitySummaryDto> byKey = new LinkedHashMap<>();
+        if (baseEntities != null) {
+            for (EntitySummaryDto entity : baseEntities) {
+                if (entity != null && entity.entityKey() != null) {
+                    byKey.putIfAbsent(entity.entityKey(), entity);
+                }
+            }
+        }
+        if (relationships == null || relationships.isEmpty()) {
+            return new ArrayList<>(byKey.values());
+        }
+
+        Set<String> missingLinkedKeys = new LinkedHashSet<>();
+        for (EntityRelationshipDto rel : relationships) {
+            if (rel == null) {
+                continue;
+            }
+            if (rel.sourceEntityKey() != null && !rel.sourceEntityKey().isBlank()
+                    && !byKey.containsKey(rel.sourceEntityKey())) {
+                missingLinkedKeys.add(rel.sourceEntityKey());
+            }
+            if (rel.targetEntityKey() != null && !rel.targetEntityKey().isBlank()
+                    && !byKey.containsKey(rel.targetEntityKey())) {
+                missingLinkedKeys.add(rel.targetEntityKey());
+            }
+        }
+        if (!missingLinkedKeys.isEmpty()) {
+            List<EntitySummaryDto> linkedEntities = repository.findEntitiesByKeys(missingLinkedKeys);
+            if (linkedEntities != null) {
+                for (EntitySummaryDto linked : linkedEntities) {
+                    if (linked != null && linked.entityKey() != null) {
+                        byKey.putIfAbsent(linked.entityKey(), linked);
+                    }
+                }
+            }
+        }
+        return new ArrayList<>(byKey.values());
+    }
+
+    private static List<EntityRelationshipDto> deduplicateRelationships(List<EntityRelationshipDto> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return List.of();
+        }
+        Map<String, EntityRelationshipDto> deduped = new LinkedHashMap<>();
+        for (EntityRelationshipDto rel : raw) {
+            if (rel == null) {
+                continue;
+            }
+            String key = (rel.sourceEntityKey() != null ? rel.sourceEntityKey() : "")
+                    + "\u0000" + (rel.targetEntityKey() != null ? rel.targetEntityKey() : "")
+                    + "\u0000" + (rel.relationType() != null ? rel.relationType() : "");
+            deduped.putIfAbsent(key, rel);
+        }
+        return new ArrayList<>(deduped.values());
+    }
+
+    private String resolveJourneyGroupKey(
+            EntitySummaryDto entity,
+            List<EntityRelationshipDto> relationships,
+            Map<String, String> journeyGroupByEntityKey) {
         if (entity.journeyId() != null && !entity.journeyId().isBlank()) {
             return entity.journeyId();
         }
         if (entity.parentEntityKey() != null && !entity.parentEntityKey().isBlank()) {
-            return entity.parentEntityKey();
+            return journeyGroupByEntityKey.getOrDefault(entity.parentEntityKey(), entity.parentEntityKey());
+        }
+        if (relationships != null) {
+            for (EntityRelationshipDto rel : relationships) {
+                if (rel == null) {
+                    continue;
+                }
+                if (entity.entityKey().equals(rel.sourceEntityKey())
+                        || entity.entityKey().equals(rel.targetEntityKey())) {
+                    if (rel.journeyId() != null && !rel.journeyId().isBlank()) {
+                        return rel.journeyId();
+                    }
+                    String otherKey = entity.entityKey().equals(rel.sourceEntityKey())
+                            ? rel.targetEntityKey()
+                            : rel.sourceEntityKey();
+                    if (otherKey != null && journeyGroupByEntityKey.containsKey(otherKey)) {
+                        return journeyGroupByEntityKey.get(otherKey);
+                    }
+                }
+            }
         }
         return entity.entityKey();
     }

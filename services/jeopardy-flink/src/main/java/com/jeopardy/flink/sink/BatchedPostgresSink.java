@@ -306,8 +306,8 @@ public class BatchedPostgresSink extends RichSinkFunction<EntityMutation> {
                 setNullableString(ps, 7, m.getParentEntityKey());
                 setNullableString(ps, 8, m.getCustomerId());
                 setNullableString(ps, 9, m.getSubscriberId());
-                ps.setString(10, nonBlank(m.getAccountType(), "RESIDENTIAL"));
-                ps.setString(11, nonBlank(m.getChannel(), "WEB"));
+                setNullableString(ps, 10, m.getAccountType());
+                setNullableString(ps, 11, m.getChannel());
                 setNullableString(ps, 12, m.getRegion());
                 setNullableString(ps, 13, m.getJourneyId());
                 setNullableString(ps, 14, m.getBlueprintId());
@@ -436,6 +436,19 @@ public class BatchedPostgresSink extends RichSinkFunction<EntityMutation> {
                 if (m.getResolutionAction() != null) {
                     details.put("resolutionAction", m.getResolutionAction());
                 }
+                details.put("occurrenceCount", m.getFalloutOccurrenceCount());
+                details.put("reopenCount", m.getFalloutReopenCount());
+                details.put("isRepeatFallout", m.isRepeatFallout());
+                if (m.getPreviousFalloutId() != null) {
+                    details.put("previousFalloutId", m.getPreviousFalloutId());
+                }
+                if (m.getTimeSinceLastResolveMs() != null) {
+                    details.put("timeSinceLastResolveMs", m.getTimeSinceLastResolveMs());
+                }
+                if (m.getFalloutSignature() != null) {
+                    details.put("signature", m.getFalloutSignature());
+                }
+                details.put("totalEntityFalloutDurationMs", m.getTotalEntityFalloutDurationMs());
 
                 ps.setString(1, m.getFalloutId());
                 ps.setTimestamp(2, new Timestamp(openedMs));

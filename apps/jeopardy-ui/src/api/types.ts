@@ -91,10 +91,14 @@ export interface FalloutRecoveryItem {
   mttrMs: number | null;
   entityStatus: string;
   recoveryState: 'OPEN' | 'AWAITING_PROGRESS' | 'STALLED' | 'RECOVERED' | string;
+  occurrenceCount?: number;
+  repeatFallout?: boolean;
+  previousFalloutId?: string | null;
 }
 
 export interface FalloutRecoverySummary {
   openFallouts: number;
+  repeatFallouts?: number;
   awaitingProgress: number;
   stalledAfterResolution: number;
   recoveredAndMoving: number;

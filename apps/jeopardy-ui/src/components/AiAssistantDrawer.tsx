@@ -69,7 +69,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
       setStatus({
         configured: false,
         provider: 'azure-openai',
-        statusMessage: 'AI Agent Not Configured',
+        statusMessage: 'Quick Lookup Ready · Chat AI Not Configured',
         protocolVersion: 'v0.9',
         supportedCatalogs: [],
         availableTools: [],
@@ -169,7 +169,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
     } catch (err) {
       appendResponse(
         trimmed,
-        err instanceof Error ? err.message : 'Assistant request failed',
+        err instanceof Error ? err.message : 'Genie request failed',
         [],
         [],
       );
@@ -196,7 +196,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
     } catch (err) {
       appendResponse(
         userBubbleLabel,
-        err instanceof Error ? err.message : 'Unable to execute A2UI action',
+        err instanceof Error ? err.message : 'Unable to complete Genie action',
         [],
         [],
       );
@@ -282,11 +282,8 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h2 className="font-display text-sm font-bold text-[#1F1F1F] dark:text-white truncate">
-                  Order AI Assistant
+                  Ask Genie
                 </h2>
-                <span className="rounded-full bg-[#D3E3FD] dark:bg-[#004A77] px-2 py-0.5 text-[10px] font-mono font-semibold text-[#041E49] dark:text-[#C2E7FF]">
-                  A2UI {status?.protocolVersion || 'v0.9'}
-                </span>
               </div>
               <div className="flex items-center gap-1.5 text-[11px]">
                 <span
@@ -301,7 +298,9 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
                       : 'text-[#B06000] dark:text-[#FDD663] font-medium'
                   }
                 >
-                  {isConfigured ? 'Azure OpenAI Connected' : 'AI Agent Not Configured'}
+                  {isConfigured
+                    ? 'Genie Connected (Azure OpenAI)'
+                    : 'Quick Lookup Ready · Chat AI Not Configured'}
                 </span>
               </div>
             </div>
@@ -325,7 +324,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
               type="button"
               onClick={onClose}
               className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-[#EDF2FA] dark:hover:bg-[#282A2C] transition"
-              aria-label="Close AI Assistant"
+              aria-label="Close Ask Genie"
             >
               <X className="w-4 h-4" />
             </button>
@@ -338,8 +337,8 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
             <div className="flex items-start gap-2 text-xs text-amber-800 dark:text-amber-200">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
               <div className="flex-1">
-                <span className="font-semibold">AI Agent Not Configured</span> — Azure OpenAI is set
-                as the primary AI provider. Set credentials below to enable conversational AI chat.
+                <span className="font-semibold">Genie Chat Not Configured</span> — Quick lookup and
+                chips work right away. Set Azure OpenAI credentials below to enable free-text chat.
                 <button
                   type="button"
                   onClick={() => setShowConfigGuide((v) => !v)}
@@ -369,7 +368,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           </div>
         )}
 
-        {/* Quick A2UI Order Status Bar (Direct A2UI Protocol Lookup) */}
+        {/* Quick Order Status Bar */}
         <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/70 dark:bg-slate-900/50 space-y-2">
           <form
             onSubmit={(e) => {
@@ -384,7 +383,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
                 type="text"
                 value={quickOrderId}
                 onChange={(e) => setQuickOrderId(e.target.value)}
-                placeholder="Direct A2UI Order Lookup (e.g., ORD-88412, CHG-ZEROCODE-007)"
+                placeholder="Check an Order # (e.g., ORD-88412, CHG-ZEROCODE-007)"
                 className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 pl-8 pr-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/30"
               />
             </div>
@@ -483,7 +482,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           </div>
         )}
 
-        {/* Chat Messages + Rendered A2UI Surfaces */}
+        {/* Chat Messages + Rendered Interactive Cards */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
           {turns.length === 0 ? (
             <div className="py-10 text-center space-y-3">
@@ -492,12 +491,12 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
               </div>
               <div className="space-y-1 max-w-xs mx-auto">
                 <div className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Instant Order Status via A2UI v0.9
+                  Ask Genie about any order, fallout, or SLA
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                   {isConfigured
-                    ? 'Ask about any order ID, blocking fallout, or SLA health — interactive cards render declaratively right inside chat.'
-                    : 'Azure OpenAI is not configured yet. Click any quick chip or enter an Order ID above to test live declarative A2UI v0.9 order status cards.'}
+                    ? 'Ask about any order ID, blocking fallout, or SLA health — live interactive cards appear right inside chat.'
+                    : 'Enter an Order # above or tap any quick chip to check live order milestones, fallouts, and SLA health right away.'}
                 </p>
               </div>
             </div>
@@ -538,13 +537,13 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           {busy && (
             <div className="inline-flex items-center gap-2 rounded-xl bg-slate-100 dark:bg-slate-900 px-3 py-2 text-xs text-slate-500">
               <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />
-              Streaming A2UI surface...
+              Genie is checking live order data...
             </div>
           )}
           <div ref={scrollEndRef} />
         </div>
 
-        {/* Conversational Input Bar (Azure OpenAI Primary) */}
+        {/* Conversational Input Bar */}
         <form
           onSubmit={handleSendChat}
           className="p-3 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950"
@@ -556,8 +555,8 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
               onChange={(e) => setInput(e.target.value)}
               placeholder={
                 isConfigured
-                  ? 'Ask Azure OpenAI about any order, fallout, or SLA...'
-                  : 'AI Agent Not Configured (configure Azure OpenAI env vars)...'
+                  ? 'Ask Genie about any order, fallout, or SLA...'
+                  : 'Ask Genie (configure Azure OpenAI env vars for free-text chat)...'
               }
               className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
             />
@@ -571,10 +570,7 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
             </button>
           </div>
           <div className="mt-1.5 flex items-center justify-between text-[10px] text-slate-400 px-0.5">
-            <span>
-              Provider: <strong className="font-mono">{status?.provider || 'azure-openai'}</strong> ·
-              Catalogs: Standard + Order-Ops v1
-            </span>
+            <span>Ask Genie · Live Order &amp; SLA Data</span>
             <span className="font-mono">⌘J</span>
           </div>
         </form>

@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
+  BookOpen,
   GitBranch,
+  HelpCircle,
   Lock,
   LogOut,
   Menu,
@@ -22,11 +24,12 @@ import { AiAssistantDrawer } from './components/AiAssistantDrawer';
 import { CommandPalette } from './components/CommandPalette';
 import { DashboardsView, type DashboardDrilldownTarget } from './components/DashboardsView';
 import { FalloutsIncidentsView } from './components/FalloutsIncidentsView';
+import { GuidePlaybookView } from './components/GuidePlaybookView';
 import { IntegrationsView } from './components/IntegrationsView';
 import { TrackerView } from './components/TrackerView';
 import { WorkflowStudioView } from './components/workflow/WorkflowStudioView';
 
-type WorkspaceTab = 'overview' | 'orders' | 'fallouts' | 'workflows' | 'integrations';
+type WorkspaceTab = 'overview' | 'orders' | 'fallouts' | 'guide' | 'workflows' | 'integrations';
 
 export const App: React.FC = () => {
   const [workspace, setWorkspace] = useState<WorkspaceTab>('overview');
@@ -180,6 +183,12 @@ export const App: React.FC = () => {
       label: 'Fallouts & Incidents',
       mobileLabel: 'Fallouts',
       icon: <ShieldAlert className="w-[18px] h-[18px] shrink-0" />,
+    },
+    {
+      id: 'guide',
+      label: 'Guide & Playbook',
+      mobileLabel: 'Guide',
+      icon: <BookOpen className="w-[18px] h-[18px] shrink-0" />,
     },
   ];
 
@@ -348,11 +357,11 @@ export const App: React.FC = () => {
 
           <div className="my-3 border-t border-[#DDE3EA] dark:border-[#333639]" />
 
-          {/* Clean Ask AI Toggle */}
+          {/* Clean Ask Genie Toggle */}
           <button
             type="button"
             onClick={() => setAssistantOpen((v) => !v)}
-            title="Toggle Order AI Assistant (⌘J)"
+            title="Ask Genie — Order & SLA Assistant (⌘J)"
             className={`w-full flex items-center gap-3 rounded-full transition-all duration-150 text-xs ${
               effectiveRailCollapsed ? 'justify-center h-11 px-0' : 'px-3.5 py-2.5'
             } ${
@@ -362,7 +371,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Sparkles className="w-[18px] h-[18px] text-[#1A73E8] dark:text-[#8AB4F8] shrink-0" />
-            {!effectiveRailCollapsed && <span className="truncate">Ask AI</span>}
+            {!effectiveRailCollapsed && <span className="truncate">Ask Genie</span>}
           </button>
         </nav>
       </aside>
@@ -399,7 +408,7 @@ export const App: React.FC = () => {
 
           {/* Right Utilities */}
           <div className="flex items-center gap-2 shrink-0">
-            {/* Gemini-Style Docked AI Panel Trigger */}
+            {/* Ask Genie Docked Panel Trigger */}
             <button
               type="button"
               onClick={() => setAssistantOpen((v) => !v)}
@@ -408,11 +417,26 @@ export const App: React.FC = () => {
                   ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF]'
                   : 'bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] text-[#1F1F1F] dark:text-[#E3E3E3] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]'
               }`}
-              title="Toggle Docked Order AI Assistant (⌘J)"
+              title="Ask Genie — Order & SLA Assistant (⌘J)"
             >
               <Sparkles className="w-3.5 h-3.5 text-[#1A73E8] dark:text-[#8AB4F8]" />
-              <span className="hidden sm:inline">Ask AI</span>
+              <span className="hidden sm:inline">Ask Genie</span>
               <kbd className="hidden xl:inline text-[10px] font-mono opacity-60">⌘J</kbd>
+            </button>
+
+            {/* Guide & Playbook Help Button */}
+            <button
+              type="button"
+              onClick={() => setWorkspace('guide')}
+              className={`w-9 h-9 rounded-full border flex items-center justify-center transition ${
+                workspace === 'guide'
+                  ? 'border-[#1A73E8] dark:border-[#8AB4F8] bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF]'
+                  : 'border-[#DDE3EA] dark:border-[#333639] bg-white dark:bg-[#1E1F20] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] text-[#444746] dark:text-[#C4C7C5]'
+              }`}
+              title="Guide & Playbook — Interactive OMS Help"
+              aria-label="Open Guide and Playbook"
+            >
+              <HelpCircle className="w-4 h-4" />
             </button>
 
             {/* Admin Session Pill */}
@@ -508,6 +532,14 @@ export const App: React.FC = () => {
               <FalloutsIncidentsView
                 onInspectOrders={handleInspectOrders}
                 isAdminAuthenticated={isAdminAuthenticated}
+              />
+            )}
+            {workspace === 'guide' && (
+              <GuidePlaybookView
+                onNavigate={(tab) => setWorkspace(tab)}
+                onOpenGenie={() => setAssistantOpen(true)}
+                onQuickOnboard={handleQuickOnboard}
+                onInspectOrders={handleInspectOrders}
               />
             )}
             {workspace === 'workflows' &&

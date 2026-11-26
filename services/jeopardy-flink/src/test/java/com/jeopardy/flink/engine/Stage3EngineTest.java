@@ -335,8 +335,8 @@ class Stage3EngineTest {
                 new TimedEvent(0, falloutEvent("ORD-RECOVER:ITM-1", "FLT-REC", "FALLOUT_OPENED", "OPEN", "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS", null, t0 + 5_000)),
                 new TimedEvent(0, falloutEvent("ORD-RECOVER:ITM-1", "FLT-REC", "FALLOUT_RESOLVED", "RESOLVED", "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS", "RETRY_ACTIVITY", t0 + 15_000)),
                 new TimedEvent(30, domainEvent("ORD-RECOVER:ITM-1", "domain.payment.events", "PAYMENT_AUTH_CAPTURED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 25_000)),
-                // Wait past 150ms watchdog grace period
-                new TimedEvent(320, null)
+                // Wait comfortably past 150ms watchdog grace period under MiniCluster load
+                new TimedEvent(600, null)
         );
 
         RunResult res = runMiniClusterWithGrace(bundle, Collections.emptyList(), events, 150L);
@@ -397,6 +397,189 @@ class Stage3EngineTest {
 
         assertTrue(trigger.matches(matching), "Deep nested JSONPath trigger must match INSTALLED on redacted signal JSON");
         assertFalse(trigger.matches(nonMatching), "Deep nested JSONPath trigger must reject non-matching value");
+    }
+
+    // =========================================================================
+    // Test 8: Boomerang Repeat Fallout Detection & Out-of-Order Monotonic Guard
+    // =========================================================================
+
+    @Test
+    void boomerangRepeatFalloutDetectsNewBpmnInstanceAndGuardsOutOfOrderLateEvents() throws Exception {
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "5m", "10m", "1h", "5m", "10m", "1h");
+        long t0 = 1_760_000_600_000L;
+
+        CanonicalEvent attempt1Open = falloutEvent(
+                "ORD-BOOM:ITM-1", "F-1001", "FALLOUT_OPENED", "OPEN",
+                "TMPL_PAYMENT_AUTH", "PAY_GATEWAY_504", "BILLING_OPS_L2", null, t0 + 10_000);
+        CanonicalEvent attempt1Resolved = falloutEvent(
+                "ORD-BOOM:ITM-1", "F-1001", "FALLOUT_RESOLVED", "RESOLVED",
+                "TMPL_PAYMENT_AUTH", "PAY_GATEWAY_504", "BILLING_OPS_L2", "RETRY_ACTIVITY", t0 + 70_000);
+        // Stale out-of-order FALLOUT_IN_QUEUE for F-1001 arriving AFTER resolution
+        CanonicalEvent staleInQueue = falloutEvent(
+                "ORD-BOOM:ITM-1", "F-1001", "FALLOUT_IN_QUEUE", "IN_QUEUE",
+                "TMPL_PAYMENT_AUTH", "PAY_GATEWAY_504", "BILLING_OPS_L2", null, t0 + 30_000);
+        // Attempt #2: Brand-new Flowable BPMN instance F-1002 with same TMPL_PAYMENT_AUTH + PAY_GATEWAY_504
+        CanonicalEvent attempt2Open = falloutEvent(
+                "ORD-BOOM:ITM-1", "F-1002", "FALLOUT_OPENED", "OPEN",
+                "TMPL_PAYMENT_AUTH", "PAY_GATEWAY_504", "BILLING_OPS_L2", null, t0 + 190_000);
+
+        List<TimedEvent> events = Arrays.asList(
+                new TimedEvent(0, domainEvent("ORD-BOOM:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0)),
+                new TimedEvent(0, domainEvent("ORD-BOOM:ITM-1", "domain.payment.events", "PAYMENT_AUTH_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 2_000)),
+                new TimedEvent(0, attempt1Open),
+                new TimedEvent(0, attempt1Resolved),
+                new TimedEvent(0, staleInQueue),
+                new TimedEvent(0, attempt2Open)
+        );
+
+        RunResult res = runMiniCluster(bundle, Collections.emptyList(), events);
+
+        List<EntityMutation> falloutMutations = res.mutations.stream()
+                .filter(EntityMutation::isHasFalloutUpdate)
+                .collect(Collectors.toList());
+
+        assertEquals(4, falloutMutations.size(), "Expected 4 fallout mutations (open, resolve, stale OOO, repeat open)");
+
+        EntityMutation firstResolved = falloutMutations.get(1);
+        assertEquals("F-1001", firstResolved.getFalloutId());
+        assertEquals("RESOLVED", firstResolved.getFalloutStatus());
+        assertEquals(60_000L, firstResolved.getFalloutMttrMs());
+        assertEquals(1, firstResolved.getFalloutOccurrenceCount());
+        assertFalse(firstResolved.isRepeatFallout());
+        assertFalse(firstResolved.isHasActiveFallout());
+        assertEquals(60_000L, firstResolved.getTotalEntityFalloutDurationMs());
+        assertEquals("1", firstResolved.getAttributes().get("total_fallout_count"));
+        assertEquals("0", firstResolved.getAttributes().get("repeat_fallout_count"));
+        assertEquals("60000", firstResolved.getAttributes().get("total_fallout_duration_ms"));
+
+        EntityMutation afterStale = falloutMutations.get(2);
+        assertEquals("F-1001", afterStale.getFalloutId());
+        assertEquals("RESOLVED", afterStale.getFalloutStatus(), "Stale out-of-order IN_QUEUE must NOT regress RESOLVED fallout");
+        assertFalse(afterStale.isHasActiveFallout(), "hasActiveFallout must stay false after stale OOO event");
+        assertFalse(afterStale.isHasJeopardyAlert(), "Stale OOO event must not raise a new alert");
+
+        EntityMutation boomerang = falloutMutations.get(3);
+        assertEquals("F-1002", boomerang.getFalloutId());
+        assertEquals("OPEN", boomerang.getFalloutStatus());
+        assertTrue(boomerang.isRepeatFallout(), "Second BPMN instance with same signature must be flagged repeatFallout");
+        assertEquals(2, boomerang.getFalloutOccurrenceCount());
+        assertEquals("F-1001", boomerang.getPreviousFalloutId());
+        assertEquals(Long.valueOf(120_000L), boomerang.getTimeSinceLastResolveMs());
+        assertEquals("TMPL_PAYMENT_AUTH::PAY_GATEWAY_504", boomerang.getFalloutSignature());
+        assertTrue(boomerang.isHasJeopardyAlert(), "Boomerang repeat fallout must raise immediate escalation alert");
+        assertEquals("REPEAT_FALLOUT_BOOMERANG", boomerang.getAlertReasonCode());
+        assertTrue(boomerang.getAlertMessage().contains("Repeat Fallout #2"));
+        assertEquals("2", boomerang.getAttributes().get("total_fallout_count"));
+        assertEquals("1", boomerang.getAttributes().get("repeat_fallout_count"));
+    }
+
+    // =========================================================================
+    // Test 9: Same-BPMN Loop Reopen & Standard Flowable BPMN Event Mapping
+    // =========================================================================
+
+    @Test
+    void sameBpmnInstanceLoopReopenAndStandardBpmnStatusNormalization() throws Exception {
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "5m", "10m", "1h", "5m", "10m", "1h");
+        long t0 = 1_760_000_700_000L;
+
+        CanonicalEvent procStarted = falloutEvent(
+                "ORD-LOOP:ITM-1", "F-2001", "PROCESS_STARTED", null,
+                "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS_L2", null, t0 + 10_000);
+        CanonicalEvent taskCreated = falloutEvent(
+                "ORD-LOOP:ITM-1", "F-2001", "TASK_CREATED", null,
+                "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS_L2", null, t0 + 20_000);
+        CanonicalEvent procCompleted = falloutEvent(
+                "ORD-LOOP:ITM-1", "F-2001", "PROCESS_COMPLETED", null,
+                "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS_L2", "RETRY_ACTIVITY", t0 + 50_000);
+        // Same BPMN instance loops and reopens genuinely AFTER resolution (t0 + 110s > t0 + 50s)
+        CanonicalEvent reopened = falloutEvent(
+                "ORD-LOOP:ITM-1", "F-2001", "ACTIVITY_STARTED", null,
+                "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS_L2", null, t0 + 110_000);
+        CanonicalEvent resolvedAgain = falloutEvent(
+                "ORD-LOOP:ITM-1", "F-2001", "PROCESS_COMPLETED", null,
+                "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS_L2", "RETRY_ACTIVITY", t0 + 140_000);
+
+        List<TimedEvent> events = Arrays.asList(
+                new TimedEvent(0, domainEvent("ORD-LOOP:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0)),
+                new TimedEvent(0, domainEvent("ORD-LOOP:ITM-1", "domain.payment.events", "PAYMENT_AUTH_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 2_000)),
+                new TimedEvent(0, procStarted),
+                new TimedEvent(0, taskCreated),
+                new TimedEvent(0, procCompleted),
+                new TimedEvent(0, reopened),
+                new TimedEvent(0, resolvedAgain)
+        );
+
+        RunResult res = runMiniCluster(bundle, Collections.emptyList(), events);
+
+        List<EntityMutation> falloutMutations = res.mutations.stream()
+                .filter(EntityMutation::isHasFalloutUpdate)
+                .collect(Collectors.toList());
+
+        assertEquals(5, falloutMutations.size());
+        assertEquals("OPEN", falloutMutations.get(0).getFalloutStatus());
+        assertEquals("IN_QUEUE", falloutMutations.get(1).getFalloutStatus());
+        assertEquals("RESOLVED", falloutMutations.get(2).getFalloutStatus());
+        assertEquals(40_000L, falloutMutations.get(2).getFalloutMttrMs());
+
+        EntityMutation loopReopen = falloutMutations.get(3);
+        assertEquals("OPEN", loopReopen.getFalloutStatus());
+        assertTrue(loopReopen.isRepeatFallout());
+        assertEquals(1, loopReopen.getFalloutReopenCount());
+        assertEquals(2, loopReopen.getFalloutOccurrenceCount());
+        assertEquals("F-2001", loopReopen.getPreviousFalloutId());
+        assertEquals(Long.valueOf(60_000L), loopReopen.getTimeSinceLastResolveMs());
+        assertEquals("REPEAT_FALLOUT_BOOMERANG", loopReopen.getAlertReasonCode());
+
+        EntityMutation secondResolve = falloutMutations.get(4);
+        assertEquals("RESOLVED", secondResolve.getFalloutStatus());
+        assertEquals(30_000L, secondResolve.getFalloutMttrMs());
+        assertEquals(70_000L, secondResolve.getTotalEntityFalloutDurationMs());
+    }
+
+    // =========================================================================
+    // Test 10: Companion Order JourneyId Stitching When Arriving Before Parent
+    // =========================================================================
+
+    @Test
+    void companionOrderDerivesParentJourneyIdEvenWhenArrivingBeforeParent() throws Exception {
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "5m", "10m", "1h", "5m", "10m", "1h");
+        long t0 = 1_760_000_800_000L;
+
+        CanonicalEvent insuranceCompanion = domainEvent(
+                "INS-77301", "domain.order.events", "ORDER_SUBMITTED",
+                "INTERNAL_PROMO_PROVISIONING", "FREE_DEVICE_INSURANCE", "ORDER", t0);
+        insuranceCompanion.setSemanticLevel("INTERNAL_PROMO");
+        insuranceCompanion.setJourneyId(null);
+        insuranceCompanion.setParentEntityKey(null);
+        insuranceCompanion.setRelatedLinks(Collections.singletonList(
+                new RelatedLink("ORD-99001", "TRIGGERED_BY_ORDER", "INDEPENDENT")));
+
+        CanonicalEvent parentOrderArrivingLater = domainEvent(
+                "ORD-99001", "domain.order.events", "ORDER_SUBMITTED",
+                "SALES_UPGRADE", "ROOT_ORDER", "ORDER", t0 + 5_000);
+        parentOrderArrivingLater.setJourneyId(null);
+        parentOrderArrivingLater.setParentEntityKey(null);
+
+        List<TimedEvent> events = Arrays.asList(
+                new TimedEvent(0, insuranceCompanion),
+                new TimedEvent(0, parentOrderArrivingLater)
+        );
+
+        RunResult res = runMiniCluster(bundle, Collections.emptyList(), events);
+
+        EntityMutation companionMutation = res.mutations.stream()
+                .filter(m -> "INS-77301".equals(m.getEntityKey()))
+                .findFirst().orElse(null);
+        EntityMutation parentMutation = res.mutations.stream()
+                .filter(m -> "ORD-99001".equals(m.getEntityKey()))
+                .findFirst().orElse(null);
+
+        assertNotNull(companionMutation, "Companion order mutation should be emitted");
+        assertEquals("JRN-ORD-99001", companionMutation.getJourneyId(),
+                "Companion order with TRIGGERED_BY_ORDER -> ORD-99001 must derive JRN-ORD-99001 even before parent arrives");
+        assertNotNull(parentMutation, "Parent order mutation should be emitted");
+        assertEquals("JRN-ORD-99001", parentMutation.getJourneyId(),
+                "Parent order must share the exact same JRN-ORD-99001 journeyId");
     }
 
     // =========================================================================

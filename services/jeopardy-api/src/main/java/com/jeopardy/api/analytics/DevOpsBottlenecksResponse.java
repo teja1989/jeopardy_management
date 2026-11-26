@@ -66,8 +66,18 @@ public record DevOpsBottlenecksResponse(
             long awaitingProgress,
             long stalledAfterResolution,
             long recoveredAndMoving,
+            long repeatFallouts,
             List<FalloutRecoveryItem> recentRecoveries
-    ) {}
+    ) {
+        public FalloutRecoverySummary(
+                long openFallouts,
+                long awaitingProgress,
+                long stalledAfterResolution,
+                long recoveredAndMoving,
+                List<FalloutRecoveryItem> recentRecoveries) {
+            this(openFallouts, awaitingProgress, stalledAfterResolution, recoveredAndMoving, 0L, recentRecoveries);
+        }
+    }
 
     public record FalloutRecoveryItem(
             String falloutId,
@@ -78,6 +88,23 @@ public record DevOpsBottlenecksResponse(
             Instant resolvedAt,
             Long mttrMs,
             String entityStatus,
-            String recoveryState
-    ) {}
+            String recoveryState,
+            int occurrenceCount,
+            boolean repeatFallout,
+            String previousFalloutId
+    ) {
+        public FalloutRecoveryItem(
+                String falloutId,
+                String entityKey,
+                String errorCode,
+                String assignedQueue,
+                String resolutionAction,
+                Instant resolvedAt,
+                Long mttrMs,
+                String entityStatus,
+                String recoveryState) {
+            this(falloutId, entityKey, errorCode, assignedQueue, resolutionAction,
+                    resolvedAt, mttrMs, entityStatus, recoveryState, 1, false, null);
+        }
+    }
 }

@@ -17,6 +17,7 @@ import {
   MoreHorizontal,
   PauseCircle,
   RefreshCw,
+  Repeat,
   Search,
   ShieldAlert,
   SlidersHorizontal,
@@ -2225,130 +2226,242 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                 )}
 
                 {/* Active / Resolved Fallout Resolution Cards */}
-                {(timelineData?.fallouts ?? []).length > 0 && (
-                  <div className="space-y-3">
-                    {(timelineData?.fallouts ?? []).map((flt) => {
-                      const activeIdx = falloutStageIndex(flt.falloutStatus);
-                      const resolved = flt.falloutStatus === 'RESOLVED';
-                      return (
-                        <div
-                          key={flt.falloutId}
-                          className={`rounded-2xl border p-5 space-y-4 ${
-                            resolved
-                              ? 'border-[#1E8E3E]/25 bg-[#E6F4EA]/50 dark:bg-[#132E1C]/40'
-                              : 'border-[#D93025]/30 bg-[#FCE8E6]/60 dark:bg-[#3C1919]/40'
-                          }`}
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-3">
-                            <div className="flex items-start gap-3">
-                              <ShieldAlert
-                                className={`w-5 h-5 mt-0.5 shrink-0 ${
-                                  resolved
-                                    ? 'text-[#137333] dark:text-[#81C995]'
-                                    : 'text-[#C5221F] dark:text-[#F28B82]'
-                                }`}
-                              />
-                              <div>
-                                <div className="text-sm font-semibold text-[#1F1F1F] dark:text-white">
-                                  {resolved ? 'Issue Resolved' : 'Action Required — Order Blocked'}
-                                  {flt.errorCode ? (
-                                    <span className="font-mono text-xs ml-1.5 opacity-85">
-                                      · {flt.errorCode}
-                                    </span>
-                                  ) : null}
+                {(timelineData?.fallouts ?? []).length > 0 &&
+                  (() => {
+                    const allFallouts = timelineData?.fallouts ?? [];
+                    const chronological = [...allFallouts].sort((a, b) => {
+                      const ta = Date.parse(a.openedAt || a.createdAt || '') || 0;
+                      const tb = Date.parse(b.openedAt || b.createdAt || '') || 0;
+                      return ta - tb;
+                    });
+                    const groupCounts = new Map<string, { count: number; lastId: string }>();
+                    const metaById = new Map<
+                      string,
+                      { occurrenceCount: number; isRepeat: boolean; previousFalloutId: string | null }
+                    >();
+
+                    for (const item of chronological) {
+                      const signature = `${(item.errorCode || 'UNKNOWN').toUpperCase()}::${(
+                        item.milestoneId ||
+                        item.templateId ||
+                        'STEP'
+                      ).toUpperCase()}`;
+                      const prev = groupCounts.get(signature);
+                      const computedOccurrence = prev ? prev.count + 1 : 1;
+                      const computedPrevId = prev ? prev.lastId : null;
+                      groupCounts.set(signature, {
+                        count: computedOccurrence,
+                        lastId: item.falloutId,
+                      });
+
+                      const rawDetailCount = Number(item.details?.occurrenceCount ?? 0);
+                      const occurrenceCount =
+                        Number.isFinite(rawDetailCount) && rawDetailCount > 0
+                          ? rawDetailCount
+                          : computedOccurrence;
+                      const isRepeat =
+                        item.details?.isRepeatFallout === true ||
+                        item.details?.repeatFallout === true ||
+                        occurrenceCount > 1;
+                      const previousFalloutId =
+                        typeof item.details?.previousFalloutId === 'string' &&
+                        item.details.previousFalloutId.trim() !== ''
+                          ? item.details.previousFalloutId
+                          : computedPrevId;
+
+                      metaById.set(item.falloutId, {
+                        occurrenceCount,
+                        isRepeat,
+                        previousFalloutId,
+                      });
+                    }
+
+                    const totalDowntimeMs = allFallouts.reduce((acc, item) => {
+                      if (typeof item.mttrMs === 'number' && item.mttrMs > 0) {
+                        return acc + item.mttrMs;
+                      }
+                      const startMs = Date.parse(item.openedAt || item.createdAt || '');
+                      if (!Number.isFinite(startMs)) return acc;
+                      const endMs = item.resolvedAt ? Date.parse(item.resolvedAt) : Date.now();
+                      return acc + Math.max(0, endMs - startMs);
+                    }, 0);
+
+                    const repeatEpisodes = allFallouts.filter(
+                      (item) => metaById.get(item.falloutId)?.isRepeat,
+                    ).length;
+
+                    return (
+                      <div className="space-y-3">
+                        {/* Cumulative Fallout Time Summary Banner */}
+                        {allFallouts.length > 1 && (
+                          <div className="rounded-2xl border border-[#D7AEFB]/60 dark:border-[#7627BB]/50 bg-[#F3E8FD]/55 dark:bg-[#2D1B3E]/45 px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <div className="flex flex-wrap items-center gap-2 text-[#1F1F1F] dark:text-[#E3E3E3]">
+                              <Repeat className="w-4 h-4 text-[#7627BB] dark:text-[#D7AEFB] shrink-0" />
+                              <span className="font-semibold">
+                                {allFallouts.length} Fallout Episodes on this Order
+                              </span>
+                              <span className="text-[#5F6368] dark:text-[#9AA0A6]">·</span>
+                              <span className="tabular-nums">
+                                Total Fallout Downtime:{' '}
+                                <strong className="text-[#1F1F1F] dark:text-white">
+                                  {formatDurationMs(totalDowntimeMs)}
+                                </strong>
+                              </span>
+                            </div>
+                            {repeatEpisodes > 0 && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-[#7627BB] text-white dark:bg-[#D7AEFB] dark:text-[#2D1B3E] px-2.5 py-0.5 text-[11px] font-semibold">
+                                {repeatEpisodes} Repeat (Boomerang)
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {allFallouts.map((flt) => {
+                          const activeIdx = falloutStageIndex(flt.falloutStatus);
+                          const resolved = flt.falloutStatus === 'RESOLVED';
+                          const meta = metaById.get(flt.falloutId) ?? {
+                            occurrenceCount: 1,
+                            isRepeat: false,
+                            previousFalloutId: null,
+                          };
+
+                          return (
+                            <div
+                              key={flt.falloutId}
+                              className={`rounded-2xl border p-5 space-y-4 ${
+                                resolved
+                                  ? 'border-[#1E8E3E]/25 bg-[#E6F4EA]/50 dark:bg-[#132E1C]/40'
+                                  : meta.isRepeat
+                                    ? 'border-[#7627BB]/40 bg-[#FCE8E6]/60 dark:bg-[#3C1919]/40'
+                                    : 'border-[#D93025]/30 bg-[#FCE8E6]/60 dark:bg-[#3C1919]/40'
+                              }`}
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="flex items-start gap-3">
+                                  <ShieldAlert
+                                    className={`w-5 h-5 mt-0.5 shrink-0 ${
+                                      resolved
+                                        ? 'text-[#137333] dark:text-[#81C995]'
+                                        : 'text-[#C5221F] dark:text-[#F28B82]'
+                                    }`}
+                                  />
+                                  <div className="space-y-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <div className="text-sm font-semibold text-[#1F1F1F] dark:text-white">
+                                        {resolved ? 'Issue Resolved' : 'Action Required — Order Blocked'}
+                                        {flt.errorCode ? (
+                                          <span className="font-mono text-xs ml-1.5 opacity-85">
+                                            · {flt.errorCode}
+                                          </span>
+                                        ) : null}
+                                      </div>
+
+                                      {meta.isRepeat && (
+                                        <span className="inline-flex items-center gap-1 rounded-full bg-[#F3E8FD] dark:bg-[#2D1B3E] border border-[#D7AEFB]/70 dark:border-[#7627BB]/60 px-2.5 py-0.5 text-[11px] font-semibold text-[#7627BB] dark:text-[#D7AEFB]">
+                                          <Repeat className="w-3 h-3 shrink-0" />
+                                          Repeat #{meta.occurrenceCount} · Returned After Prior Fix
+                                        </span>
+                                      )}
+
+                                      {meta.isRepeat && meta.previousFalloutId && (
+                                        <span className="rounded-full bg-white/85 dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] px-2 py-0.5 font-mono text-[10px] text-[#5F6368] dark:text-[#9AA0A6]">
+                                          Previous: {meta.previousFalloutId}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-[#444746] dark:text-[#C4C7C5]">
+                                      Assigned team:{' '}
+                                      <strong>{prettifyName(flt.assignedGroup || 'Operations')}</strong>
+                                      {flt.resolutionAction && (
+                                        <> · Resolution: {prettifyName(flt.resolutionAction)}</>
+                                      )}
+                                    </div>
+                                  </div>
                                 </div>
-                                <div className="text-xs text-[#444746] dark:text-[#C4C7C5] mt-0.5">
-                                  Assigned team:{' '}
-                                  <strong>{prettifyName(flt.assignedGroup || 'Operations')}</strong>
-                                  {flt.resolutionAction && (
-                                    <> · Resolution: {prettifyName(flt.resolutionAction)}</>
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {resolved &&
+                                    (() => {
+                                      const attrState = String(
+                                        entity.attributes?.fallout_recovery_state ?? '',
+                                      ).toUpperCase();
+                                      const hasProgressed =
+                                        attrState === 'RECOVERED' ||
+                                        entity.status === 'COMPLETED' ||
+                                        entity.status === 'CANCELLED' ||
+                                        Boolean(
+                                          flt.resolvedAt &&
+                                            entity.lastEventTime &&
+                                            Date.parse(entity.lastEventTime) >
+                                              Date.parse(flt.resolvedAt) + 5000,
+                                        );
+                                      const isStalled =
+                                        attrState === 'STALLED' ||
+                                        (!hasProgressed &&
+                                          Boolean(
+                                            flt.resolvedAt &&
+                                              Date.now() - Date.parse(flt.resolvedAt) > 15 * 60 * 1000,
+                                          ));
+                                      return (
+                                        <span
+                                          className={`rounded-full px-3 py-0.5 text-[11px] font-semibold ${
+                                            isStalled
+                                              ? 'bg-[#FCE8E6] text-[#C5221F] dark:bg-[#3C1919] dark:text-[#F28B82]'
+                                              : hasProgressed
+                                                ? 'bg-[#E6F4EA] text-[#137333] dark:bg-[#132E1C] dark:text-[#81C995]'
+                                                : 'bg-[#FEF7E0] text-[#B06000] dark:bg-[#332609] dark:text-[#FDD663]'
+                                          }`}
+                                        >
+                                          {isStalled
+                                            ? 'Stalled Post-Resolve'
+                                            : hasProgressed
+                                              ? 'Recovered & Moving Forward'
+                                              : 'Awaiting Forward Progress'}
+                                        </span>
+                                      );
+                                    })()}
+                                  {flt.mttrMs !== null && (
+                                    <span className="rounded-full bg-white/90 dark:bg-[#1E1F20] border border-[#E0E6F0] dark:border-[#333639] px-3 py-0.5 text-[11px] font-medium tabular-nums text-[#444746] dark:text-[#C4C7C5]">
+                                      Resolved in {formatDurationMs(flt.mttrMs)}
+                                    </span>
                                   )}
                                 </div>
                               </div>
-                            </div>
 
-                            <div className="flex flex-wrap items-center gap-2">
-                              {resolved &&
-                                (() => {
-                                  const attrState = String(
-                                    entity.attributes?.fallout_recovery_state ?? '',
-                                  ).toUpperCase();
-                                  const hasProgressed =
-                                    attrState === 'RECOVERED' ||
-                                    entity.status === 'COMPLETED' ||
-                                    entity.status === 'CANCELLED' ||
-                                    Boolean(
-                                      flt.resolvedAt &&
-                                        entity.lastEventTime &&
-                                        Date.parse(entity.lastEventTime) >
-                                          Date.parse(flt.resolvedAt) + 5000,
-                                    );
-                                  const isStalled =
-                                    attrState === 'STALLED' ||
-                                    (!hasProgressed &&
-                                      Boolean(
-                                        flt.resolvedAt &&
-                                          Date.now() - Date.parse(flt.resolvedAt) > 15 * 60 * 1000,
-                                      ));
+                              {/* 4-Stage Mini Resolution Track */}
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                {FALLOUT_STAGES.map((fs, i) => {
+                                  const done = i <= activeIdx;
                                   return (
-                                    <span
-                                      className={`rounded-full px-3 py-0.5 text-[11px] font-semibold ${
-                                        isStalled
-                                          ? 'bg-[#FCE8E6] text-[#C5221F] dark:bg-[#3C1919] dark:text-[#F28B82]'
-                                          : hasProgressed
-                                            ? 'bg-[#E6F4EA] text-[#137333] dark:bg-[#132E1C] dark:text-[#81C995]'
-                                            : 'bg-[#FEF7E0] text-[#B06000] dark:bg-[#332609] dark:text-[#FDD663]'
-                                      }`}
-                                    >
-                                      {isStalled
-                                        ? 'Stalled Post-Resolve'
-                                        : hasProgressed
-                                          ? 'Recovered & Moving Forward'
-                                          : 'Awaiting Forward Progress'}
-                                    </span>
+                                    <div key={fs.key} className="space-y-1.5">
+                                      <div
+                                        className={`h-1.5 rounded-full ${
+                                          done
+                                            ? resolved
+                                              ? 'bg-[#1E8E3E]'
+                                              : 'bg-[#D93025]'
+                                            : 'bg-[#DDE3EA] dark:bg-[#333639]'
+                                        }`}
+                                      />
+                                      <div
+                                        className={`text-[11px] font-medium ${
+                                          done
+                                            ? 'text-[#1F1F1F] dark:text-white'
+                                            : 'text-[#5F6368] dark:text-[#9AA0A6]'
+                                        }`}
+                                      >
+                                        {fs.label}
+                                      </div>
+                                    </div>
                                   );
-                                })()}
-                              {flt.mttrMs !== null && (
-                                <span className="rounded-full bg-white/90 dark:bg-[#1E1F20] border border-[#E0E6F0] dark:border-[#333639] px-3 py-0.5 text-[11px] font-medium tabular-nums text-[#444746] dark:text-[#C4C7C5]">
-                                  Resolved in {formatDurationMs(flt.mttrMs)}
-                                </span>
-                              )}
+                                })}
+                              </div>
                             </div>
-                          </div>
-
-                          {/* 4-Stage Mini Resolution Track */}
-                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                            {FALLOUT_STAGES.map((fs, i) => {
-                              const done = i <= activeIdx;
-                              return (
-                                <div key={fs.key} className="space-y-1.5">
-                                  <div
-                                    className={`h-1.5 rounded-full ${
-                                      done
-                                        ? resolved
-                                          ? 'bg-[#1E8E3E]'
-                                          : 'bg-[#D93025]'
-                                        : 'bg-[#DDE3EA] dark:bg-[#333639]'
-                                    }`}
-                                  />
-                                  <div
-                                    className={`text-[11px] font-medium ${
-                                      done
-                                        ? 'text-[#1F1F1F] dark:text-white'
-                                        : 'text-[#5F6368] dark:text-[#9AA0A6]'
-                                    }`}
-                                  >
-                                    {fs.label}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
               </div>
             )}
 

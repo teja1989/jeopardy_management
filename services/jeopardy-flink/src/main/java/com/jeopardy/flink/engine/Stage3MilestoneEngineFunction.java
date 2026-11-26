@@ -54,6 +54,15 @@ public class Stage3MilestoneEngineFunction
     public static final String EVENT_CROSS_ORDER_CANCEL = "CROSS_ORDER_CANCEL_ENTITY";
     public static final long DEFAULT_POST_FALLOUT_GRACE_MS = 15L * 60L * 1000L;
 
+    private static final Set<String> PARENT_LINK_TYPES = Set.of(
+            "TRIGGERED_BY_ORDER",
+            "TRIGGERED_BY_ITEM",
+            "BUNDLED_FEATURE",
+            "BUNDLED_LINE_ITEM",
+            "CHANGE_ORDER_OF",
+            "CHILD_WORK_ORDER",
+            "CHILD_ITEM_OF");
+
     private final String initialBundleJson;
     private final String onnxModelDir;
     private final long postFalloutGraceMs;
@@ -503,8 +512,24 @@ public class Stage3MilestoneEngineFunction
         if (isBlank(state.getAccountType()) && !isBlank(event.getAccountType())) {
             state.setAccountType(event.getAccountType());
         }
-        if (isBlank(state.getJourneyId()) && !isBlank(event.getJourneyId())) {
+        String selfRoot = extractRootOrderId(state.getEntityKey());
+        String selfDerivedJourney = !isBlank(selfRoot) ? "JRN-" + selfRoot : null;
+        boolean hasOnlySelfJourney = isBlank(state.getJourneyId())
+                || state.getJourneyId().equals(selfRoot)
+                || state.getJourneyId().equals(selfDerivedJourney);
+
+        if (!isBlank(event.getJourneyId()) && hasOnlySelfJourney) {
             state.setJourneyId(event.getJourneyId());
+        } else {
+            String parentLinkedJourney = deriveParentLinkJourneyId(event);
+            if (!isBlank(parentLinkedJourney) && hasOnlySelfJourney) {
+                state.setJourneyId(parentLinkedJourney);
+            } else if (isBlank(state.getJourneyId()) && !isBlank(event.getParentEntityKey())) {
+                String parentRoot = extractRootOrderId(event.getParentEntityKey().trim());
+                if (!isBlank(parentRoot)) {
+                    state.setJourneyId(parentRoot.startsWith("JRN-") ? parentRoot : "JRN-" + parentRoot);
+                }
+            }
         }
         if (("UNKNOWN".equals(state.getOrderType()) || isBlank(state.getOrderType()))
                 && !isBlank(event.getOrderType())) {
@@ -585,14 +610,78 @@ public class Stage3MilestoneEngineFunction
                 "FLT-" + firstNonBlank(event.getEventId(), String.valueOf(eventTimeMs)));
 
         MilestoneState targetMs = findFalloutTargetMilestone(state, event);
+        String normalizedStatus = normalizeFalloutStatus(event.getFalloutStatus(), event.getEventType());
+        boolean incomingResolved = "RESOLVED".equals(normalizedStatus) || "CANCELLED".equals(normalizedStatus);
 
         FalloutState flt = state.getFallouts().get(falloutId);
-        if (flt == null) {
+        boolean isNewFallout = (flt == null);
+        boolean wasActive;
+        boolean isBoomerangReopen = false;
+        boolean staleAfterResolve = false;
+
+        if (isNewFallout) {
+            String sig = computeFalloutSignature(targetMs, event, null);
             flt = new FalloutState();
             flt.setFalloutId(falloutId);
             flt.setOpenedAtMs(eventTimeMs);
+            flt.setSignature(sig);
+
+            // Case A: New Fallout BPMN instance matching prior resolved signature (or same errorCode + milestoneId)
+            FalloutState latestPrior = null;
+            int maxOccurrence = 0;
+            for (FalloutState prior : state.getFallouts().values()) {
+                if (!"RESOLVED".equalsIgnoreCase(prior.getFalloutStatus())) {
+                    continue;
+                }
+                boolean sigMatch = !isBlank(sig) && sig.equalsIgnoreCase(prior.getSignature());
+                boolean errMsMatch = !isBlank(event.getErrorCode())
+                        && event.getErrorCode().equalsIgnoreCase(prior.getErrorCode())
+                        && targetMs != null
+                        && targetMs.getMilestoneId() != null
+                        && targetMs.getMilestoneId().equalsIgnoreCase(prior.getMilestoneId());
+                if (!sigMatch && !errMsMatch) {
+                    continue;
+                }
+                if (prior.getOccurrenceCount() > maxOccurrence) {
+                    maxOccurrence = prior.getOccurrenceCount();
+                }
+                if (latestPrior == null) {
+                    latestPrior = prior;
+                } else {
+                    long priorResolved = prior.getResolvedAtMs() != null
+                            ? prior.getResolvedAtMs()
+                            : prior.getLastEventTimeMs();
+                    long bestResolved = latestPrior.getResolvedAtMs() != null
+                            ? latestPrior.getResolvedAtMs()
+                            : latestPrior.getLastEventTimeMs();
+                    if (priorResolved > bestResolved
+                            || (priorResolved == bestResolved
+                                && prior.getOccurrenceCount() > latestPrior.getOccurrenceCount())) {
+                        latestPrior = prior;
+                    }
+                }
+            }
+
+            if (latestPrior != null) {
+                flt.setOccurrenceCount(Math.max(1, maxOccurrence) + 1);
+                flt.setRepeatFallout(true);
+                flt.setPreviousFalloutId(latestPrior.getFalloutId());
+                if (latestPrior.getResolvedAtMs() != null) {
+                    flt.setTimeSinceLastResolveMs(Math.max(0L, eventTimeMs - latestPrior.getResolvedAtMs()));
+                }
+                state.setRepeatFalloutCount(state.getRepeatFalloutCount() + 1);
+                if (!incomingResolved) {
+                    isBoomerangReopen = true;
+                }
+            }
+
+            state.setTotalFalloutCount(state.getTotalFalloutCount() + 1);
             state.getFallouts().put(falloutId, flt);
+            wasActive = !incomingResolved;
+        } else {
+            wasActive = flt.isActive();
         }
+
         if (targetMs != null) {
             flt.setMilestoneId(targetMs.getMilestoneId());
             flt.setTemplateId(targetMs.getTemplateId());
@@ -618,16 +707,87 @@ public class Stage3MilestoneEngineFunction
         if (!isBlank(event.getResolutionAction())) {
             flt.setResolutionAction(event.getResolutionAction());
         }
-
-        String normalizedStatus = normalizeFalloutStatus(event.getFalloutStatus(), event.getEventType());
-        flt.setFalloutStatus(normalizedStatus);
-        flt.setLastEventTimeMs(Math.max(flt.getLastEventTimeMs(), eventTimeMs));
-
-        boolean isResolved = "RESOLVED".equals(normalizedStatus) || "CANCELLED".equals(normalizedStatus);
-        if (isResolved) {
-            flt.setResolvedAtMs(eventTimeMs);
-            flt.setMttrMs(Math.max(0L, eventTimeMs - flt.getOpenedAtMs()));
+        if (isBlank(flt.getSignature()) || flt.getSignature().endsWith("::UNKNOWN")) {
+            flt.setSignature(computeFalloutSignature(targetMs, event, flt));
         }
+
+        // Out-of-order monotonic guard & Case B (same BPMN instance loops/reopens)
+        if (!isNewFallout) {
+            boolean alreadyResolvedOrCancelled = !wasActive;
+            if (alreadyResolvedOrCancelled && !incomingResolved) {
+                if (eventTimeMs < flt.getOpenedAtMs()) {
+                    long prevMttr = flt.getMttrMs();
+                    flt.setOpenedAtMs(eventTimeMs);
+                    if (flt.getResolvedAtMs() != null) {
+                        long recomputedMttr = Math.max(0L, flt.getResolvedAtMs() - flt.getOpenedAtMs());
+                        flt.setMttrMs(recomputedMttr);
+                        if (recomputedMttr != prevMttr) {
+                            state.setTotalFalloutDurationMs(
+                                    Math.max(0L, state.getTotalFalloutDurationMs() + (recomputedMttr - prevMttr)));
+                        }
+                    }
+                }
+                if ("RESOLVED".equalsIgnoreCase(flt.getFalloutStatus())
+                        && flt.getResolvedAtMs() != null
+                        && eventTimeMs > flt.getResolvedAtMs()
+                        && eventTimeMs > flt.getLastEventTimeMs()) {
+                    // Case B: Same BPMN instance genuinely reopened after resolution
+                    flt.setCumulativeMttrMs(flt.getCumulativeMttrMs() + flt.getMttrMs());
+                    flt.setTimeSinceLastResolveMs(Math.max(0L, eventTimeMs - flt.getResolvedAtMs()));
+                    flt.setPreviousFalloutId(flt.getFalloutId());
+                    flt.setReopenCount(flt.getReopenCount() + 1);
+                    flt.setOccurrenceCount(flt.getOccurrenceCount() + 1);
+                    flt.setRepeatFallout(true);
+                    flt.setResolvedAtMs(null);
+                    flt.setMttrMs(0L);
+                    flt.setOpenedAtMs(eventTimeMs);
+                    flt.setFalloutStatus(normalizedStatus);
+                    flt.setLastEventTimeMs(Math.max(flt.getLastEventTimeMs(), eventTimeMs));
+                    state.setRepeatFalloutCount(state.getRepeatFalloutCount() + 1);
+                    isBoomerangReopen = true;
+                } else {
+                    // CRITICAL GUARD: Stale out-of-order event after RESOLVED/CANCELLED -> do NOT regress!
+                    staleAfterResolve = true;
+                    flt.setLastEventTimeMs(Math.max(flt.getLastEventTimeMs(), eventTimeMs));
+                }
+            } else if (!incomingResolved) {
+                if (eventTimeMs < flt.getOpenedAtMs()) {
+                    flt.setOpenedAtMs(eventTimeMs);
+                }
+                if (eventTimeMs >= flt.getLastEventTimeMs() || isBlank(flt.getFalloutStatus())) {
+                    flt.setFalloutStatus(normalizedStatus);
+                }
+                flt.setLastEventTimeMs(Math.max(flt.getLastEventTimeMs(), eventTimeMs));
+            } else {
+                // Incoming RESOLVED / CANCELLED on an existing fallout
+                flt.setFalloutStatus(normalizedStatus);
+                flt.setLastEventTimeMs(Math.max(flt.getLastEventTimeMs(), eventTimeMs));
+                long prevMttr = flt.getMttrMs();
+                long resolvedAt = flt.getResolvedAtMs() != null
+                        ? Math.max(flt.getResolvedAtMs(), eventTimeMs)
+                        : eventTimeMs;
+                flt.setResolvedAtMs(resolvedAt);
+                long episodeMttr = Math.max(0L, resolvedAt - flt.getOpenedAtMs());
+                flt.setMttrMs(episodeMttr);
+                if (wasActive) {
+                    state.setTotalFalloutDurationMs(state.getTotalFalloutDurationMs() + episodeMttr);
+                } else if (episodeMttr != prevMttr) {
+                    state.setTotalFalloutDurationMs(
+                            Math.max(0L, state.getTotalFalloutDurationMs() + (episodeMttr - prevMttr)));
+                }
+            }
+        } else {
+            flt.setFalloutStatus(normalizedStatus);
+            flt.setLastEventTimeMs(Math.max(flt.getLastEventTimeMs(), eventTimeMs));
+            if (incomingResolved) {
+                flt.setResolvedAtMs(eventTimeMs);
+                long episodeMttr = Math.max(0L, eventTimeMs - flt.getOpenedAtMs());
+                flt.setMttrMs(episodeMttr);
+                state.setTotalFalloutDurationMs(state.getTotalFalloutDurationMs() + episodeMttr);
+            }
+        }
+
+        boolean effectiveResolved = !flt.isActive();
 
         boolean anyActiveFallout = false;
         for (FalloutState f : state.getFallouts().values()) {
@@ -642,106 +802,131 @@ public class Stage3MilestoneEngineFunction
                 ? flt.getResolutionAction().trim().toUpperCase(Locale.ROOT)
                 : "";
 
-        if (!isResolved) {
-            state.getAttributes().put("fallout_recovery_state", "OPEN");
-            if (targetMs != null) {
-                if (targetMs.getPostFalloutWatchdogTs() != null) {
-                    removeSingleTimer(
-                            targetMs.getPostFalloutWatchdogTs(),
-                            "POST_FALLOUT:" + targetMs.getMilestoneId(),
-                            timerService);
-                    targetMs.setPostFalloutWatchdogTs(null);
-                }
-                targetMs.setLastEventTimeMs(Math.max(targetMs.getLastEventTimeMs(), eventTimeMs));
-                if (!isBlank(flt.getErrorCode())) {
-                    targetMs.setLastErrorCode(flt.getErrorCode());
-                }
-                if (event.getRetryCount() > targetMs.getRetryCount()) {
-                    targetMs.setRetryCount(event.getRetryCount());
-                }
-                if (!"COMPLETED".equals(targetMs.getStatus()) && !"BREACHED".equals(targetMs.getStatus())) {
-                    targetMs.setStatus("IN_FALLOUT");
-                    targetMs.setBreachProbability(Math.max(0.90, targetMs.getBreachProbability()));
-                    ensureCaseId(state, targetMs, eventTimeMs);
-                }
-            }
-        } else if (!anyActiveFallout) {
-            // Fallout BPMN resolved: honor resolutionAction and guard forward progress!
-            if (actionUpper.contains("CANCEL_ORDER") || "CANCEL".equals(actionUpper)) {
-                cancelAllEntityTimers(state, timerService);
-                for (MilestoneState ms : state.getMilestones().values()) {
-                    if (!"COMPLETED".equals(ms.getStatus())) {
-                        ms.setStatus("CANCELLED");
-                        ms.setLastEventTimeMs(Math.max(ms.getLastEventTimeMs(), eventTimeMs));
-                    }
-                }
-                state.setEntityStatus("CANCELLED");
-                state.setClosedAtMs(eventTimeMs);
-                state.getAttributes().put("fallout_recovery_state", "CANCELLED");
-            } else if (actionUpper.contains("MANUAL_COMPLETE")
-                    || actionUpper.contains("FORCE_COMPLETE")
-                    || actionUpper.contains("SKIP_STEP")) {
-                if (targetMs != null && !"COMPLETED".equals(targetMs.getStatus())) {
-                    if (targetMs.getStartedAtMs() == null) {
-                        targetMs.setStartedAtMs(eventTimeMs);
-                    }
-                    targetMs.setCompletedAtMs(eventTimeMs);
-                    targetMs.setStatus("COMPLETED");
-                    targetMs.setDurationMs(Math.max(0L, eventTimeMs - targetMs.getStartedAtMs() - targetMs.getPausedDurationMs()));
-                    targetMs.setLastEventTimeMs(Math.max(targetMs.getLastEventTimeMs(), eventTimeMs));
-                    cancelMilestoneTimers(targetMs, timerService);
-                    if (targetMs.isTerminalMilestone()) {
-                        state.setEntityStatus("COMPLETED");
-                        state.setClosedAtMs(eventTimeMs);
-                        cancelAllEntityTimers(state, timerService);
-                    }
-                }
-                state.getAttributes().put("fallout_recovery_state", "RECOVERED");
-                state.getAttributes().put("fallout_recovered_at", java.time.Instant.ofEpochMilli(eventTimeMs).toString());
-            } else {
-                // Standard Ops recovery (RETRY / REPROCESS / FIX_DATA):
-                // Reset milestone to IN_PROGRESS and arm Post-Fallout Forward-Progress Watchdog!
+        if (!staleAfterResolve) {
+            if (!effectiveResolved) {
+                state.getAttributes().put("fallout_recovery_state", "OPEN");
                 if (targetMs != null) {
+                    if (targetMs.getPostFalloutWatchdogTs() != null) {
+                        removeSingleTimer(
+                                targetMs.getPostFalloutWatchdogTs(),
+                                "POST_FALLOUT:" + targetMs.getMilestoneId(),
+                                timerService);
+                        targetMs.setPostFalloutWatchdogTs(null);
+                    }
                     targetMs.setLastEventTimeMs(Math.max(targetMs.getLastEventTimeMs(), eventTimeMs));
                     if (!isBlank(flt.getErrorCode())) {
                         targetMs.setLastErrorCode(flt.getErrorCode());
                     }
-                    if ("IN_FALLOUT".equals(targetMs.getStatus())
-                            || "JEOPARDY".equals(targetMs.getStatus())
-                            || "BREACHED".equals(targetMs.getStatus())) {
-                        targetMs.setStatus("IN_PROGRESS");
+                    if (event.getRetryCount() > targetMs.getRetryCount()) {
+                        targetMs.setRetryCount(event.getRetryCount());
                     }
-                    targetMs.setFalloutResolvedAtMs(eventTimeMs);
-                    if (!"COMPLETED".equals(targetMs.getStatus()) && !"CANCELLED".equals(targetMs.getStatus())) {
-                        if (targetMs.getPostFalloutWatchdogTs() != null) {
-                            removeSingleTimer(
-                                    targetMs.getPostFalloutWatchdogTs(),
-                                    "POST_FALLOUT:" + targetMs.getMilestoneId(),
-                                    timerService);
-                        }
-                        long watchdogTs = nowProcTime + postFalloutGraceMs;
-                        registerSingleTimer(watchdogTs, "POST_FALLOUT:" + targetMs.getMilestoneId(), timerService);
-                        targetMs.setPostFalloutWatchdogTs(watchdogTs);
+                    if (!"COMPLETED".equals(targetMs.getStatus()) && !"BREACHED".equals(targetMs.getStatus())) {
+                        targetMs.setStatus("IN_FALLOUT");
+                        targetMs.setBreachProbability(Math.max(0.90, targetMs.getBreachProbability()));
+                        ensureCaseId(state, targetMs, eventTimeMs);
                     }
                 }
-                state.getAttributes().put("fallout_recovery_state", "AWAITING_PROGRESS");
-                state.getAttributes().put("fallout_resolved_at", java.time.Instant.ofEpochMilli(eventTimeMs).toString());
-                if (!isBlank(flt.getResolutionAction())) {
-                    state.getAttributes().put("fallout_resolution_action", flt.getResolutionAction());
+            } else if (!anyActiveFallout) {
+                // Fallout BPMN resolved: honor resolutionAction and guard forward progress!
+                if (actionUpper.contains("CANCEL_ORDER") || "CANCEL".equals(actionUpper)) {
+                    cancelAllEntityTimers(state, timerService);
+                    for (MilestoneState ms : state.getMilestones().values()) {
+                        if (!"COMPLETED".equals(ms.getStatus())) {
+                            ms.setStatus("CANCELLED");
+                            ms.setLastEventTimeMs(Math.max(ms.getLastEventTimeMs(), eventTimeMs));
+                        }
+                    }
+                    state.setEntityStatus("CANCELLED");
+                    state.setClosedAtMs(eventTimeMs);
+                    state.getAttributes().put("fallout_recovery_state", "CANCELLED");
+                } else if (actionUpper.contains("MANUAL_COMPLETE")
+                        || actionUpper.contains("FORCE_COMPLETE")
+                        || actionUpper.contains("SKIP_STEP")) {
+                    if (targetMs != null && !"COMPLETED".equals(targetMs.getStatus())) {
+                        if (targetMs.getStartedAtMs() == null) {
+                            targetMs.setStartedAtMs(eventTimeMs);
+                        }
+                        targetMs.setCompletedAtMs(eventTimeMs);
+                        targetMs.setStatus("COMPLETED");
+                        targetMs.setDurationMs(Math.max(0L, eventTimeMs - targetMs.getStartedAtMs() - targetMs.getPausedDurationMs()));
+                        targetMs.setLastEventTimeMs(Math.max(targetMs.getLastEventTimeMs(), eventTimeMs));
+                        cancelMilestoneTimers(targetMs, timerService);
+                        if (targetMs.isTerminalMilestone()) {
+                            state.setEntityStatus("COMPLETED");
+                            state.setClosedAtMs(eventTimeMs);
+                            cancelAllEntityTimers(state, timerService);
+                        }
+                    }
+                    state.getAttributes().put("fallout_recovery_state", "RECOVERED");
+                    state.getAttributes().put("fallout_recovered_at", java.time.Instant.ofEpochMilli(eventTimeMs).toString());
+                } else {
+                    // Standard Ops recovery (RETRY / REPROCESS / FIX_DATA):
+                    // Reset milestone to IN_PROGRESS and arm Post-Fallout Forward-Progress Watchdog!
+                    if (targetMs != null) {
+                        targetMs.setLastEventTimeMs(Math.max(targetMs.getLastEventTimeMs(), eventTimeMs));
+                        if (!isBlank(flt.getErrorCode())) {
+                            targetMs.setLastErrorCode(flt.getErrorCode());
+                        }
+                        if ("IN_FALLOUT".equals(targetMs.getStatus())
+                                || "JEOPARDY".equals(targetMs.getStatus())
+                                || "BREACHED".equals(targetMs.getStatus())) {
+                            targetMs.setStatus("IN_PROGRESS");
+                        }
+                        targetMs.setFalloutResolvedAtMs(eventTimeMs);
+                        if (!"COMPLETED".equals(targetMs.getStatus()) && !"CANCELLED".equals(targetMs.getStatus())) {
+                            if (targetMs.getPostFalloutWatchdogTs() != null) {
+                                removeSingleTimer(
+                                        targetMs.getPostFalloutWatchdogTs(),
+                                        "POST_FALLOUT:" + targetMs.getMilestoneId(),
+                                        timerService);
+                            }
+                            long watchdogTs = nowProcTime + postFalloutGraceMs;
+                            registerSingleTimer(watchdogTs, "POST_FALLOUT:" + targetMs.getMilestoneId(), timerService);
+                            targetMs.setPostFalloutWatchdogTs(watchdogTs);
+                        }
+                    }
+                    state.getAttributes().put("fallout_recovery_state", "AWAITING_PROGRESS");
+                    state.getAttributes().put("fallout_resolved_at", java.time.Instant.ofEpochMilli(eventTimeMs).toString());
+                    if (!isBlank(flt.getResolutionAction())) {
+                        state.getAttributes().put("fallout_resolution_action", flt.getResolutionAction());
+                    }
                 }
             }
         }
 
+        state.getAttributes().put("total_fallout_count", String.valueOf(state.getTotalFalloutCount()));
+        state.getAttributes().put("repeat_fallout_count", String.valueOf(state.getRepeatFalloutCount()));
+        state.getAttributes().put("total_fallout_duration_ms", String.valueOf(state.getTotalFalloutDurationMs()));
+
         recomputeEntityRollup(state);
 
-        boolean raiseAlert = !isResolved && "OPEN".equals(normalizedStatus);
+        boolean raiseAlert;
+        String alertReason = null;
+        String alertMessage = null;
+        if (staleAfterResolve) {
+            raiseAlert = false;
+        } else if (isBoomerangReopen) {
+            raiseAlert = true;
+            alertReason = "REPEAT_FALLOUT_BOOMERANG";
+            alertMessage = "Repeat Fallout #" + flt.getOccurrenceCount() + ": "
+                    + firstNonBlank(flt.getErrorCode(), "UNKNOWN")
+                    + " returned on " + state.getEntityKey()
+                    + (flt.getPreviousFalloutId() != null ? " after resolving " + flt.getPreviousFalloutId() : "");
+        } else if (!effectiveResolved && "OPEN".equals(flt.getFalloutStatus())) {
+            raiseAlert = true;
+            alertReason = firstNonBlank(flt.getErrorCode(), "FALLOUT_OPENED");
+            alertMessage = "Fallout " + falloutId + " opened on " + state.getEntityKey();
+        } else {
+            raiseAlert = false;
+        }
+
         EntityMutation mutation = buildMutation(
                 state,
                 targetMs,
                 targetMs != null,
                 raiseAlert,
-                raiseAlert ? firstNonBlank(flt.getErrorCode(), "FALLOUT_OPENED") : null,
-                raiseAlert ? "Fallout " + falloutId + " opened on " + state.getEntityKey() : null,
+                alertReason,
+                alertMessage,
                 "FALLOUT_UPDATED",
                 event.getRelatedLinks());
 
@@ -756,6 +941,13 @@ public class Stage3MilestoneEngineFunction
         mutation.setFalloutOpenedAtMs(flt.getOpenedAtMs());
         mutation.setFalloutResolvedAtMs(flt.getResolvedAtMs());
         mutation.setFalloutMttrMs(flt.getMttrMs());
+        mutation.setFalloutOccurrenceCount(flt.getOccurrenceCount());
+        mutation.setFalloutReopenCount(flt.getReopenCount());
+        mutation.setRepeatFallout(flt.isRepeatFallout());
+        mutation.setPreviousFalloutId(flt.getPreviousFalloutId());
+        mutation.setTimeSinceLastResolveMs(flt.getTimeSinceLastResolveMs());
+        mutation.setFalloutSignature(flt.getSignature());
+        mutation.setTotalEntityFalloutDurationMs(state.getTotalFalloutDurationMs());
         if (isBlank(mutation.getTemplateId()) && !isBlank(flt.getTemplateId())) {
             mutation.setTemplateId(flt.getTemplateId());
         }
@@ -1225,6 +1417,7 @@ public class Stage3MilestoneEngineFunction
         m.setAttributes(new HashMap<>(state.getAttributes()));
         m.setLastEventTimeMs(state.getLastEventTimeMs());
         m.setClosedAtMs(state.getClosedAtMs());
+        m.setTotalEntityFalloutDurationMs(state.getTotalFalloutDurationMs());
 
         if (ms != null) {
             m.setMilestoneId(ms.getMilestoneId());
@@ -1329,7 +1522,7 @@ public class Stage3MilestoneEngineFunction
 
     private static String normalizeFalloutStatus(String falloutStatus, String eventType) {
         String candidate = firstNonBlank(falloutStatus, eventType, "OPEN").toUpperCase(Locale.ROOT);
-        if (candidate.contains("RESOLV")) {
+        if (candidate.contains("RESOLV") || "PROCESS_COMPLETED".equals(candidate)) {
             return "RESOLVED";
         }
         if (candidate.contains("CANCEL")) {
@@ -1338,26 +1531,81 @@ public class Stage3MilestoneEngineFunction
         if (candidate.contains("RETRY")) {
             return "RETRYING";
         }
-        if (candidate.contains("QUEUE") || candidate.contains("ASSIGN") || candidate.contains("ESCALAT")) {
+        if (candidate.contains("QUEUE")
+                || candidate.contains("ASSIGN")
+                || candidate.contains("ESCALAT")
+                || "TASK_CREATED".equals(candidate)
+                || "TASK_ASSIGNED".equals(candidate)) {
             return "IN_QUEUE";
+        }
+        if ("PROCESS_STARTED".equals(candidate) || "ACTIVITY_STARTED".equals(candidate)) {
+            return "OPEN";
         }
         return "OPEN";
     }
 
+    private static String computeFalloutSignature(
+            MilestoneState targetMs,
+            CanonicalEvent event,
+            FalloutState existing) {
+        String stepKey = firstNonBlank(
+                targetMs != null ? targetMs.getTemplateId() : null,
+                targetMs != null ? targetMs.getMilestoneId() : null,
+                event != null ? event.getFailedTemplateId() : null,
+                existing != null ? existing.getTemplateId() : null,
+                existing != null ? existing.getMilestoneId() : null,
+                event != null ? event.getFailedActivityId() : null,
+                existing != null ? existing.getFailedActivityId() : null,
+                "ANY");
+        String errKey = firstNonBlank(
+                event != null ? event.getErrorCode() : null,
+                existing != null ? existing.getErrorCode() : null,
+                "UNKNOWN");
+        return stepKey.trim().toUpperCase(Locale.ROOT) + "::" + errKey.trim().toUpperCase(Locale.ROOT);
+    }
+
     private static String deriveJourneyId(CanonicalEvent event) {
-        if (!isBlank(event.getParentEntityKey())) {
-            return event.getParentEntityKey();
+        String parentLinkJourney = deriveParentLinkJourneyId(event);
+        if (!isBlank(parentLinkJourney)) {
+            return parentLinkJourney;
         }
-        if (event.getRelatedLinks() != null) {
-            for (RelatedLink l : event.getRelatedLinks()) {
-                if (l != null && !isBlank(l.getTargetEntityKey())) {
-                    return l.getTargetEntityKey();
+        if (!isBlank(event.getParentEntityKey())) {
+            String parentRoot = extractRootOrderId(event.getParentEntityKey().trim());
+            if (!isBlank(parentRoot)) {
+                return parentRoot.startsWith("JRN-") ? parentRoot : "JRN-" + parentRoot;
+            }
+        }
+        String selfRoot = extractRootOrderId(event.getEntityKey());
+        if (!isBlank(selfRoot)) {
+            return selfRoot.startsWith("JRN-") ? selfRoot : "JRN-" + selfRoot;
+        }
+        return null;
+    }
+
+    private static String deriveParentLinkJourneyId(CanonicalEvent event) {
+        if (event == null || event.getRelatedLinks() == null) {
+            return null;
+        }
+        for (RelatedLink l : event.getRelatedLinks()) {
+            if (l == null || isBlank(l.getTargetEntityKey()) || isBlank(l.getRelationshipType())) {
+                continue;
+            }
+            if (PARENT_LINK_TYPES.contains(l.getRelationshipType().trim().toUpperCase(Locale.ROOT))) {
+                String rootOrderId = extractRootOrderId(l.getTargetEntityKey().trim());
+                if (!isBlank(rootOrderId)) {
+                    return rootOrderId.startsWith("JRN-") ? rootOrderId : "JRN-" + rootOrderId;
                 }
             }
         }
-        String key = event.getEntityKey();
-        int idx = key != null ? key.indexOf(':') : -1;
-        return idx > 0 ? key.substring(0, idx) : key;
+        return null;
+    }
+
+    private static String extractRootOrderId(String entityKey) {
+        if (isBlank(entityKey)) {
+            return null;
+        }
+        int idx = entityKey.indexOf(':');
+        return idx > 0 ? entityKey.substring(0, idx) : entityKey;
     }
 
     private static boolean isBlank(String s) {

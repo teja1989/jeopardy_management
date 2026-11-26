@@ -6,6 +6,7 @@ import {
   Clock,
   Flame,
   RefreshCw,
+  Repeat,
   Search,
   ShieldAlert,
 } from 'lucide-react';
@@ -317,8 +318,8 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
           </p>
         </div>
 
-        {/* 4 Clean Summary Tiles */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* 5 Clean Summary Tiles */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <div className="rounded-2xl bg-[#FCE8E6]/65 dark:bg-[#3C1919]/60 p-4 flex items-center justify-between gap-3">
             <div>
               <div className="text-xs font-medium text-[#C5221F] dark:text-[#F28B82]">
@@ -330,6 +331,26 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
             </div>
             <span className="w-9 h-9 rounded-full bg-white/80 dark:bg-[#1E1F20]/70 text-[#C5221F] dark:text-[#F28B82] flex items-center justify-center shrink-0">
               <ShieldAlert className="w-4 h-4" />
+            </span>
+          </div>
+
+          <div
+            className="rounded-2xl bg-[#F3E8FD]/85 dark:bg-[#2D1B3E]/70 border border-[#D7AEFB]/40 dark:border-[#7627BB]/40 p-4 flex items-center justify-between gap-3"
+            title="Orders whose same issue returned after a prior resolution"
+          >
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-[#7627BB] dark:text-[#D7AEFB] truncate">
+                Repeat / Boomerang
+              </div>
+              <div className="mt-1 font-display text-2xl font-bold tabular-nums text-[#7627BB] dark:text-[#D7AEFB]">
+                {(recovery?.repeatFallouts ?? 0).toLocaleString()}
+              </div>
+              <div className="mt-0.5 text-[10px] text-[#7627BB]/80 dark:text-[#D7AEFB]/80 truncate">
+                Returned after prior resolution
+              </div>
+            </div>
+            <span className="w-9 h-9 rounded-full bg-white/85 dark:bg-[#1E1F20]/70 text-[#7627BB] dark:text-[#D7AEFB] flex items-center justify-center shrink-0">
+              <Repeat className="w-4 h-4" />
             </span>
           </div>
 
@@ -350,7 +371,7 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
           <div className="rounded-2xl bg-[#FEF7E0]/85 dark:bg-[#332609]/65 p-4 flex items-center justify-between gap-3">
             <div>
               <div className="text-xs font-medium text-[#B06000] dark:text-[#FDD663]">
-                Stalled Post-Resolve ⚠️
+                Stalled Post-Resolve
               </div>
               <div className="mt-1 font-display text-2xl font-bold tabular-nums text-[#B06000] dark:text-[#FDD663]">
                 {(recovery?.stalledAfterResolution ?? 0).toLocaleString()}
@@ -364,7 +385,7 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
           <div className="rounded-2xl bg-[#E6F4EA]/80 dark:bg-[#132E1C]/65 p-4 flex items-center justify-between gap-3">
             <div>
               <div className="text-xs font-medium text-[#137333] dark:text-[#81C995]">
-                Recovered &amp; Moving ✅
+                Recovered &amp; Moving
               </div>
               <div className="mt-1 font-display text-2xl font-bold tabular-nums text-[#137333] dark:text-[#81C995]">
                 {(recovery?.recoveredAndMoving ?? 0).toLocaleString()}
@@ -383,13 +404,18 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
               const isStalled = rec.recoveryState === 'STALLED';
               const isRecovered = rec.recoveryState === 'RECOVERED';
               const isOpen = rec.recoveryState === 'OPEN';
+              const isRepeat = Boolean(rec.repeatFallout || (rec.occurrenceCount ?? 1) > 1);
 
               return (
                 <button
                   key={`${rec.falloutId}-${rec.entityKey}`}
                   type="button"
                   onClick={() => onInspectOrders({ entityKey: rec.entityKey })}
-                  className="text-left rounded-2xl border border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314] hover:border-[#1A73E8] dark:hover:border-[#8AB4F8] p-4 transition group space-y-2"
+                  className={`text-left rounded-2xl border bg-[#F8FAFD] dark:bg-[#131314] hover:border-[#1A73E8] dark:hover:border-[#8AB4F8] p-4 transition group space-y-2 ${
+                    isRepeat
+                      ? 'border-[#D7AEFB]/90 dark:border-[#7627BB]/70'
+                      : 'border-[#E0E6F0] dark:border-[#333639]'
+                  }`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-mono text-xs font-semibold text-[#1F1F1F] dark:text-white group-hover:text-[#1A73E8] dark:group-hover:text-[#8AB4F8] truncate">
@@ -415,6 +441,20 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
                             : 'Awaiting Progress'}
                     </span>
                   </div>
+
+                  {isRepeat && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#F3E8FD] dark:bg-[#2D1B3E] px-2.5 py-0.5 text-[10px] font-semibold text-[#7627BB] dark:text-[#D7AEFB]">
+                        <Repeat className="w-3 h-3 shrink-0" />
+                        Repeat #{rec.occurrenceCount ?? 2} · Boomerang
+                      </span>
+                      {rec.previousFalloutId && (
+                        <span className="font-mono text-[10px] text-[#5F6368] dark:text-[#9AA0A6] truncate">
+                          prev: {rec.previousFalloutId}
+                        </span>
+                      )}
+                    </div>
+                  )}
 
                   <div className="flex items-center justify-between gap-2 text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
                     <span className="font-mono text-[#C5221F] dark:text-[#F28B82] truncate">

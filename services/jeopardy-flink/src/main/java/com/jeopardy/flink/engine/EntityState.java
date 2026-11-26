@@ -60,6 +60,11 @@ public class EntityState implements Serializable {
     private boolean emittedStartCrossOrderSignal;
     private boolean emittedCompleteCrossOrderSignal;
 
+    // Cumulative fallout tracking across episodes
+    private int totalFalloutCount;
+    private int repeatFalloutCount;
+    private long totalFalloutDurationMs;
+
     public EntityState() {}
 
     public String getEntityKey() { return entityKey; }
@@ -124,6 +129,12 @@ public class EntityState implements Serializable {
     public void setEmittedStartCrossOrderSignal(boolean emittedStartCrossOrderSignal) { this.emittedStartCrossOrderSignal = emittedStartCrossOrderSignal; }
     public boolean isEmittedCompleteCrossOrderSignal() { return emittedCompleteCrossOrderSignal; }
     public void setEmittedCompleteCrossOrderSignal(boolean emittedCompleteCrossOrderSignal) { this.emittedCompleteCrossOrderSignal = emittedCompleteCrossOrderSignal; }
+    public int getTotalFalloutCount() { return totalFalloutCount; }
+    public void setTotalFalloutCount(int totalFalloutCount) { this.totalFalloutCount = totalFalloutCount; }
+    public int getRepeatFalloutCount() { return repeatFalloutCount; }
+    public void setRepeatFalloutCount(int repeatFalloutCount) { this.repeatFalloutCount = repeatFalloutCount; }
+    public long getTotalFalloutDurationMs() { return totalFalloutDurationMs; }
+    public void setTotalFalloutDurationMs(long totalFalloutDurationMs) { this.totalFalloutDurationMs = totalFalloutDurationMs; }
 
     public static class MilestoneState implements Serializable {
         private static final long serialVersionUID = 1L;
@@ -261,6 +272,13 @@ public class EntityState implements Serializable {
         private Long resolvedAtMs;
         private long mttrMs;
         private long lastEventTimeMs;
+        private String signature;
+        private int occurrenceCount = 1;
+        private int reopenCount = 0;
+        private boolean repeatFallout = false;
+        private String previousFalloutId;
+        private Long timeSinceLastResolveMs;
+        private long cumulativeMttrMs = 0L;
 
         public FalloutState() {}
 
@@ -297,5 +315,19 @@ public class EntityState implements Serializable {
         public void setMttrMs(long mttrMs) { this.mttrMs = mttrMs; }
         public long getLastEventTimeMs() { return lastEventTimeMs; }
         public void setLastEventTimeMs(long lastEventTimeMs) { this.lastEventTimeMs = lastEventTimeMs; }
+        public String getSignature() { return signature; }
+        public void setSignature(String signature) { this.signature = signature; }
+        public int getOccurrenceCount() { return occurrenceCount; }
+        public void setOccurrenceCount(int occurrenceCount) { this.occurrenceCount = occurrenceCount; }
+        public int getReopenCount() { return reopenCount; }
+        public void setReopenCount(int reopenCount) { this.reopenCount = reopenCount; }
+        public boolean isRepeatFallout() { return repeatFallout; }
+        public void setRepeatFallout(boolean repeatFallout) { this.repeatFallout = repeatFallout; }
+        public String getPreviousFalloutId() { return previousFalloutId; }
+        public void setPreviousFalloutId(String previousFalloutId) { this.previousFalloutId = previousFalloutId; }
+        public Long getTimeSinceLastResolveMs() { return timeSinceLastResolveMs; }
+        public void setTimeSinceLastResolveMs(Long timeSinceLastResolveMs) { this.timeSinceLastResolveMs = timeSinceLastResolveMs; }
+        public long getCumulativeMttrMs() { return cumulativeMttrMs; }
+        public void setCumulativeMttrMs(long cumulativeMttrMs) { this.cumulativeMttrMs = cumulativeMttrMs; }
     }
 }

@@ -73,6 +73,13 @@ public class EntityMutation implements Serializable {
     private Long falloutOpenedAtMs;
     private Long falloutResolvedAtMs;
     private long falloutMttrMs;
+    private int falloutOccurrenceCount = 1;
+    private int falloutReopenCount = 0;
+    private boolean repeatFallout;
+    private String previousFalloutId;
+    private Long timeSinceLastResolveMs;
+    private String falloutSignature;
+    private long totalEntityFalloutDurationMs;
 
     // Optional Jeopardy Case (jeopardy_cases + jeopardy.alerts.out)
     private boolean hasJeopardyAlert;
@@ -199,6 +206,20 @@ public class EntityMutation implements Serializable {
     public void setFalloutResolvedAtMs(Long falloutResolvedAtMs) { this.falloutResolvedAtMs = falloutResolvedAtMs; }
     public long getFalloutMttrMs() { return falloutMttrMs; }
     public void setFalloutMttrMs(long falloutMttrMs) { this.falloutMttrMs = falloutMttrMs; }
+    public int getFalloutOccurrenceCount() { return falloutOccurrenceCount; }
+    public void setFalloutOccurrenceCount(int falloutOccurrenceCount) { this.falloutOccurrenceCount = falloutOccurrenceCount; }
+    public int getFalloutReopenCount() { return falloutReopenCount; }
+    public void setFalloutReopenCount(int falloutReopenCount) { this.falloutReopenCount = falloutReopenCount; }
+    public boolean isRepeatFallout() { return repeatFallout; }
+    public void setRepeatFallout(boolean repeatFallout) { this.repeatFallout = repeatFallout; }
+    public String getPreviousFalloutId() { return previousFalloutId; }
+    public void setPreviousFalloutId(String previousFalloutId) { this.previousFalloutId = previousFalloutId; }
+    public Long getTimeSinceLastResolveMs() { return timeSinceLastResolveMs; }
+    public void setTimeSinceLastResolveMs(Long timeSinceLastResolveMs) { this.timeSinceLastResolveMs = timeSinceLastResolveMs; }
+    public String getFalloutSignature() { return falloutSignature; }
+    public void setFalloutSignature(String falloutSignature) { this.falloutSignature = falloutSignature; }
+    public long getTotalEntityFalloutDurationMs() { return totalEntityFalloutDurationMs; }
+    public void setTotalEntityFalloutDurationMs(long totalEntityFalloutDurationMs) { this.totalEntityFalloutDurationMs = totalEntityFalloutDurationMs; }
     public boolean isHasJeopardyAlert() { return hasJeopardyAlert; }
     public void setHasJeopardyAlert(boolean hasJeopardyAlert) { this.hasJeopardyAlert = hasJeopardyAlert; }
     public String getCaseId() { return caseId; }
