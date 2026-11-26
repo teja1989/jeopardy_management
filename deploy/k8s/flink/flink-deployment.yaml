@@ -145,8 +145,24 @@ spec:
             # Enable bundled S3 Hadoop filesystem plugin on flink:1.20-java17
             - name: ENABLE_BUILT_IN_PLUGINS
               value: "flink-s3-fs-hadoop-1.20.1.jar"
+            # --- Strict Read-Only Upstream MSK vs. Dedicated Internal Bus Separation ---
+            # Upstream Enterprise AWS MSK is 100% READ-ONLY: Flink ONLY consumes the 8 source
+            # domain/Flowable event topics here and NEVER creates topics or writes messages to MSK.
+            - name: SOURCE_KAFKA_BOOTSTRAP_SERVERS
+              value: "b-1.enterprise-readonly-msk.internal:9092,b-2.enterprise-readonly-msk.internal:9092"
+            # Dedicated Internal Strimzi/App Kafka cluster for Jeopardy internal topics
+            # (jeopardy.cross-order.signals, jeopardy.ui.updates, jeopardy.alerts.out, jeopardy.dlq.*)
+            - name: INTERNAL_KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-bootstrap.jeopardy.svc.cluster.local:9092"
+            # Backward-compatible fallback bootstrap (points strictly to internal Strimzi, never MSK)
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka-bootstrap.jeopardy.svc.cluster.local:9092"
+            # Admin Config Hot-Reload via PostgreSQL (config_publish_audit.bundle_jsonb) —
+            # zero config-topic writes required on upstream MSK or internal Kafka.
+            - name: CONFIG_SOURCE_MODE
+              value: "POSTGRES"
+            - name: CONFIG_POLL_INTERVAL_MS
+              value: "3000"
             - name: KAFKA_GROUP_ID
               value: "jeopardy-flink-engine-prod"
             - name: POSTGRES_JDBC_URL

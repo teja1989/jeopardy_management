@@ -2,12 +2,19 @@ server:
   port: ${PORT:8080}
   http2:
     enabled: true
+  compression:
+    enabled: true
+    min-response-size: 1024
+    mime-types: application/json,text/plain,text/csv,text/html,application/javascript,text/css
 
 spring:
   application:
     name: jeopardy-api
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    properties:
+      reconnect.backoff.ms: 1000
+      reconnect.backoff.max.ms: 10000
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -22,8 +29,13 @@ spring:
 
 jeopardy:
   instance-id: ${CF_INSTANCE_GUID:${HOSTNAME:local-dev}}
+  cors:
+    allowed-origins: ${JEOPARDY_CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173}
+  config:
+    publish-mode: ${JEOPARDY_CONFIG_PUBLISH_MODE:HYBRID}
   auth:
     enabled: ${JEOPARDY_AUTH_ENABLED:true}
+    require-secure-secrets: ${JEOPARDY_AUTH_REQUIRE_SECURE_SECRETS:false}
     provider: ${JEOPARDY_AUTH_PROVIDER:local} # local | azure-ad
     admin-username: ${JEOPARDY_ADMIN_USERNAME:admin}
     admin-password: ${JEOPARDY_ADMIN_PASSWORD:admin123}
@@ -82,4 +94,4 @@ management:
         include: health,info,prometheus,metrics
   endpoint:
     health:
-      show-details: always
+      show-details: ${JEOPARDY_HEALTH_DETAILS:when_authorized}

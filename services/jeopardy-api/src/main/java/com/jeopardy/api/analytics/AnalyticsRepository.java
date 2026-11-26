@@ -136,13 +136,7 @@ public class AnalyticsRepository {
      */
     public DevOpsBottlenecksResponse.FalloutRecoverySummary queryPostgresFalloutRecoverySummary() {
         String sql = """
-                WITH latest_entities AS (
-                    SELECT DISTINCT ON (entity_key)
-                           entity_key, status, last_event_time, attributes_jsonb
-                    FROM tracked_entities
-                    ORDER BY entity_key, last_event_time DESC, created_at DESC
-                ),
-                numbered_fallouts AS (
+                WITH numbered_fallouts AS (
                     SELECT f.*,
                            ROW_NUMBER() OVER (
                                PARTITION BY f.entity_key,
@@ -157,6 +151,15 @@ public class AnalyticsRepository {
                                ORDER BY f.opened_at ASC, f.fallout_id ASC
                            ) AS prev_fallout_id
                     FROM entity_fallouts f
+                    WHERE f.fallout_status IN ('OPEN', 'IN_QUEUE', 'RETRYING', 'ESCALATED')
+                       OR f.opened_at >= NOW() - INTERVAL '30 days'
+                ),
+                latest_entities AS (
+                    SELECT DISTINCT ON (entity_key)
+                           entity_key, status, last_event_time, attributes_jsonb
+                    FROM tracked_entities
+                    WHERE entity_key IN (SELECT DISTINCT entity_key FROM numbered_fallouts)
+                    ORDER BY entity_key, last_event_time DESC, created_at DESC
                 ),
                 classified AS (
                     SELECT f.fallout_id,

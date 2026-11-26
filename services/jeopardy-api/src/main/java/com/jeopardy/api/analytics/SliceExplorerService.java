@@ -1,5 +1,6 @@
 package com.jeopardy.api.analytics;
 
+import jakarta.annotation.PreDestroy;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -8,6 +9,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +38,10 @@ public class SliceExplorerService {
 
     private static final Logger log = LoggerFactory.getLogger(SliceExplorerService.class);
     private static final long FACETS_CACHE_TTL_MS = 30_000L;
+    private static final long SLICE_CACHE_TTL_MS = 10_000L;
+    private static final int MAX_SLICE_CACHE_ENTRIES = 200;
+    private static final long CH_CIRCUIT_COOLDOWN_MS = 20_000L;
+    private static final AtomicInteger THREAD_SEQ = new AtomicInteger(1);
 
     /** Strict allowlist of native PostgreSQL/ClickHouse columns safe for dynamic GROUP BY. */
     private static final Set<String> NATIVE_SLICE_COLUMNS = Set.of(
@@ -44,10 +57,15 @@ public class SliceExplorerService {
     private final NamedParameterJdbcTemplate postgresJdbc;
     private final NamedParameterJdbcTemplate clickhouseJdbc;
     private final AnalyticsQueryBuilder queryBuilder;
+    private final ExecutorService queryExecutor;
+    private final AtomicLong chCircuitOpenUntilMs = new AtomicLong(0L);
 
     private final AtomicReference<CachedFacets> facetsCache = new AtomicReference<>();
+    private final ConcurrentHashMap<String, CachedSlice> sliceCache = new ConcurrentHashMap<>();
 
     private record CachedFacets(AnalyticsFacetsResponse value, long expiresAtMs) {}
+
+    private record CachedSlice(SliceBreakdownResponse value, long expiresAtMs) {}
 
     public SliceExplorerService(
             @Qualifier("postgresJdbc") NamedParameterJdbcTemplate postgresJdbc,
@@ -56,6 +74,16 @@ public class SliceExplorerService {
         this.postgresJdbc = postgresJdbc;
         this.clickhouseJdbc = clickhouseJdbc;
         this.queryBuilder = queryBuilder;
+        this.queryExecutor = Executors.newFixedThreadPool(8, r -> {
+            Thread t = new Thread(r, "jeopardy-slice-" + THREAD_SEQ.getAndIncrement());
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    @PreDestroy
+    public void shutdownExecutor() {
+        queryExecutor.shutdownNow();
     }
 
     /**
@@ -69,14 +97,31 @@ public class SliceExplorerService {
         }
 
         long startNs = System.nanoTime();
-        List<String> orderFamilies = queryDistinctNonBlank("order_family", 40);
-        List<String> orderTypes = queryDistinctNonBlank("order_type", 80);
-        List<String> itemTypes = queryDistinctNonBlank("item_type", 100);
-        List<String> accountTypes = queryDistinctNonBlank("account_type", 30);
-        List<String> channels = queryDistinctNonBlank("channel", 30);
-        List<String> regions = queryDistinctNonBlank("region", 40);
-        List<String> statuses = queryDistinctNonBlank("status", 20);
-        List<String> customAttrKeys = queryTopAttributeKeys(20).stream()
+        CompletableFuture<List<String>> orderFamiliesFuture = CompletableFuture.supplyAsync(
+                () -> queryDistinctNonBlank("order_family", 40), queryExecutor);
+        CompletableFuture<List<String>> orderTypesFuture = CompletableFuture.supplyAsync(
+                () -> queryDistinctNonBlank("order_type", 80), queryExecutor);
+        CompletableFuture<List<String>> itemTypesFuture = CompletableFuture.supplyAsync(
+                () -> queryDistinctNonBlank("item_type", 100), queryExecutor);
+        CompletableFuture<List<String>> accountTypesFuture = CompletableFuture.supplyAsync(
+                () -> queryDistinctNonBlank("account_type", 30), queryExecutor);
+        CompletableFuture<List<String>> channelsFuture = CompletableFuture.supplyAsync(
+                () -> queryDistinctNonBlank("channel", 30), queryExecutor);
+        CompletableFuture<List<String>> regionsFuture = CompletableFuture.supplyAsync(
+                () -> queryDistinctNonBlank("region", 40), queryExecutor);
+        CompletableFuture<List<String>> statusesFuture = CompletableFuture.supplyAsync(
+                () -> queryDistinctNonBlank("status", 20), queryExecutor);
+        CompletableFuture<List<String>> topAttrKeysFuture = CompletableFuture.supplyAsync(
+                () -> queryTopAttributeKeys(20), queryExecutor);
+
+        List<String> orderFamilies = orderFamiliesFuture.join();
+        List<String> orderTypes = orderTypesFuture.join();
+        List<String> itemTypes = itemTypesFuture.join();
+        List<String> accountTypes = accountTypesFuture.join();
+        List<String> channels = channelsFuture.join();
+        List<String> regions = regionsFuture.join();
+        List<String> statuses = statusesFuture.join();
+        List<String> customAttrKeys = topAttrKeysFuture.join().stream()
                 .filter(k -> !isInternalAttributeKey(k))
                 .toList();
 
@@ -155,6 +200,15 @@ public class SliceExplorerService {
 
         Map<String, String> dims = queryBuilder.extractAndValidateDimensions(allQueryParams);
 
+        long nowMs = System.currentTimeMillis();
+        String cacheKey = buildSliceCacheKey(
+                groupBy, from, to, hrs, safeFrom, safeTo, orderFamily, orderType, itemType,
+                accountType, channel, region, status, dims, safeLimit);
+        CachedSlice cached = sliceCache.get(cacheKey);
+        if (cached != null && cached.expiresAtMs() > nowMs) {
+            return cached.value();
+        }
+
         // 1. Partition-Pruned PostgreSQL Aggregation (<10ms)
         MapSqlParameterSource pgParams = new MapSqlParameterSource()
                 .addValue("fromTs", Timestamp.from(safeFrom))
@@ -220,26 +274,51 @@ public class SliceExplorerService {
                 LIMIT :limit
                 """;
 
-        List<PgSliceAgg> pgRows = postgresJdbc.query(pgSql, pgParams, (rs, idx) -> new PgSliceAgg(
-                rs.getString("slice_key"),
-                rs.getLong("total_orders"),
-                rs.getLong("live_open"),
-                rs.getLong("completed_cnt"),
-                rs.getLong("at_risk_cnt"),
-                rs.getLong("fallout_cnt"),
-                rs.getLong("breached_cnt")));
+        final Instant queryFrom = safeFrom;
+        final Instant queryTo = safeTo;
 
-        // 2. Optional ClickHouse Columnar Latency Enrichment (P50/P90 — zero extra storage!)
+        CompletableFuture<List<PgSliceAgg>> pgFuture = CompletableFuture.supplyAsync(
+                () -> postgresJdbc.query(pgSql, pgParams, (rs, idx) -> new PgSliceAgg(
+                        rs.getString("slice_key"),
+                        rs.getLong("total_orders"),
+                        rs.getLong("live_open"),
+                        rs.getLong("completed_cnt"),
+                        rs.getLong("at_risk_cnt"),
+                        rs.getLong("fallout_cnt"),
+                        rs.getLong("breached_cnt"))),
+                queryExecutor);
+
+        // 2. Optional ClickHouse Columnar Latency Enrichment in parallel (P50/P90 — zero extra storage!)
+        boolean runClickHouse = !"status".equals(groupBy)
+                && !"entity_level".equals(groupBy)
+                && !isClickHouseCircuitOpen();
+        CompletableFuture<Map<String, ChLatencyAgg>> chFuture = runClickHouse
+                ? CompletableFuture.supplyAsync(
+                        () -> queryClickHouseLatencyBySlice(
+                                groupBy, queryFrom, queryTo, orderFamily, orderType, itemType,
+                                accountType, channel, region, dims),
+                        queryExecutor)
+                : null;
+
+        List<PgSliceAgg> pgRows = joinUnwrapping(pgFuture);
+        if (pgRows == null) {
+            pgRows = List.of();
+        }
+
         Map<String, ChLatencyAgg> chLatencyByKey = Map.of();
         boolean chEnriched = false;
-        if (!"status".equals(groupBy) && !"entity_level".equals(groupBy)) {
+        if (chFuture != null) {
             try {
-                chLatencyByKey = queryClickHouseLatencyBySlice(
-                        groupBy, safeFrom, safeTo, orderFamily, orderType, itemType,
-                        accountType, channel, region, dims);
+                Map<String, ChLatencyAgg> queried = chFuture.join();
+                if (queried != null) {
+                    chLatencyByKey = queried;
+                }
                 chEnriched = true;
             } catch (Exception ex) {
-                log.debug("ClickHouse slice latency enrichment skipped: {}", ex.getMessage());
+                Throwable cause = ex instanceof CompletionException ce && ce.getCause() != null ? ce.getCause() : ex;
+                tripClickHouseCircuit();
+                log.debug("ClickHouse slice latency enrichment skipped (circuit open for {}s): {}",
+                        CH_CIRCUIT_COOLDOWN_MS / 1000L, cause.getMessage());
             }
         }
 
@@ -290,7 +369,7 @@ public class SliceExplorerService {
                 ? "PG_PARTITION_PRUNED+CH_COLUMNAR_ZERO_STORAGE"
                 : "PG_PARTITION_PRUNED";
 
-        return new SliceBreakdownResponse(
+        SliceBreakdownResponse response = new SliceBreakdownResponse(
                 Instant.now(),
                 groupBy,
                 safeFrom,
@@ -303,6 +382,8 @@ public class SliceExplorerService {
                         grandTotal, grandOpen, grandCompleted, grandAtRisk,
                         grandFallout, grandBreached, overallSla),
                 slices);
+        putSliceCache(cacheKey, response, System.currentTimeMillis());
+        return response;
     }
 
     /**
@@ -392,7 +473,8 @@ public class SliceExplorerService {
         }
         String sql = "SELECT DISTINCT " + column
                 + " FROM tracked_entities"
-                + " WHERE " + column + " IS NOT NULL AND " + column + " <> ''"
+                + " WHERE created_at >= NOW() - INTERVAL '30 days'"
+                + " AND " + column + " IS NOT NULL AND " + column + " <> ''"
                 + " ORDER BY 1 ASC LIMIT :lim";
         try {
             return postgresJdbc.queryForList(sql, new MapSqlParameterSource("lim", limit), String.class);
@@ -470,7 +552,7 @@ public class SliceExplorerService {
         }
     }
 
-    private static boolean isInternalAttributeKey(String key) {
+    static boolean isInternalAttributeKey(String key) {
         if (key == null || key.isBlank()) {
             return true;
         }
@@ -478,7 +560,80 @@ public class SliceExplorerService {
         return lower.startsWith("fallout_recovery")
                 || lower.equals("fallout_resolved_at")
                 || lower.equals("fallout_recovered_at")
-                || lower.equals("fallout_resolution_action");
+                || lower.equals("fallout_resolution_action")
+                || lower.equals("total_fallout_count")
+                || lower.equals("repeat_fallout_count")
+                || lower.equals("total_fallout_duration_ms");
+    }
+
+    private boolean isClickHouseCircuitOpen() {
+        return System.currentTimeMillis() < chCircuitOpenUntilMs.get();
+    }
+
+    private void tripClickHouseCircuit() {
+        chCircuitOpenUntilMs.set(System.currentTimeMillis() + CH_CIRCUIT_COOLDOWN_MS);
+    }
+
+    private void putSliceCache(String key, SliceBreakdownResponse value, long nowMs) {
+        if (sliceCache.size() >= MAX_SLICE_CACHE_ENTRIES) {
+            sliceCache.entrySet().removeIf(e -> e.getValue().expiresAtMs() <= nowMs);
+            if (sliceCache.size() >= MAX_SLICE_CACHE_ENTRIES) {
+                sliceCache.clear();
+            }
+        }
+        sliceCache.put(key, new CachedSlice(value, nowMs + SLICE_CACHE_TTL_MS));
+    }
+
+    private static <T> T joinUnwrapping(CompletableFuture<T> future) {
+        try {
+            return future.join();
+        } catch (CompletionException ce) {
+            if (ce.getCause() instanceof RuntimeException re) {
+                throw re;
+            }
+            throw ce;
+        }
+    }
+
+    private static String buildSliceCacheKey(
+            String groupBy,
+            Instant rawFrom,
+            Instant rawTo,
+            int hrs,
+            Instant safeFrom,
+            Instant safeTo,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            String status,
+            Map<String, String> dims,
+            int limit) {
+        String timeKey = (rawFrom == null && rawTo == null)
+                ? "hrs=" + hrs
+                : "range=" + safeFrom.getEpochSecond() + ".." + safeTo.getEpochSecond();
+        StringBuilder sb = new StringBuilder();
+        sb.append(groupBy).append('|').append(timeKey)
+                .append('|').append(norm(orderFamily))
+                .append('|').append(norm(orderType))
+                .append('|').append(norm(itemType))
+                .append('|').append(norm(accountType))
+                .append('|').append(norm(channel))
+                .append('|').append(norm(region))
+                .append('|').append(norm(status))
+                .append('|').append(limit);
+        if (dims != null && !dims.isEmpty()) {
+            TreeMap<String, String> sorted = new TreeMap<>(dims);
+            sb.append('|');
+            sorted.forEach((k, v) -> sb.append(k).append('=').append(v).append(','));
+        }
+        return sb.toString();
+    }
+
+    private static String norm(String val) {
+        return val == null ? "" : val.trim();
     }
 
     static String prettifyDimensionLabel(String rawKey) {

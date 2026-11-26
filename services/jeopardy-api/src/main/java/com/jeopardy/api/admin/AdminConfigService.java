@@ -21,12 +21,14 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
@@ -37,6 +39,7 @@ public class AdminConfigService {
 
     private static final Logger log = LoggerFactory.getLogger(AdminConfigService.class);
     private static final String ACTIVE_BUNDLE_KEY = "active-bundle";
+    private static final String POSTGRES_CONFIG_TOPIC = "postgres://config_publish_audit";
 
     private final AdminConfigRepository repository;
     private final KafkaTemplate<String, String> kafkaTemplate;
@@ -44,19 +47,43 @@ public class AdminConfigService {
     private final YAMLMapper yamlMapper;
     private final String configUpdatesTopic;
     private final String defaultConfigDir;
+    private final String publishMode;
 
     public AdminConfigService(
             AdminConfigRepository repository,
             KafkaTemplate<String, String> kafkaTemplate,
             ObjectMapper objectMapper,
+            String configUpdatesTopic,
+            String defaultConfigDir) {
+        this(repository, kafkaTemplate, objectMapper, configUpdatesTopic, defaultConfigDir, "HYBRID");
+    }
+
+    @Autowired
+    public AdminConfigService(
+            AdminConfigRepository repository,
+            KafkaTemplate<String, String> kafkaTemplate,
+            ObjectMapper objectMapper,
             @Value("${jeopardy.topics.config-updates:jeopardy.config.updates}") String configUpdatesTopic,
-            @Value("${jeopardy.config-dir:}") String defaultConfigDir) {
+            @Value("${jeopardy.config-dir:}") String defaultConfigDir,
+            @Value("${jeopardy.config.publish-mode:HYBRID}") String publishMode) {
         this.repository = repository;
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
         this.yamlMapper = new YAMLMapper();
         this.configUpdatesTopic = configUpdatesTopic;
         this.defaultConfigDir = defaultConfigDir;
+        this.publishMode = normalizePublishMode(publishMode);
+    }
+
+    private static String normalizePublishMode(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "HYBRID";
+        }
+        String upper = raw.trim().toUpperCase(Locale.ROOT);
+        if ("POSTGRES".equals(upper) || "KAFKA".equals(upper) || "HYBRID".equals(upper)) {
+            return upper;
+        }
+        return "HYBRID";
     }
 
     // -------------------------------------------------------------------------
@@ -152,13 +179,87 @@ public class AdminConfigService {
         summary.put("blueprintCount", blueprints.size());
         summary.put("payloadBytes", bundleJson.length());
 
+        if ("POSTGRES".equals(publishMode)) {
+            summary.put("topic", POSTGRES_CONFIG_TOPIC);
+            summary.put("transport", "POSTGRES");
+            repository.insertPublishAudit(
+                    publishId, bundleVersion, actor, publishedAt, null, "PUBLISHED", summary, bundleJson);
+            log.info("Published config bundle v{} ({}) to PostgreSQL [families={}, adapters={}, templates={}, blueprints={}]",
+                    bundleVersion, publishId,
+                    families.size(), adapters.size(), templates.size(), blueprints.size());
+            return new PublishResponse(
+                    publishId,
+                    bundleVersion,
+                    POSTGRES_CONFIG_TOPIC,
+                    null,
+                    "PUBLISHED",
+                    actor,
+                    publishedAt,
+                    families.size(),
+                    adapters.size(),
+                    templates.size(),
+                    blueprints.size(),
+                    summary);
+        }
+
+        if ("HYBRID".equals(publishMode)) {
+            Long offset = null;
+            String transport = "POSTGRES+KAFKA";
+            String effectiveTopic = configUpdatesTopic;
+            try {
+                if (kafkaTemplate == null) {
+                    throw new IllegalStateException("KafkaTemplate is not configured");
+                }
+                SendResult<String, String> sendResult = kafkaTemplate
+                        .send(configUpdatesTopic, ACTIVE_BUNDLE_KEY, bundleJson)
+                        .get(3, TimeUnit.SECONDS);
+                offset = sendResult != null && sendResult.getRecordMetadata() != null
+                        ? sendResult.getRecordMetadata().offset()
+                        : null;
+            } catch (Exception ex) {
+                if (ex instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                transport = "POSTGRES_FALLBACK";
+                effectiveTopic = POSTGRES_CONFIG_TOPIC;
+                summary.put("kafkaWarning", ex.getMessage());
+                log.warn("Kafka publish skipped/failed in HYBRID mode for bundle v{} ({}); persisting in PostgreSQL: {}",
+                        bundleVersion, publishId, ex.getMessage());
+            }
+
+            summary.put("topic", effectiveTopic);
+            summary.put("transport", transport);
+            repository.insertPublishAudit(
+                    publishId, bundleVersion, actor, publishedAt, offset, "PUBLISHED", summary, bundleJson);
+            log.info("Published config bundle v{} ({}) via {} offset={} [families={}, adapters={}, templates={}, blueprints={}]",
+                    bundleVersion, publishId, transport, offset,
+                    families.size(), adapters.size(), templates.size(), blueprints.size());
+
+            return new PublishResponse(
+                    publishId,
+                    bundleVersion,
+                    effectiveTopic,
+                    offset,
+                    "PUBLISHED",
+                    actor,
+                    publishedAt,
+                    families.size(),
+                    adapters.size(),
+                    templates.size(),
+                    blueprints.size(),
+                    summary);
+        }
+
+        // KAFKA mode: legacy strict Kafka publish (persisting bundleJson in PG on success)
         try {
             SendResult<String, String> sendResult = kafkaTemplate
                     .send(configUpdatesTopic, ACTIVE_BUNDLE_KEY, bundleJson)
                     .get(10, TimeUnit.SECONDS);
             Long offset = sendResult.getRecordMetadata() != null ? sendResult.getRecordMetadata().offset() : null;
 
-            repository.insertPublishAudit(publishId, bundleVersion, actor, publishedAt, offset, "PUBLISHED", summary);
+            summary.put("transport", "KAFKA");
+            repository.insertPublishAudit(
+                    publishId, bundleVersion, actor, publishedAt, offset, "PUBLISHED", summary, bundleJson);
             log.info("Published config bundle v{} ({}) to {} offset={} [families={}, adapters={}, templates={}, blueprints={}]",
                     bundleVersion, publishId, configUpdatesTopic, offset,
                     families.size(), adapters.size(), templates.size(), blueprints.size());
@@ -177,6 +278,10 @@ public class AdminConfigService {
                     blueprints.size(),
                     summary);
         } catch (Exception ex) {
+            if (ex instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            summary.put("transport", "KAFKA");
             summary.put("error", ex.getMessage());
             try {
                 repository.insertPublishAudit(publishId, bundleVersion, actor, publishedAt, null, "FAILED", summary);

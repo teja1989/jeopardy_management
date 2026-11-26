@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 public class AuthProperties {
 
     private boolean enabled = true;
+    private boolean requireSecureSecrets = false;
     private String provider = "local"; // local | azure-ad
     private String adminUsername = "admin";
     private String adminPassword = "admin123";
@@ -66,6 +67,14 @@ public class AuthProperties {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public boolean isRequireSecureSecrets() {
+        return requireSecureSecrets;
+    }
+
+    public void setRequireSecureSecrets(boolean requireSecureSecrets) {
+        this.requireSecureSecrets = requireSecureSecrets;
     }
 
     public String getProvider() {

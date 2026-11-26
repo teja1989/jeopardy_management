@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import {
   Activity,
   BookOpen,
@@ -19,15 +19,63 @@ import {
 } from 'lucide-react';
 import { getAuthStatus, logoutAdmin } from './api/client';
 import type { AuthStatusResponse, AuthUser, EntitySummaryDto } from './api/types';
-import { AdminAuthGate } from './components/AdminAuthGate';
-import { AiAssistantDrawer } from './components/AiAssistantDrawer';
-import { CommandPalette } from './components/CommandPalette';
-import { DashboardsView, type DashboardDrilldownTarget } from './components/DashboardsView';
-import { FalloutsIncidentsView } from './components/FalloutsIncidentsView';
-import { GuidePlaybookView } from './components/GuidePlaybookView';
-import { IntegrationsView } from './components/IntegrationsView';
-import { TrackerView } from './components/TrackerView';
-import { WorkflowStudioView } from './components/workflow/WorkflowStudioView';
+import { DashboardsView } from './components/DashboardsView';
+import type { DashboardDrilldownTarget } from './components/DashboardsView';
+
+const TrackerView = lazy(() =>
+  import('./components/TrackerView').then((m) => ({ default: m.TrackerView })),
+);
+const FalloutsIncidentsView = lazy(() =>
+  import('./components/FalloutsIncidentsView').then((m) => ({ default: m.FalloutsIncidentsView })),
+);
+const GuidePlaybookView = lazy(() =>
+  import('./components/GuidePlaybookView').then((m) => ({ default: m.GuidePlaybookView })),
+);
+const WorkflowStudioView = lazy(() =>
+  import('./components/workflow/WorkflowStudioView').then((m) => ({
+    default: m.WorkflowStudioView,
+  })),
+);
+const IntegrationsView = lazy(() =>
+  import('./components/IntegrationsView').then((m) => ({ default: m.IntegrationsView })),
+);
+const AdminAuthGate = lazy(() =>
+  import('./components/AdminAuthGate').then((m) => ({ default: m.AdminAuthGate })),
+);
+const AiAssistantDrawer = lazy(() =>
+  import('./components/AiAssistantDrawer').then((m) => ({ default: m.AiAssistantDrawer })),
+);
+const CommandPalette = lazy(() =>
+  import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette })),
+);
+
+const WorkspaceSkeleton: React.FC = () => (
+  <div className="space-y-6 animate-pulse" aria-busy="true" aria-label="Loading workspace">
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="space-y-2">
+        <div className="h-7 w-44 rounded-full bg-[#E2E9F4] dark:bg-[#282A2C]" />
+        <div className="h-4 w-72 max-w-full rounded-full bg-[#EEF2F7] dark:bg-[#1E1F20]" />
+      </div>
+      <div className="flex items-center gap-2">
+        <div className="h-9 w-28 rounded-full bg-[#E2E9F4] dark:bg-[#282A2C]" />
+        <div className="h-9 w-24 rounded-full bg-[#EEF2F7] dark:bg-[#1E1F20]" />
+      </div>
+    </div>
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+      {[0, 1, 2, 3].map((idx) => (
+        <div
+          key={idx}
+          className="h-32 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-6 space-y-3"
+        >
+          <div className="h-3.5 w-24 rounded-full bg-[#EEF2F7] dark:bg-[#282A2C]" />
+          <div className="h-8 w-20 rounded-xl bg-[#E2E9F4] dark:bg-[#333639]" />
+          <div className="h-3 w-32 rounded-full bg-[#EEF2F7] dark:bg-[#282A2C]" />
+        </div>
+      ))}
+    </div>
+    <div className="h-80 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20]" />
+  </div>
+);
 
 type WorkspaceTab = 'overview' | 'orders' | 'fallouts' | 'guide' | 'workflows' | 'integrations';
 
@@ -43,7 +91,14 @@ export const App: React.FC = () => {
   const [openNewTrackerModal, setOpenNewTrackerModal] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantMounted, setAssistantMounted] = useState(false);
   const [activeEntityKey, setActiveEntityKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (assistantOpen) {
+      setAssistantMounted(true);
+    }
+  }, [assistantOpen]);
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = window.localStorage.getItem('jeopardy-ui-theme');
     return saved === 'dark' ? 'dark' : 'light';
@@ -521,85 +576,95 @@ export const App: React.FC = () => {
                 isAdminAuthenticated={isAdminAuthenticated}
               />
             )}
-            {workspace === 'orders' && (
-              <TrackerView
-                initialFilter={trackerDrilldown}
-                onClearInitialFilter={() => setTrackerDrilldown(null)}
-                onActiveEntityChange={(ek) => setActiveEntityKey(ek)}
-              />
-            )}
-            {workspace === 'fallouts' && (
-              <FalloutsIncidentsView
-                onInspectOrders={handleInspectOrders}
-                isAdminAuthenticated={isAdminAuthenticated}
-              />
-            )}
-            {workspace === 'guide' && (
-              <GuidePlaybookView
-                onNavigate={(tab) => setWorkspace(tab)}
-                onOpenGenie={() => setAssistantOpen(true)}
-                onQuickOnboard={handleQuickOnboard}
-                onInspectOrders={handleInspectOrders}
-              />
-            )}
-            {workspace === 'workflows' &&
-              (authLoading ? (
-                <div className="py-20 text-center text-xs text-[#5F6368] dark:text-[#9AA0A6]">
-                  Checking admin session...
-                </div>
-              ) : isAdminAuthenticated ? (
-                <WorkflowStudioView
-                  autoOpenOnboard={openNewTrackerModal}
-                  onConsumedAutoOpen={() => setOpenNewTrackerModal(false)}
-                  adminUsername={authStatus?.user?.username || 'admin'}
+            <Suspense fallback={<WorkspaceSkeleton />}>
+              {workspace === 'orders' && (
+                <TrackerView
+                  initialFilter={trackerDrilldown}
+                  onClearInitialFilter={() => setTrackerDrilldown(null)}
+                  onActiveEntityChange={(ek) => setActiveEntityKey(ek)}
                 />
-              ) : (
-                <AdminAuthGate
-                  authStatus={authStatus}
-                  onAuthenticated={handleAuthenticated}
-                  onCancelToTracker={() => setWorkspace('orders')}
+              )}
+              {workspace === 'fallouts' && (
+                <FalloutsIncidentsView
+                  onInspectOrders={handleInspectOrders}
+                  isAdminAuthenticated={isAdminAuthenticated}
                 />
-              ))}
-            {workspace === 'integrations' &&
-              (authLoading ? (
-                <div className="py-20 text-center text-xs text-[#5F6368] dark:text-[#9AA0A6]">
-                  Checking admin session...
-                </div>
-              ) : isAdminAuthenticated ? (
-                <IntegrationsView />
-              ) : (
-                <AdminAuthGate
-                  authStatus={authStatus}
-                  onAuthenticated={handleAuthenticated}
-                  onCancelToTracker={() => setWorkspace('orders')}
+              )}
+              {workspace === 'guide' && (
+                <GuidePlaybookView
+                  onNavigate={(tab) => setWorkspace(tab)}
+                  onOpenGenie={() => setAssistantOpen(true)}
+                  onQuickOnboard={handleQuickOnboard}
+                  onInspectOrders={handleInspectOrders}
                 />
-              ))}
+              )}
+              {workspace === 'workflows' &&
+                (authLoading ? (
+                  <div className="py-20 text-center text-xs text-[#5F6368] dark:text-[#9AA0A6]">
+                    Checking admin session...
+                  </div>
+                ) : isAdminAuthenticated ? (
+                  <WorkflowStudioView
+                    autoOpenOnboard={openNewTrackerModal}
+                    onConsumedAutoOpen={() => setOpenNewTrackerModal(false)}
+                    adminUsername={authStatus?.user?.username || 'admin'}
+                  />
+                ) : (
+                  <AdminAuthGate
+                    authStatus={authStatus}
+                    onAuthenticated={handleAuthenticated}
+                    onCancelToTracker={() => setWorkspace('orders')}
+                  />
+                ))}
+              {workspace === 'integrations' &&
+                (authLoading ? (
+                  <div className="py-20 text-center text-xs text-[#5F6368] dark:text-[#9AA0A6]">
+                    Checking admin session...
+                  </div>
+                ) : isAdminAuthenticated ? (
+                  <IntegrationsView />
+                ) : (
+                  <AdminAuthGate
+                    authStatus={authStatus}
+                    onAuthenticated={handleAuthenticated}
+                    onCancelToTracker={() => setWorkspace('orders')}
+                  />
+                ))}
+            </Suspense>
           </main>
 
           {/* Gemini-in-Workspace Docked AI Side Panel */}
-          <AiAssistantDrawer
-            open={assistantOpen}
-            docked
-            activeOrderId={activeOrderRoot}
-            onClose={() => setAssistantOpen(false)}
-            onOpenOrderInTracker={(entityKey, customerId) => {
-              setActiveEntityKey(entityKey);
-              setTrackerDrilldown({ entityKey, customerId });
-              setWorkspace('orders');
-            }}
-          />
+          {(assistantOpen || assistantMounted) && (
+            <Suspense fallback={null}>
+              <AiAssistantDrawer
+                open={assistantOpen}
+                docked
+                activeOrderId={activeOrderRoot}
+                onClose={() => setAssistantOpen(false)}
+                onOpenOrderInTracker={(entityKey, customerId) => {
+                  setActiveEntityKey(entityKey);
+                  setTrackerDrilldown({ entityKey, customerId });
+                  setWorkspace('orders');
+                }}
+              />
+            </Suspense>
+          )}
         </div>
       </div>
 
       {/* Global Command Palette (Cmd+K / Ctrl+K) */}
-      <CommandPalette
-        open={commandOpen}
-        isAdminAuthenticated={isAdminAuthenticated}
-        onClose={() => setCommandOpen(false)}
-        onSelectEntity={handleCommandSelectEntity}
-        onNavigate={(tab) => setWorkspace(tab)}
-        onQuickOnboard={handleQuickOnboard}
-      />
+      {commandOpen && (
+        <Suspense fallback={null}>
+          <CommandPalette
+            open={commandOpen}
+            isAdminAuthenticated={isAdminAuthenticated}
+            onClose={() => setCommandOpen(false)}
+            onSelectEntity={handleCommandSelectEntity}
+            onNavigate={(tab) => setWorkspace(tab)}
+            onQuickOnboard={handleQuickOnboard}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

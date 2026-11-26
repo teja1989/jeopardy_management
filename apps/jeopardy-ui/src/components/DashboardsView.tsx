@@ -120,11 +120,17 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
   }, [menuOpen]);
 
   useEffect(() => {
+    let active = true;
     void getAnalyticsFacets()
-      .then((res) => setFacets(res))
+      .then((res) => {
+        if (active) setFacets(res);
+      })
       .catch(() => {
         // Fallback dimensions remain active
       });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const availableDimensions = useMemo<DimensionDescriptor[]>(() => {
@@ -149,10 +155,14 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
   }, [availableDimensions, sliceBy]);
 
   useEffect(() => {
-    if (availableDimensions.length > 0 && !availableDimensions.some((d) => d.id === sliceBy)) {
+    if (
+      facets &&
+      availableDimensions.length > 0 &&
+      !availableDimensions.some((d) => d.id === sliceBy)
+    ) {
       setSliceBy(availableDimensions[0].id);
     }
-  }, [availableDimensions, sliceBy]);
+  }, [facets, availableDimensions, sliceBy]);
 
   const activeFilterCount = useMemo(() => {
     let count = 0;
@@ -177,7 +187,16 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
     dimVal,
   ]);
 
+  const loadSeqRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      loadSeqRef.current += 1;
+    };
+  }, []);
+
   const loadData = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -218,14 +237,22 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
           to: timeRange.to,
         }).catch(() => null),
       ]);
+      if (seq !== loadSeqRef.current) {
+        return;
+      }
       setSummaryData(summaryRes);
       setSliceData(sliceRes);
       setTrendHistogram(histRes);
       setLastRefreshed(new Date().toISOString());
     } catch (err) {
+      if (seq !== loadSeqRef.current) {
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Unable to load overview metrics');
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [
     windowHours,

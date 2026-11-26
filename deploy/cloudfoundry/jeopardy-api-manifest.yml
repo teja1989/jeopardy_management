@@ -64,15 +64,21 @@ applications:
       CLICKHOUSE_PASSWORD: ((clickhouse_password))
       CLICKHOUSE_POOL_SIZE: "10"
 
-      # Externalized Apache Kafka (MSK / Strimzi OSS) — instance-unique SSE consumer groups via CF_INSTANCE_GUID
+      # Dedicated Internal Apache Kafka (Strimzi/App Kafka — NEVER upstream read-only MSK).
+      # Used for instance-unique SSE fan-out (`jeopardy.ui.updates` via CF_INSTANCE_GUID) and alert
+      # dispatching (`jeopardy.alerts.out`). Config hot-reload writes go directly to PostgreSQL
+      # via JEOPARDY_CONFIG_PUBLISH_MODE=POSTGRES, so Kafka config-topic publishing is not required.
       KAFKA_BOOTSTRAP_SERVERS: ((kafka_bootstrap_servers))
       JEOPARDY_KAFKA_LISTENER_ENABLED: "true"
+      JEOPARDY_CONFIG_PUBLISH_MODE: "POSTGRES"
       JEOPARDY_TOPIC_CONFIG_UPDATES: jeopardy.config.updates
       JEOPARDY_TOPIC_UI_UPDATES: jeopardy.ui.updates
       JEOPARDY_TOPIC_ALERTS_OUT: jeopardy.alerts.out
 
-      # Authentication & RBAC (local in dev -> azure-ad in qa/prod)
+      # Authentication, CORS & RBAC (local in dev -> azure-ad in qa/prod)
       JEOPARDY_AUTH_ENABLED: "true"
+      JEOPARDY_AUTH_REQUIRE_SECURE_SECRETS: "true"
+      JEOPARDY_CORS_ALLOWED_ORIGINS: ((jeopardy_ui_origin))
       JEOPARDY_AUTH_PROVIDER: ((auth_provider))
       JEOPARDY_ADMIN_USERNAME: ((admin_username))
       JEOPARDY_ADMIN_PASSWORD: ((admin_password))

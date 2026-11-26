@@ -1,6 +1,7 @@
 package com.jeopardy.flink;
 
 import com.jeopardy.flink.adapter.Stage1EventAdapterFunction;
+import com.jeopardy.flink.config.PostgresConfigPollingSource;
 import com.jeopardy.flink.correlator.PostgresProcessRegistryStore;
 import com.jeopardy.flink.correlator.ProcessRegistryStore;
 import com.jeopardy.flink.correlator.Stage2AsyncBpmnCorrelator;
@@ -38,6 +39,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -73,10 +75,20 @@ public class JeopardyFlinkJob {
     public static final String TOPIC_DLQ_PARSE = "jeopardy.dlq.parse-errors";
     public static final String TOPIC_DLQ_UNCORRELATED = "jeopardy.dlq.uncorrelated";
 
+    @SuppressWarnings("deprecation")
     public static void main(String[] args) throws Exception {
         Map<String, String> cli = parseArgs(args);
 
+        // Backward-compatible fallback bootstrap used if split source/internal bootstraps are not explicitly set
         String kafkaBootstrap = resolve(cli, "kafka-bootstrap", "KAFKA_BOOTSTRAP_SERVERS", "kafka:9092");
+        // Strictly READ-ONLY upstream enterprise MSK / source event bus (consumed only; NEVER written to)
+        String sourceKafkaBootstrap = resolve(cli, "source-kafka-bootstrap", "SOURCE_KAFKA_BOOTSTRAP_SERVERS", kafkaBootstrap);
+        // Dedicated internal Jeopardy Kafka bus (cross-order signals, UI SSE deltas, alerts, DLQs, optional config topic)
+        String internalKafkaBootstrap = resolve(cli, "internal-kafka-bootstrap", "INTERNAL_KAFKA_BOOTSTRAP_SERVERS", kafkaBootstrap);
+        String configSourceMode = resolve(cli, "config-source-mode", "CONFIG_SOURCE_MODE", "KAFKA")
+                .trim()
+                .toUpperCase(Locale.ROOT);
+        long configPollMs = Long.parseLong(resolve(cli, "config-poll-ms", "CONFIG_POLL_INTERVAL_MS", "3000"));
         String kafkaGroupId = resolve(cli, "kafka-group", "KAFKA_GROUP_ID", "jeopardy-flink-engine");
         String pgJdbcUrl = resolve(cli, "postgres-jdbc-url", "POSTGRES_JDBC_URL", "jdbc:postgresql://postgres:5432/jeopardy");
         String pgUser = resolve(cli, "postgres-user", "POSTGRES_USER", "jeopardy");
@@ -90,8 +102,9 @@ public class JeopardyFlinkJob {
         String initialBundlePath = resolve(cli, "initial-bundle-file", "INITIAL_BUNDLE_FILE", "");
         String initialBundleJson = loadInitialBundle(initialBundlePath);
 
-        LOG.info("Starting JeopardyFlinkJob [kafka={}, pg={}, ch={}, onnxDir={}, rocksDb={}]",
-                kafkaBootstrap, pgJdbcUrl, chHttpUrl, onnxModelDir, enableRocksDb);
+        LOG.info("Starting JeopardyFlinkJob [sourceKafka={}, internalKafka={}, configSourceMode={}, configPollMs={}, pg={}, ch={}, onnxDir={}, rocksDb={}]",
+                sourceKafkaBootstrap, internalKafkaBootstrap, configSourceMode, configPollMs,
+                pgJdbcUrl, chHttpUrl, onnxModelDir, enableRocksDb);
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(checkpointMs);
@@ -105,10 +118,10 @@ public class JeopardyFlinkJob {
         }
 
         // ---------------------------------------------------------------------
-        // 1. Kafka Sources (8 Multi-Domain Source Topics + Config Broadcast + Cross-Order Signals)
+        // 1. Sources: Read-Only Upstream MSK (8 Topics) + Decoupled Config Broadcast + Internal Signals
         // ---------------------------------------------------------------------
         KafkaSource<RawKafkaMessage> domainSource = KafkaSource.<RawKafkaMessage>builder()
-                .setBootstrapServers(kafkaBootstrap)
+                .setBootstrapServers(sourceKafkaBootstrap)
                 .setTopics(SOURCE_TOPICS)
                 .setGroupId(kafkaGroupId)
                 .setStartingOffsets(OffsetsInitializer.earliest())
@@ -124,21 +137,36 @@ public class JeopardyFlinkJob {
                 .fromSource(domainSource, rawWatermark, "Kafka-8-Source-Topics")
                 .uid("source-8-domain-topics");
 
-        KafkaSource<String> configSource = KafkaSource.<String>builder()
-                .setBootstrapServers(kafkaBootstrap)
-                .setTopics(TOPIC_CONFIG_UPDATES)
-                .setGroupId(kafkaGroupId + "-config")
-                .setStartingOffsets(OffsetsInitializer.earliest())
-                .setValueOnlyDeserializer(new SimpleStringSchema())
-                .build();
+        BroadcastStream<String> configBroadcast;
+        if ("POSTGRES".equals(configSourceMode)) {
+            LOG.info("Config Broadcast transport: POSTGRES polling (config_publish_audit.bundle_jsonb every {}ms; zero Kafka writes)",
+                    configPollMs);
+            configBroadcast = env
+                    .addSource(
+                            new PostgresConfigPollingSource(pgJdbcUrl, pgUser, pgPassword, configPollMs),
+                            "Postgres-Config-Broadcast")
+                    .setParallelism(1)
+                    .uid("source-config-updates-pg")
+                    .broadcast(FlinkTags.CONFIG_BROADCAST_DESCRIPTOR);
+        } else {
+            LOG.info("Config Broadcast transport: KAFKA topic '{}' on internalKafka={}",
+                    TOPIC_CONFIG_UPDATES, internalKafkaBootstrap);
+            KafkaSource<String> configSource = KafkaSource.<String>builder()
+                    .setBootstrapServers(internalKafkaBootstrap)
+                    .setTopics(TOPIC_CONFIG_UPDATES)
+                    .setGroupId(kafkaGroupId + "-config")
+                    .setStartingOffsets(OffsetsInitializer.earliest())
+                    .setValueOnlyDeserializer(new SimpleStringSchema())
+                    .build();
 
-        BroadcastStream<String> configBroadcast = env
-                .fromSource(configSource, WatermarkStrategy.noWatermarks(), "Kafka-Config-Broadcast")
-                .uid("source-config-updates")
-                .broadcast(FlinkTags.CONFIG_BROADCAST_DESCRIPTOR);
+            configBroadcast = env
+                    .fromSource(configSource, WatermarkStrategy.noWatermarks(), "Kafka-Config-Broadcast")
+                    .uid("source-config-updates")
+                    .broadcast(FlinkTags.CONFIG_BROADCAST_DESCRIPTOR);
+        }
 
         KafkaSource<CanonicalEvent> crossOrderSource = KafkaSource.<CanonicalEvent>builder()
-                .setBootstrapServers(kafkaBootstrap)
+                .setBootstrapServers(internalKafkaBootstrap)
                 .setTopics(TOPIC_CROSS_ORDER_SIGNALS)
                 .setGroupId(kafkaGroupId + "-signals")
                 .setStartingOffsets(OffsetsInitializer.earliest())
@@ -174,7 +202,7 @@ public class JeopardyFlinkJob {
                 .name("Sink-ClickHouse-raw_events");
 
         parseDlqStream
-                .sinkTo(buildDlqSink(kafkaBootstrap, TOPIC_DLQ_PARSE))
+                .sinkTo(buildDlqSink(internalKafkaBootstrap, TOPIC_DLQ_PARSE))
                 .uid("sink-dlq-parse-errors")
                 .name("Sink-DLQ-parse-errors");
 
@@ -235,7 +263,7 @@ public class JeopardyFlinkJob {
 
         DataStream<DlqMessage> uncorrelatedDlqStream = oooResolved.getSideOutput(FlinkTags.UNCORRELATED_DLQ_TAG);
         uncorrelatedDlqStream
-                .sinkTo(buildDlqSink(kafkaBootstrap, TOPIC_DLQ_UNCORRELATED))
+                .sinkTo(buildDlqSink(internalKafkaBootstrap, TOPIC_DLQ_UNCORRELATED))
                 .uid("sink-dlq-uncorrelated")
                 .name("Sink-DLQ-uncorrelated");
 
@@ -275,7 +303,7 @@ public class JeopardyFlinkJob {
 
         mutations
                 .sinkTo(KafkaSink.<EntityMutation>builder()
-                        .setBootstrapServers(kafkaBootstrap)
+                        .setBootstrapServers(internalKafkaBootstrap)
                         .setRecordSerializer(KafkaJsonSerializationSchemas.uiUpdatesSchema(TOPIC_UI_UPDATES))
                         .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
                         .build())
@@ -285,7 +313,7 @@ public class JeopardyFlinkJob {
         mutations
                 .filter(EntityMutation::isHasJeopardyAlert)
                 .sinkTo(KafkaSink.<EntityMutation>builder()
-                        .setBootstrapServers(kafkaBootstrap)
+                        .setBootstrapServers(internalKafkaBootstrap)
                         .setRecordSerializer(KafkaJsonSerializationSchemas.alertsOutSchema(TOPIC_ALERTS_OUT))
                         .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
                         .build())
@@ -295,7 +323,7 @@ public class JeopardyFlinkJob {
         DataStream<CrossOrderSignal> crossOrderOut = mutations.getSideOutput(FlinkTags.CROSS_ORDER_SIGNAL_TAG);
         crossOrderOut
                 .sinkTo(KafkaSink.<CrossOrderSignal>builder()
-                        .setBootstrapServers(kafkaBootstrap)
+                        .setBootstrapServers(internalKafkaBootstrap)
                         .setRecordSerializer(KafkaJsonSerializationSchemas.crossOrderSignalsSchema(TOPIC_CROSS_ORDER_SIGNALS))
                         .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
                         .build())

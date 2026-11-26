@@ -2,6 +2,7 @@ package com.jeopardy.api.auth;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +26,8 @@ public class AuthService {
 
     public static final String SESSION_COOKIE_NAME = "jeopardy_admin_session";
     public static final String AUTH_USER_REQUEST_ATTR = "jeopardy.auth.user";
+    private static final String DEFAULT_DEV_JWT_SECRET = "jeopardy-local-dev-signing-secret-change-in-prod-32bytes";
+    private static final String DEFAULT_DEV_ADMIN_PASSWORD = "admin123";
     private static final String HMAC_ALG = "HmacSHA256";
     private static final Base64.Encoder URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder URL_DECODER = Base64.getUrlDecoder();
@@ -35,6 +38,26 @@ public class AuthService {
     public AuthService(AuthProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+    }
+
+    @PostConstruct
+    public void validateProductionSecurity() {
+        if (!properties.isEnabled() || !properties.isRequireSecureSecrets()) {
+            return;
+        }
+        String secret = properties.getJwtSecret();
+        if (secret == null
+                || secret.isBlank()
+                || secret.length() < 32
+                || DEFAULT_DEV_JWT_SECRET.equals(secret)) {
+            throw new IllegalStateException(
+                    "JEOPARDY_AUTH_REQUIRE_SECURE_SECRETS=true requires a non-default JEOPARDY_AUTH_SECRET of at least 32 characters");
+        }
+        if ("local".equalsIgnoreCase(properties.getProvider())
+                && DEFAULT_DEV_ADMIN_PASSWORD.equals(properties.getAdminPassword())) {
+            throw new IllegalStateException(
+                    "JEOPARDY_AUTH_REQUIRE_SECURE_SECRETS=true forbids the default local admin password");
+        }
     }
 
     public AuthProperties getProperties() {
@@ -164,7 +187,7 @@ public class AuthService {
     private String signHmacSha256(String input) throws Exception {
         String secret = properties.getJwtSecret() != null && !properties.getJwtSecret().isBlank()
                 ? properties.getJwtSecret()
-                : "jeopardy-local-dev-signing-secret-change-in-prod-32bytes";
+                : DEFAULT_DEV_JWT_SECRET;
         Mac mac = Mac.getInstance(HMAC_ALG);
         mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), HMAC_ALG));
         byte[] digest = mac.doFinal(input.getBytes(StandardCharsets.UTF_8));

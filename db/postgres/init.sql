@@ -154,6 +154,10 @@ CREATE INDEX IF NOT EXISTS idx_entity_milestones_template_active
     ON entity_milestones (template_id, status)
     WHERE status IN ('IN_PROGRESS', 'WARNING', 'JEOPARDY', 'IN_FALLOUT', 'BREACHED');
 
+CREATE INDEX IF NOT EXISTS idx_entity_milestones_error_code
+    ON entity_milestones (last_error_code)
+    WHERE last_error_code IS NOT NULL;
+
 
 -- -----------------------------------------------------------------------------
 -- 3. ENTITY FALLOUTS (Monthly Range Partitioned)
@@ -213,6 +217,10 @@ CREATE INDEX IF NOT EXISTS idx_entity_fallouts_entity
 CREATE INDEX IF NOT EXISTS idx_entity_fallouts_process
     ON entity_fallouts (process_instance_id)
     WHERE process_instance_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_entity_fallouts_error_opened
+    ON entity_fallouts (error_code, opened_at DESC)
+    WHERE error_code IS NOT NULL;
 
 
 -- -----------------------------------------------------------------------------
@@ -379,11 +387,20 @@ CREATE TABLE IF NOT EXISTS config_publish_audit (
     kafka_offset    BIGINT,
     status          VARCHAR(24)   NOT NULL DEFAULT 'PUBLISHED'
                                   CHECK (status IN ('PENDING', 'PUBLISHED', 'FAILED', 'ROLLED_BACK')),
-    summary_jsonb   JSONB         NOT NULL DEFAULT '{}'::jsonb
+    summary_jsonb   JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    bundle_jsonb    JSONB
 );
+
+-- Idempotent in-place migration for existing databases (enables PG-backed Flink config hot-reload)
+ALTER TABLE config_publish_audit
+    ADD COLUMN IF NOT EXISTS bundle_jsonb JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_config_publish_audit_published_at
     ON config_publish_audit (published_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_config_publish_audit_version
+    ON config_publish_audit (bundle_version DESC)
+    WHERE status = 'PUBLISHED' AND bundle_jsonb IS NOT NULL;
 
 
 -- -----------------------------------------------------------------------------
@@ -548,3 +565,68 @@ CREATE INDEX IF NOT EXISTS idx_tracked_entities_channel_region_created
 
 CREATE INDEX IF NOT EXISTS idx_tracked_entities_key_prefix
     ON tracked_entities (entity_key varchar_pattern_ops, created_at DESC);
+
+
+-- -----------------------------------------------------------------------------
+-- 11. AUTOMATIC MONTHLY PARTITION MAINTENANCE
+--     Idempotent helper that pre-creates monthly range partitions ahead of time
+--     for all 4 high-churn partitioned tables so traffic never spills into
+--     `_default`. Safe to invoke repeatedly at startup or via monthly CronJob.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION ensure_jeopardy_monthly_partitions(months_ahead INT DEFAULT 6)
+RETURNS INT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    parent_table TEXT;
+    month_offset INT;
+    range_start  TIMESTAMPTZ;
+    range_end    TIMESTAMPTZ;
+    start_lit    TEXT;
+    end_lit      TEXT;
+    part_name    TEXT;
+    created_cnt  INT := 0;
+    parent_tables CONSTANT TEXT[] := ARRAY[
+        'tracked_entities',
+        'entity_milestones',
+        'entity_fallouts',
+        'jeopardy_cases'
+    ];
+BEGIN
+    IF months_ahead IS NULL OR months_ahead < 0 THEN
+        months_ahead := 0;
+    END IF;
+
+    FOREACH parent_table IN ARRAY parent_tables LOOP
+        FOR month_offset IN 0..months_ahead LOOP
+            range_start := (date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                            + make_interval(months => month_offset)) AT TIME ZONE 'UTC';
+            range_end   := (date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                            + make_interval(months => month_offset + 1)) AT TIME ZONE 'UTC';
+            start_lit   := to_char(range_start AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || '+00';
+            end_lit     := to_char(range_end AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || '+00';
+            part_name   := format('%s_%s', parent_table, to_char(range_start AT TIME ZONE 'UTC', 'YYYY_MM'));
+
+            IF to_regclass(format('%I', part_name)) IS NULL THEN
+                BEGIN
+                    EXECUTE format(
+                        'CREATE TABLE IF NOT EXISTS %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
+                        part_name,
+                        parent_table,
+                        start_lit,
+                        end_lit
+                    );
+                    created_cnt := created_cnt + 1;
+                EXCEPTION WHEN check_violation THEN
+                    RAISE NOTICE 'Skipping partition % because %_default already contains overlapping rows',
+                        part_name, parent_table;
+                END;
+            END IF;
+        END LOOP;
+    END LOOP;
+
+    RETURN created_cnt;
+END;
+$$;
+
+SELECT ensure_jeopardy_monthly_partitions(12);

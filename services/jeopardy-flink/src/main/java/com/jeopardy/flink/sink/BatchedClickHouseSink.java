@@ -8,6 +8,8 @@ import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.Serializable;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -28,6 +30,7 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.GZIPOutputStream;
 
 /**
  * Batch-only ClickHouse OSS HTTP Sink ({@code FORMAT JSONEachRow}) using Java 17 {@link HttpClient}.
@@ -41,6 +44,8 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
 
     private static final int DEFAULT_BATCH_SIZE = 2_000;
     private static final long DEFAULT_FLUSH_INTERVAL_MS = 2_000L;
+    private static final int GZIP_THRESHOLD_BYTES = 4_096;
+    private static final long[] RETRY_BACKOFF_MS = {250L, 750L, 2_000L};
     private static final DateTimeFormatter CH_DT64_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneOffset.UTC);
 
@@ -156,8 +161,8 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
                     row.put("order_family", nonBlank(m.getOrderFamily(), "UNKNOWN"));
                     row.put("order_type", nonBlank(m.getOrderType(), "UNKNOWN"));
                     row.put("item_type", safe(m.getItemType()));
-                    row.put("account_type", nonBlank(m.getAccountType(), "RESIDENTIAL"));
-                    row.put("channel", nonBlank(m.getChannel(), "WEB"));
+                    row.put("account_type", safe(m.getAccountType()));
+                    row.put("channel", safe(m.getChannel()));
                     row.put("region", safe(m.getRegion()));
                     row.put("domain", nonBlank(m.getDomain(), "GENERAL"));
                     row.put("template_id", nonBlank(m.getTemplateId(), m.getMilestoneId()));
@@ -197,7 +202,7 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
                     row.put("entity_key", safe(m.getEntityKey()));
                     row.put("order_family", nonBlank(m.getOrderFamily(), "UNKNOWN"));
                     row.put("order_type", nonBlank(m.getOrderType(), "UNKNOWN"));
-                    row.put("account_type", nonBlank(m.getAccountType(), "RESIDENTIAL"));
+                    row.put("account_type", safe(m.getAccountType()));
                     row.put("template_id", safe(m.getTemplateId()));
                     row.put("milestone_id", safe(m.getMilestoneId()));
                     row.put("error_code", safe(m.getLastErrorCode()));
@@ -316,24 +321,103 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
             ndjson.append(line).append('\n');
         }
 
+        byte[] rawBytes = ndjson.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] payloadBytes = rawBytes;
+        boolean gzipped = false;
+
+        if (rawBytes.length > GZIP_THRESHOLD_BYTES) {
+            try {
+                payloadBytes = gzipCompress(rawBytes);
+                gzipped = true;
+            } catch (IOException ex) {
+                LOG.warn("Failed to GZIP-compress ClickHouse batch for jeopardy.{}; falling back to uncompressed payload: {}",
+                        tableName, ex.getMessage());
+                payloadBytes = rawBytes;
+                gzipped = false;
+            }
+        }
+
         HttpRequest.Builder reqBuilder = HttpRequest.newBuilder(insertUri)
                 .timeout(Duration.ofSeconds(15))
                 .header("Content-Type", "application/x-ndjson; charset=utf-8")
-                .POST(HttpRequest.BodyPublishers.ofString(ndjson.toString(), StandardCharsets.UTF_8));
+                .POST(HttpRequest.BodyPublishers.ofByteArray(payloadBytes));
+        if (gzipped) {
+            reqBuilder.header("Content-Encoding", "gzip");
+        }
         if (basicAuthHeader != null) {
             reqBuilder.header("Authorization", basicAuthHeader);
         }
+        HttpRequest request = reqBuilder.build();
 
-        try {
-            HttpResponse<String> resp = httpClient.send(
-                    reqBuilder.build(),
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
-                LOG.error("ClickHouse batch insert into jeopardy.{} failed (HTTP {}): {}",
-                        tableName, resp.statusCode(), resp.body());
+        int maxRetries = RETRY_BACKOFF_MS.length;
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                HttpResponse<String> resp = httpClient.send(
+                        request,
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                int status = resp.statusCode();
+                if (status >= 200 && status < 300) {
+                    return;
+                }
+
+                boolean retryableStatus = status == 429 || status >= 500;
+                if (!retryableStatus) {
+                    // Do not retry non-429 4xx validation/auth errors
+                    LOG.error("ClickHouse batch insert into jeopardy.{} rejected with non-retryable HTTP {} (rows={}): {}",
+                            tableName, status, lines.size(), resp.body());
+                    return;
+                }
+
+                if (attempt < maxRetries) {
+                    long backoffMs = RETRY_BACKOFF_MS[attempt];
+                    LOG.warn("Transient ClickHouse HTTP {} inserting {} rows into jeopardy.{} (attempt {}/{}); retrying in {}ms",
+                            status, lines.size(), tableName, attempt + 1, maxRetries + 1, backoffMs);
+                    if (!sleepBackoff(backoffMs)) {
+                        return;
+                    }
+                } else {
+                    LOG.error("ClickHouse batch insert into jeopardy.{} failed after {} attempts (HTTP {}, rows={}): {}",
+                            tableName, maxRetries + 1, status, lines.size(), resp.body());
+                }
+            } catch (IOException ex) {
+                if (attempt < maxRetries) {
+                    long backoffMs = RETRY_BACKOFF_MS[attempt];
+                    LOG.warn("Transient ClickHouse IO error inserting {} rows into jeopardy.{} (attempt {}/{}): {}; retrying in {}ms",
+                            lines.size(), tableName, attempt + 1, maxRetries + 1, ex.getMessage(), backoffMs);
+                    if (!sleepBackoff(backoffMs)) {
+                        return;
+                    }
+                } else {
+                    LOG.error("ClickHouse batch insert into jeopardy.{} failed after {} attempts (rows={}): {}",
+                            tableName, maxRetries + 1, lines.size(), ex.getMessage());
+                }
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                LOG.warn("ClickHouse batch insert into jeopardy.{} interrupted (rows={})", tableName, lines.size());
+                return;
+            } catch (Exception ex) {
+                LOG.error("ClickHouse batch insert into jeopardy.{} threw unexpected exception (rows={}): {}",
+                        tableName, lines.size(), ex.getMessage());
+                return;
             }
-        } catch (Exception ex) {
-            LOG.error("ClickHouse batch insert into jeopardy.{} threw exception: {}", tableName, ex.getMessage());
+        }
+    }
+
+    private static byte[] gzipCompress(byte[] rawBytes) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream(Math.max(256, rawBytes.length / 4));
+        try (GZIPOutputStream gzip = new GZIPOutputStream(baos)) {
+            gzip.write(rawBytes);
+        }
+        return baos.toByteArray();
+    }
+
+    private static boolean sleepBackoff(long backoffMs) {
+        try {
+            Thread.sleep(backoffMs);
+            return true;
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 

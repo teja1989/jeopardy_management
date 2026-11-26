@@ -20,7 +20,11 @@ import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -29,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Repository
 public class AdminConfigRepository {
 
+    private static final Logger log = LoggerFactory.getLogger(AdminConfigRepository.class);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -283,11 +288,23 @@ public class AdminConfigRepository {
             Long kafkaOffset,
             String status,
             Map<String, Object> summary) {
-        String sql = """
+        insertPublishAudit(publishId, bundleVersion, publishedBy, publishedAt, kafkaOffset, status, summary, null);
+    }
+
+    public void insertPublishAudit(
+            String publishId,
+            int bundleVersion,
+            String publishedBy,
+            Instant publishedAt,
+            Long kafkaOffset,
+            String status,
+            Map<String, Object> summary,
+            String bundleJson) {
+        String sqlWithBundle = """
                 INSERT INTO config_publish_audit
-                    (publish_id, bundle_version, published_by, published_at, kafka_offset, status, summary_jsonb)
+                    (publish_id, bundle_version, published_by, published_at, kafka_offset, status, summary_jsonb, bundle_jsonb)
                 VALUES
-                    (:publishId, :bundleVersion, :publishedBy, :publishedAt, :kafkaOffset, :status, CAST(:summary AS jsonb))
+                    (:publishId, :bundleVersion, :publishedBy, :publishedAt, :kafkaOffset, :status, CAST(:summary AS jsonb), CAST(:bundleJson AS jsonb))
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("publishId", publishId)
@@ -296,8 +313,40 @@ public class AdminConfigRepository {
                 .addValue("publishedAt", Timestamp.from(publishedAt))
                 .addValue("kafkaOffset", kafkaOffset, Types.BIGINT)
                 .addValue("status", status)
-                .addValue("summary", toJsonString(summary));
-        jdbc.update(sql, params);
+                .addValue("summary", toJsonString(summary))
+                .addValue("bundleJson", bundleJson, Types.VARCHAR);
+        try {
+            jdbc.update(sqlWithBundle, params);
+        } catch (BadSqlGrammarException ex) {
+            log.warn("config_publish_audit.bundle_jsonb not available; falling back to legacy insert: {}", ex.getMessage());
+            String legacySql = """
+                    INSERT INTO config_publish_audit
+                        (publish_id, bundle_version, published_by, published_at, kafka_offset, status, summary_jsonb)
+                    VALUES
+                        (:publishId, :bundleVersion, :publishedBy, :publishedAt, :kafkaOffset, :status, CAST(:summary AS jsonb))
+                    """;
+            jdbc.update(legacySql, params);
+        }
+    }
+
+    public Optional<String> findLatestPublishedBundleJson() {
+        String sql = """
+                SELECT bundle_jsonb::text AS bundle_json
+                FROM config_publish_audit
+                WHERE status = 'PUBLISHED' AND bundle_jsonb IS NOT NULL
+                ORDER BY bundle_version DESC, published_at DESC
+                LIMIT 1
+                """;
+        try {
+            List<String> rows = jdbc.query(sql, (rs, rowNum) -> rs.getString("bundle_json"));
+            if (rows.isEmpty() || rows.get(0) == null || rows.get(0).isBlank()) {
+                return Optional.empty();
+            }
+            return Optional.of(rows.get(0));
+        } catch (BadSqlGrammarException ex) {
+            log.debug("config_publish_audit.bundle_jsonb not available: {}", ex.getMessage());
+            return Optional.empty();
+        }
     }
 
     public List<PublishResponse> findRecentPublishes(int limit) {

@@ -168,6 +168,77 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Lightweight In-Memory Read Cache + In-Flight Promise Deduplication
+// ---------------------------------------------------------------------------
+
+interface CachedReadEntry<T> {
+  value?: T;
+  expiresAt: number;
+  inFlight?: Promise<T>;
+  generation: number;
+}
+
+const BLUEPRINTS_CACHE_TTL_MS = 60_000;
+const FACETS_CACHE_TTL_MS = 30_000;
+
+const blueprintsReadCache: CachedReadEntry<JourneyBlueprintRecord[]> = {
+  expiresAt: 0,
+  generation: 0,
+};
+
+const facetsReadCache: CachedReadEntry<AnalyticsFacetsResponse> = {
+  expiresAt: 0,
+  generation: 0,
+};
+
+function cachedRead<T>(
+  entry: CachedReadEntry<T>,
+  ttlMs: number,
+  fetcher: () => Promise<T>,
+  forceRefresh = false,
+): Promise<T> {
+  const now = Date.now();
+  if (!forceRefresh && entry.value !== undefined && now < entry.expiresAt) {
+    return Promise.resolve(entry.value);
+  }
+  if (!forceRefresh && entry.inFlight) {
+    return entry.inFlight;
+  }
+
+  const reqGen = ++entry.generation;
+  const request = fetcher()
+    .then((result) => {
+      if (entry.generation === reqGen) {
+        entry.value = result;
+        entry.expiresAt = Date.now() + ttlMs;
+        entry.inFlight = undefined;
+      }
+      return result;
+    })
+    .catch((err) => {
+      if (entry.generation === reqGen) {
+        entry.inFlight = undefined;
+      }
+      throw err;
+    });
+
+  entry.inFlight = request;
+  return request;
+}
+
+export function invalidateClientReadCaches(): void {
+  blueprintsReadCache.generation += 1;
+  blueprintsReadCache.value = undefined;
+  blueprintsReadCache.expiresAt = 0;
+  blueprintsReadCache.inFlight = undefined;
+
+  facetsReadCache.generation += 1;
+  facetsReadCache.value = undefined;
+  facetsReadCache.expiresAt = 0;
+  facetsReadCache.inFlight = undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Authentication API (Local Admin today -> Azure AD / Entra ID SSO later)
 // ---------------------------------------------------------------------------
 
@@ -324,8 +395,14 @@ export function getTimelineHistogram(query: {
 }
 
 export function getAnalyticsFacets(refresh = false): Promise<AnalyticsFacetsResponse> {
-  return fetchJson<AnalyticsFacetsResponse>(
-    `${API_BASE}/analytics/facets${buildQueryString({ refresh: refresh ? true : undefined })}`,
+  return cachedRead(
+    facetsReadCache,
+    FACETS_CACHE_TTL_MS,
+    () =>
+      fetchJson<AnalyticsFacetsResponse>(
+        `${API_BASE}/analytics/facets${buildQueryString({ refresh: refresh ? true : undefined })}`,
+      ),
+    refresh,
   );
 }
 
@@ -365,7 +442,9 @@ export function getCustomerOrders(customerId: string): Promise<CustomerOrdersRes
 }
 
 export function listPublicTrackerBlueprints(): Promise<JourneyBlueprintRecord[]> {
-  return fetchJson<JourneyBlueprintRecord[]>(`${API_BASE}/tracker/blueprints`);
+  return cachedRead(blueprintsReadCache, BLUEPRINTS_CACHE_TTL_MS, () =>
+    fetchJson<JourneyBlueprintRecord[]>(`${API_BASE}/tracker/blueprints`),
+  );
 }
 
 export function getEntityTimeline(
@@ -389,52 +468,60 @@ export function listOrderFamilies(): Promise<OrderFamilyRecord[]> {
   return fetchJson<OrderFamilyRecord[]>(`${API_BASE}/admin/order-families`);
 }
 
-export function upsertOrderFamily(request: {
+export async function upsertOrderFamily(request: {
   orderType: string;
   orderFamily: string;
   description?: string | null;
 }): Promise<OrderFamilyRecord> {
-  return fetchJson<OrderFamilyRecord>(`${API_BASE}/admin/order-families`, {
+  const res = await fetchJson<OrderFamilyRecord>(`${API_BASE}/admin/order-families`, {
     method: 'POST',
     body: JSON.stringify(request),
   });
+  invalidateClientReadCaches();
+  return res;
 }
 
 export function listAdapters(): Promise<EventAdapterRecord[]> {
   return fetchJson<EventAdapterRecord[]>(`${API_BASE}/admin/adapters`);
 }
 
-export function createAdapterVersion(request: EventAdapterRequest): Promise<EventAdapterRecord> {
-  return fetchJson<EventAdapterRecord>(`${API_BASE}/admin/adapters`, {
+export async function createAdapterVersion(request: EventAdapterRequest): Promise<EventAdapterRecord> {
+  const res = await fetchJson<EventAdapterRecord>(`${API_BASE}/admin/adapters`, {
     method: 'POST',
     body: JSON.stringify(request),
   });
+  invalidateClientReadCaches();
+  return res;
 }
 
 export function listTemplates(): Promise<MilestoneTemplateRecord[]> {
   return fetchJson<MilestoneTemplateRecord[]>(`${API_BASE}/admin/templates`);
 }
 
-export function createTemplateVersion(
+export async function createTemplateVersion(
   request: MilestoneTemplateRequest,
 ): Promise<MilestoneTemplateRecord> {
-  return fetchJson<MilestoneTemplateRecord>(`${API_BASE}/admin/templates`, {
+  const res = await fetchJson<MilestoneTemplateRecord>(`${API_BASE}/admin/templates`, {
     method: 'POST',
     body: JSON.stringify(request),
   });
+  invalidateClientReadCaches();
+  return res;
 }
 
 export function listBlueprints(): Promise<JourneyBlueprintRecord[]> {
   return fetchJson<JourneyBlueprintRecord[]>(`${API_BASE}/admin/blueprints`);
 }
 
-export function createBlueprintVersion(
+export async function createBlueprintVersion(
   request: JourneyBlueprintRequest,
 ): Promise<JourneyBlueprintRecord> {
-  return fetchJson<JourneyBlueprintRecord>(`${API_BASE}/admin/blueprints`, {
+  const res = await fetchJson<JourneyBlueprintRecord>(`${API_BASE}/admin/blueprints`, {
     method: 'POST',
     body: JSON.stringify(request),
   });
+  invalidateClientReadCaches();
+  return res;
 }
 
 export function searchNestedJson(request: JsonSearchRequest): Promise<JsonSearchResponse> {
@@ -451,18 +538,22 @@ export function dryRunConfig(request: DryRunRequest): Promise<DryRunResponse> {
   });
 }
 
-export function seedConfigs(force = false): Promise<Record<string, unknown>> {
-  return fetchJson<Record<string, unknown>>(
+export async function seedConfigs(force = false): Promise<Record<string, unknown>> {
+  const res = await fetchJson<Record<string, unknown>>(
     `${API_BASE}/admin/configs/seed${buildQueryString({ force })}`,
     { method: 'POST' },
   );
+  invalidateClientReadCaches();
+  return res;
 }
 
-export function publishConfigs(publishedBy = 'admin-ui'): Promise<PublishResponse> {
-  return fetchJson<PublishResponse>(
+export async function publishConfigs(publishedBy = 'admin-ui'): Promise<PublishResponse> {
+  const res = await fetchJson<PublishResponse>(
     `${API_BASE}/admin/configs/publish${buildQueryString({ publishedBy })}`,
     { method: 'POST' },
   );
+  invalidateClientReadCaches();
+  return res;
 }
 
 export function listPublishHistory(limit = 10): Promise<PublishResponse[]> {

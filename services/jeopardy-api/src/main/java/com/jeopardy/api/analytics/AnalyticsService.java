@@ -1,9 +1,18 @@
 package com.jeopardy.api.analytics;
 
+import jakarta.annotation.PreDestroy;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -12,13 +21,33 @@ import org.springframework.stereotype.Service;
 public class AnalyticsService {
 
     private static final Logger log = LoggerFactory.getLogger(AnalyticsService.class);
+    private static final long RESPONSE_CACHE_TTL_MS = 10_000L;
+    private static final int MAX_CACHE_ENTRIES = 200;
+    private static final long CH_CIRCUIT_COOLDOWN_MS = 20_000L;
+    private static final AtomicInteger THREAD_SEQ = new AtomicInteger(1);
 
     private final AnalyticsRepository repository;
     private final AnalyticsQueryBuilder queryBuilder;
+    private final ExecutorService queryExecutor;
+    private final AtomicLong chCircuitOpenUntilMs = new AtomicLong(0L);
+    private final ConcurrentHashMap<String, CachedValue<ExecSummaryResponse>> execSummaryCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CachedValue<DevOpsBottlenecksResponse>> devOpsCache = new ConcurrentHashMap<>();
+
+    private record CachedValue<T>(T value, long expiresAtMs) {}
 
     public AnalyticsService(AnalyticsRepository repository, AnalyticsQueryBuilder queryBuilder) {
         this.repository = repository;
         this.queryBuilder = queryBuilder;
+        this.queryExecutor = Executors.newFixedThreadPool(8, r -> {
+            Thread t = new Thread(r, "jeopardy-analytics-" + THREAD_SEQ.getAndIncrement());
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    @PreDestroy
+    public void shutdownExecutor() {
+        queryExecutor.shutdownNow();
     }
 
     public ExecSummaryResponse getExecSummary(
@@ -31,10 +60,16 @@ public class AnalyticsService {
         int safeHours = queryBuilder.validateHours(hours);
         Map<String, String> dimensions = queryBuilder.extractAndValidateDimensions(allQueryParams);
 
+        long nowMs = System.currentTimeMillis();
+        String cacheKey = buildExecCacheKey(safeHours, orderFamily, orderType, accountType, channel, dimensions);
+        CachedValue<ExecSummaryResponse> cached = execSummaryCache.get(cacheKey);
+        if (cached != null && cached.expiresAtMs() > nowMs) {
+            return cached.value();
+        }
+
         // ADR-007 Part 1: Exact Live Open Counts from PostgreSQL partial index (<5ms ACID)
         AnalyticsQueryBuilder.SqlWithParams liveQuery = queryBuilder.buildPostgresLiveOpenQuery(
                 orderFamily, orderType, accountType, channel, dimensions);
-        List<AnalyticsQueryBuilder.LiveSliceRow> liveRows = repository.queryPostgresLiveOpenSlices(liveQuery);
 
         // ADR-007 Part 2: Historical Trends, SLA Compliance & Percentiles from ClickHouse MVs (<30ms)
         AnalyticsQueryBuilder.SqlWithParams histSliceQuery = queryBuilder.buildClickHouseExecSlicesQuery(
@@ -42,18 +77,41 @@ public class AnalyticsService {
         AnalyticsQueryBuilder.SqlWithParams histTrendQuery = queryBuilder.buildClickHouseExecTrendQuery(
                 safeHours, orderFamily, orderType, accountType, channel, dimensions);
 
+        CompletableFuture<List<AnalyticsQueryBuilder.LiveSliceRow>> liveFuture =
+                CompletableFuture.supplyAsync(() -> repository.queryPostgresLiveOpenSlices(liveQuery), queryExecutor);
+
         List<AnalyticsQueryBuilder.HistoricalSliceRow> historicalRows = List.of();
         List<ExecSummaryResponse.HourlyTrendPoint> hourlyTrend = List.of();
         boolean clickhouseAvailable = true;
         String clickhouseWarning = null;
 
-        try {
-            historicalRows = repository.queryClickHouseExecSlices(histSliceQuery);
-            hourlyTrend = repository.queryClickHouseExecTrend(histTrendQuery);
-        } catch (Exception ex) {
+        boolean circuitOpen = isClickHouseCircuitOpen();
+        CompletableFuture<List<AnalyticsQueryBuilder.HistoricalSliceRow>> histSliceFuture = null;
+        CompletableFuture<List<ExecSummaryResponse.HourlyTrendPoint>> histTrendFuture = null;
+        if (!circuitOpen) {
+            histSliceFuture = CompletableFuture.supplyAsync(
+                    () -> repository.queryClickHouseExecSlices(histSliceQuery), queryExecutor);
+            histTrendFuture = CompletableFuture.supplyAsync(
+                    () -> repository.queryClickHouseExecTrend(histTrendQuery), queryExecutor);
+        }
+
+        List<AnalyticsQueryBuilder.LiveSliceRow> liveRows = joinUnwrapping(liveFuture);
+
+        if (circuitOpen) {
             clickhouseAvailable = false;
             clickhouseWarning = "ClickHouse historical analytics temporarily unavailable; serving exact PostgreSQL live counts only";
-            log.warn("ClickHouse exec-summary query failed: {}", ex.getMessage());
+        } else {
+            try {
+                historicalRows = histSliceFuture.join();
+                hourlyTrend = histTrendFuture.join();
+            } catch (Exception ex) {
+                Throwable cause = unwrapCause(ex);
+                tripClickHouseCircuit();
+                clickhouseAvailable = false;
+                clickhouseWarning = "ClickHouse historical analytics temporarily unavailable; serving exact PostgreSQL live counts only";
+                log.warn("ClickHouse exec-summary query failed (circuit open for {}s): {}",
+                        CH_CIRCUIT_COOLDOWN_MS / 1000L, cause.getMessage());
+            }
         }
 
         List<ExecSummaryResponse.SliceMetric> mergedSlices =
@@ -73,7 +131,7 @@ public class AnalyticsService {
         Map<String, String> appliedFilters = collectAppliedFilters(
                 orderFamily, orderType, accountType, channel, null, null, null, null, dimensions);
 
-        return new ExecSummaryResponse(
+        ExecSummaryResponse response = new ExecSummaryResponse(
                 Instant.now(),
                 safeHours,
                 histSliceQuery.querySource(),
@@ -94,6 +152,8 @@ public class AnalyticsService {
                 mergedSlices,
                 hourlyTrend
         );
+        putBounded(execSummaryCache, cacheKey, response, System.currentTimeMillis());
+        return response;
     }
 
     public DevOpsBottlenecksResponse getDevOpsBottlenecks(
@@ -109,11 +169,17 @@ public class AnalyticsService {
         int safeHours = queryBuilder.validateHours(hours);
         Map<String, String> dimensions = queryBuilder.extractAndValidateDimensions(allQueryParams);
 
+        long nowMs = System.currentTimeMillis();
+        String cacheKey = buildDevOpsCacheKey(
+                safeHours, domain, templateId, errorCode, orderType, accountType, assignedQueue, limit, dimensions);
+        CachedValue<DevOpsBottlenecksResponse> cached = devOpsCache.get(cacheKey);
+        if (cached != null && cached.expiresAtMs() > nowMs) {
+            return cached.value();
+        }
+
         // PostgreSQL exact currently-open Fallout queue counts via partial index
         AnalyticsQueryBuilder.SqlWithParams liveFalloutQuery =
                 queryBuilder.buildPostgresLiveFalloutQueueQuery(assignedQueue, errorCode);
-        List<AnalyticsQueryBuilder.LiveFalloutQueueRow> liveFallouts =
-                repository.queryPostgresLiveFalloutQueues(liveFalloutQuery);
 
         // ClickHouse 5m bottlenecks + error storm + hourly Fallout MTTR
         AnalyticsQueryBuilder.SqlWithParams bottlenecksQuery = queryBuilder.buildClickHouseBottlenecksQuery(
@@ -123,41 +189,70 @@ public class AnalyticsService {
         AnalyticsQueryBuilder.SqlWithParams chFalloutQuery = queryBuilder.buildClickHouseFalloutQueueQuery(
                 safeHours, assignedQueue, errorCode, orderType, accountType, dimensions);
 
+        DevOpsBottlenecksResponse.FalloutRecoverySummary emptyRecovery =
+                new DevOpsBottlenecksResponse.FalloutRecoverySummary(0, 0, 0, 0, List.of());
+
+        CompletableFuture<List<AnalyticsQueryBuilder.LiveFalloutQueueRow>> liveFalloutFuture =
+                CompletableFuture.supplyAsync(() -> repository.queryPostgresLiveFalloutQueues(liveFalloutQuery), queryExecutor);
+        CompletableFuture<DevOpsBottlenecksResponse.FalloutRecoverySummary> recoveryFuture =
+                CompletableFuture.supplyAsync(() -> {
+                    try {
+                        DevOpsBottlenecksResponse.FalloutRecoverySummary queried =
+                                repository.queryPostgresFalloutRecoverySummary();
+                        return queried != null ? queried : emptyRecovery;
+                    } catch (Exception ex) {
+                        log.debug("Fallout recovery summary skipped: {}", ex.getMessage());
+                        return emptyRecovery;
+                    }
+                }, queryExecutor);
+
         List<DevOpsBottlenecksResponse.BottleneckItem> bottlenecks = List.of();
         List<DevOpsBottlenecksResponse.ErrorStormPoint> errorStorm = List.of();
         List<AnalyticsQueryBuilder.HistoricalFalloutQueueRow> histFallouts = List.of();
         boolean clickhouseAvailable = true;
         String clickhouseWarning = null;
 
-        try {
-            bottlenecks = repository.queryClickHouseBottlenecks(bottlenecksQuery);
-            errorStorm = repository.queryClickHouseErrorStorm5m(stormQuery);
-            histFallouts = repository.queryClickHouseFalloutQueues(chFalloutQuery);
-        } catch (Exception ex) {
+        boolean circuitOpen = isClickHouseCircuitOpen();
+        CompletableFuture<List<DevOpsBottlenecksResponse.BottleneckItem>> bottlenecksFuture = null;
+        CompletableFuture<List<DevOpsBottlenecksResponse.ErrorStormPoint>> stormFuture = null;
+        CompletableFuture<List<AnalyticsQueryBuilder.HistoricalFalloutQueueRow>> chFalloutFuture = null;
+        if (!circuitOpen) {
+            bottlenecksFuture = CompletableFuture.supplyAsync(
+                    () -> repository.queryClickHouseBottlenecks(bottlenecksQuery), queryExecutor);
+            stormFuture = CompletableFuture.supplyAsync(
+                    () -> repository.queryClickHouseErrorStorm5m(stormQuery), queryExecutor);
+            chFalloutFuture = CompletableFuture.supplyAsync(
+                    () -> repository.queryClickHouseFalloutQueues(chFalloutQuery), queryExecutor);
+        }
+
+        List<AnalyticsQueryBuilder.LiveFalloutQueueRow> liveFallouts = joinUnwrapping(liveFalloutFuture);
+        DevOpsBottlenecksResponse.FalloutRecoverySummary falloutRecovery = joinUnwrapping(recoveryFuture);
+
+        if (circuitOpen) {
             clickhouseAvailable = false;
             clickhouseWarning = "ClickHouse DevOps metrics temporarily unavailable; serving exact PostgreSQL active Fallout queues only";
-            log.warn("ClickHouse devops-bottlenecks query failed: {}", ex.getMessage());
+        } else {
+            try {
+                bottlenecks = bottlenecksFuture.join();
+                errorStorm = stormFuture.join();
+                histFallouts = chFalloutFuture.join();
+            } catch (Exception ex) {
+                Throwable cause = unwrapCause(ex);
+                tripClickHouseCircuit();
+                clickhouseAvailable = false;
+                clickhouseWarning = "ClickHouse DevOps metrics temporarily unavailable; serving exact PostgreSQL active Fallout queues only";
+                log.warn("ClickHouse devops-bottlenecks query failed (circuit open for {}s): {}",
+                        CH_CIRCUIT_COOLDOWN_MS / 1000L, cause.getMessage());
+            }
         }
 
         List<DevOpsBottlenecksResponse.FalloutQueueMetric> mergedFallouts =
                 queryBuilder.mergeLiveAndHistoricalFalloutQueues(liveFallouts, histFallouts);
 
-        DevOpsBottlenecksResponse.FalloutRecoverySummary falloutRecovery =
-                new DevOpsBottlenecksResponse.FalloutRecoverySummary(0, 0, 0, 0, List.of());
-        try {
-            DevOpsBottlenecksResponse.FalloutRecoverySummary queried =
-                    repository.queryPostgresFalloutRecoverySummary();
-            if (queried != null) {
-                falloutRecovery = queried;
-            }
-        } catch (Exception ex) {
-            log.debug("Fallout recovery summary skipped: {}", ex.getMessage());
-        }
-
         Map<String, String> appliedFilters = collectAppliedFilters(
                 null, orderType, accountType, null, domain, templateId, errorCode, assignedQueue, dimensions);
 
-        return new DevOpsBottlenecksResponse(
+        DevOpsBottlenecksResponse response = new DevOpsBottlenecksResponse(
                 Instant.now(),
                 safeHours,
                 bottlenecksQuery.querySource(),
@@ -169,6 +264,87 @@ public class AnalyticsService {
                 mergedFallouts,
                 falloutRecovery
         );
+        putBounded(devOpsCache, cacheKey, response, System.currentTimeMillis());
+        return response;
+    }
+
+    private boolean isClickHouseCircuitOpen() {
+        return System.currentTimeMillis() < chCircuitOpenUntilMs.get();
+    }
+
+    private void tripClickHouseCircuit() {
+        chCircuitOpenUntilMs.set(System.currentTimeMillis() + CH_CIRCUIT_COOLDOWN_MS);
+    }
+
+    private <T> void putBounded(ConcurrentHashMap<String, CachedValue<T>> cache, String key, T value, long nowMs) {
+        if (cache.size() >= MAX_CACHE_ENTRIES) {
+            cache.entrySet().removeIf(e -> e.getValue().expiresAtMs() <= nowMs);
+            if (cache.size() >= MAX_CACHE_ENTRIES) {
+                cache.clear();
+            }
+        }
+        cache.put(key, new CachedValue<>(value, nowMs + RESPONSE_CACHE_TTL_MS));
+    }
+
+    private static <T> T joinUnwrapping(CompletableFuture<T> future) {
+        try {
+            return future.join();
+        } catch (CompletionException ce) {
+            if (ce.getCause() instanceof RuntimeException re) {
+                throw re;
+            }
+            throw ce;
+        }
+    }
+
+    private static Throwable unwrapCause(Throwable t) {
+        if (t instanceof CompletionException ce && ce.getCause() != null) {
+            return ce.getCause();
+        }
+        return t;
+    }
+
+    private static String buildExecCacheKey(
+            int hours,
+            String orderFamily,
+            String orderType,
+            String accountType,
+            String channel,
+            Map<String, String> dimensions) {
+        return "exec|" + hours + "|" + norm(orderFamily) + "|" + norm(orderType)
+                + "|" + norm(accountType) + "|" + norm(channel) + "|" + sortedDimsKey(dimensions);
+    }
+
+    private static String buildDevOpsCacheKey(
+            int hours,
+            String domain,
+            String templateId,
+            String errorCode,
+            String orderType,
+            String accountType,
+            String assignedQueue,
+            int limit,
+            Map<String, String> dimensions) {
+        return "devops|" + hours + "|" + norm(domain) + "|" + norm(templateId) + "|" + norm(errorCode)
+                + "|" + norm(orderType) + "|" + norm(accountType) + "|" + norm(assignedQueue)
+                + "|" + limit + "|" + sortedDimsKey(dimensions);
+    }
+
+    private static String norm(String val) {
+        return val == null ? "" : val.trim();
+    }
+
+    private static String sortedDimsKey(Map<String, String> dimensions) {
+        if (dimensions == null || dimensions.isEmpty()) {
+            return "";
+        }
+        TreeMap<String, String> sorted = new TreeMap<>(dimensions);
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> e : sorted.entrySet()) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(e.getKey()).append('=').append(e.getValue());
+        }
+        return sb.toString();
     }
 
     private Map<String, String> collectAppliedFilters(

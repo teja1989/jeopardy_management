@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 
+import java.time.Instant;
+import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -17,6 +20,13 @@ class SliceExplorerServiceTest {
         NamedParameterJdbcTemplate pg = mock(NamedParameterJdbcTemplate.class);
         NamedParameterJdbcTemplate ch = mock(NamedParameterJdbcTemplate.class);
         service = new SliceExplorerService(pg, ch, new AnalyticsQueryBuilder());
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (service != null) {
+            service.shutdownExecutor();
+        }
     }
 
     @Test
@@ -46,5 +56,63 @@ class SliceExplorerServiceTest {
         assertThat(SliceExplorerService.prettifyDimensionLabel("donor_carrier")).isEqualTo("Donor Carrier");
         assertThat(SliceExplorerService.prettifyDimensionLabel("dealerCode")).isEqualTo("Dealer Code");
         assertThat(SliceExplorerService.prettifyDimensionLabel("SKU")).isEqualTo("SKU");
+    }
+
+    @Test
+    void excludesInternalFalloutCounterAttributeKeys() {
+        assertThat(SliceExplorerService.isInternalAttributeKey("total_fallout_count")).isTrue();
+        assertThat(SliceExplorerService.isInternalAttributeKey("repeat_fallout_count")).isTrue();
+        assertThat(SliceExplorerService.isInternalAttributeKey("total_fallout_duration_ms")).isTrue();
+        assertThat(SliceExplorerService.isInternalAttributeKey("TOTAL_FALLOUT_COUNT")).isTrue();
+        assertThat(SliceExplorerService.isInternalAttributeKey("fallout_recovery_state")).isTrue();
+        assertThat(SliceExplorerService.isInternalAttributeKey("fallout_resolved_at")).isTrue();
+
+        assertThat(SliceExplorerService.isInternalAttributeKey("SalesChannel")).isFalse();
+        assertThat(SliceExplorerService.isInternalAttributeKey("donor_carrier")).isFalse();
+        assertThat(SliceExplorerService.isInternalAttributeKey("dealerCode")).isFalse();
+    }
+
+    @Test
+    void sliceBreakdownRunsConcurrentlyAndReturnsCleanResponse() {
+        Instant to = Instant.now();
+        Instant from = to.minusSeconds(3600);
+        SliceBreakdownResponse response = service.getSliceBreakdown(
+                "order_type",
+                from,
+                to,
+                24,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                Map.of(),
+                25);
+
+        assertThat(response).isNotNull();
+        assertThat(response.groupBy()).isEqualTo("order_type");
+        assertThat(response.slices()).isEmpty();
+        assertThat(response.totals().totalOrders()).isZero();
+        assertThat(response.totals().slaAttainmentPct()).isEqualTo(100.0);
+        assertThat(response.clickhouseEnriched()).isTrue();
+
+        // Repeat call within 10s TTL hits the bounded response cache
+        SliceBreakdownResponse cached = service.getSliceBreakdown(
+                "order_type",
+                from,
+                to,
+                24,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                Map.of(),
+                25);
+        assertThat(cached).isSameAs(response);
     }
 }
