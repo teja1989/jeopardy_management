@@ -6,8 +6,10 @@ import {
   LogOut,
   Menu,
   Moon,
+  Plug,
   Plus,
   Search,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Sun,
@@ -19,18 +21,22 @@ import { AdminAuthGate } from './components/AdminAuthGate';
 import { AiAssistantDrawer } from './components/AiAssistantDrawer';
 import { CommandPalette } from './components/CommandPalette';
 import { DashboardsView, type DashboardDrilldownTarget } from './components/DashboardsView';
+import { FalloutsIncidentsView } from './components/FalloutsIncidentsView';
+import { IntegrationsView } from './components/IntegrationsView';
 import { TrackerView } from './components/TrackerView';
 import { WorkflowStudioView } from './components/workflow/WorkflowStudioView';
 
-type WorkspaceTab = 'overview' | 'tracker' | 'studio';
+type WorkspaceTab = 'overview' | 'orders' | 'fallouts' | 'workflows' | 'integrations';
 
 export const App: React.FC = () => {
   const [workspace, setWorkspace] = useState<WorkspaceTab>('overview');
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [railPinnedExpanded, setRailPinnedExpanded] = useState(false);
 
-  // Give Workflow Studio extra breathing room automatically unless user explicitly expanded the rail
-  const effectiveRailCollapsed = railCollapsed || (workspace === 'studio' && !railPinnedExpanded);
+  // Give Admin workspaces extra breathing room automatically unless user explicitly expanded the rail
+  const isAdminWorkspace = workspace === 'workflows' || workspace === 'integrations';
+  const effectiveRailCollapsed = railCollapsed || (isAdminWorkspace && !railPinnedExpanded);
+
   const [openNewTrackerModal, setOpenNewTrackerModal] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -124,8 +130,8 @@ export const App: React.FC = () => {
     setAuthStatus((prev) =>
       prev ? { ...prev, authenticated: false, user: null } : prev,
     );
-    if (workspace === 'studio') {
-      setWorkspace('tracker');
+    if (workspace === 'workflows' || workspace === 'integrations') {
+      setWorkspace('orders');
     }
   };
 
@@ -134,7 +140,7 @@ export const App: React.FC = () => {
     if (target.entityKey) {
       setActiveEntityKey(target.entityKey);
     }
-    setWorkspace('tracker');
+    setWorkspace('orders');
   };
 
   const handleCommandSelectEntity = (entity: EntitySummaryDto) => {
@@ -143,45 +149,61 @@ export const App: React.FC = () => {
       entityKey: entity.entityKey,
       customerId: entity.customerId || undefined,
     });
-    setWorkspace('tracker');
+    setWorkspace('orders');
   };
 
   const handleQuickOnboard = () => {
     setOpenNewTrackerModal(true);
-    setWorkspace('studio');
+    setWorkspace('workflows');
   };
 
-  const navItems: Array<{
+  const primaryNavItems: Array<{
     id: WorkspaceTab;
     label: string;
+    mobileLabel: string;
     icon: React.ReactNode;
-    badge?: React.ReactNode;
   }> = [
     {
       id: 'overview',
       label: 'Overview',
+      mobileLabel: 'Overview',
       icon: <Activity className="w-[18px] h-[18px] shrink-0" />,
     },
     {
-      id: 'tracker',
-      label: 'Order Tracker',
+      id: 'orders',
+      label: 'Orders',
+      mobileLabel: 'Orders',
       icon: <Waypoints className="w-[18px] h-[18px] shrink-0" />,
     },
     {
-      id: 'studio',
-      label: 'Workflow Studio',
-      icon: isAdminAuthenticated ? (
-        <GitBranch className="w-[18px] h-[18px] shrink-0" />
-      ) : (
-        <Lock className="w-[18px] h-[18px] shrink-0 text-amber-600 dark:text-amber-400" />
-      ),
-      badge: !isAdminAuthenticated ? (
-        <span className="ml-auto rounded-full bg-amber-100 dark:bg-amber-950/60 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:text-amber-300">
-          Admin
-        </span>
-      ) : undefined,
+      id: 'fallouts',
+      label: 'Fallouts & Incidents',
+      mobileLabel: 'Fallouts',
+      icon: <ShieldAlert className="w-[18px] h-[18px] shrink-0" />,
     },
   ];
+
+  const adminNavItems: Array<{
+    id: WorkspaceTab;
+    label: string;
+    mobileLabel: string;
+    icon: React.ReactNode;
+  }> = [
+    {
+      id: 'workflows',
+      label: 'Workflows',
+      mobileLabel: 'Workflows',
+      icon: <GitBranch className="w-[18px] h-[18px] shrink-0" />,
+    },
+    {
+      id: 'integrations',
+      label: 'Integrations',
+      mobileLabel: 'Integrations',
+      icon: <Plug className="w-[18px] h-[18px] shrink-0" />,
+    },
+  ];
+
+  const allNavItems = [...primaryNavItems, ...adminNavItems];
 
   const activeOrderRoot = activeEntityKey
     ? activeEntityKey.includes(':')
@@ -206,7 +228,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={() => {
-              if (workspace === 'studio') {
+              if (isAdminWorkspace) {
                 setRailPinnedExpanded((v) => !v);
                 setRailCollapsed(false);
               } else {
@@ -256,34 +278,77 @@ export const App: React.FC = () => {
           </button>
         </div>
 
-        {/* M3 Pill Navigation Items */}
-        <nav className="space-y-1 flex-1">
-          {navItems.map((item) => {
-            const active = workspace === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setWorkspace(item.id)}
-                title={item.label}
-                className={`w-full flex items-center gap-3 rounded-full transition-all duration-150 text-xs ${
-                  effectiveRailCollapsed ? 'justify-center h-11 px-0' : 'px-3.5 py-2.5'
-                } ${
-                  active
-                    ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold'
-                    : 'text-[#444746] dark:text-[#C4C7C5] hover:bg-[#E2E9F4]/80 dark:hover:bg-[#282A2C] font-medium'
-                }`}
-              >
-                {item.icon}
-                {!effectiveRailCollapsed && <span className="truncate">{item.label}</span>}
-                {!effectiveRailCollapsed && item.badge}
-              </button>
-            );
-          })}
+        {/* 5-Destination Two-Section M3 Pill Navigation */}
+        <nav className="flex-1 flex flex-col">
+          {/* Primary Operations Section */}
+          <div className="space-y-1">
+            {primaryNavItems.map((item) => {
+              const active = workspace === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setWorkspace(item.id)}
+                  title={item.label}
+                  className={`w-full flex items-center gap-3 rounded-full transition-all duration-150 text-xs ${
+                    effectiveRailCollapsed ? 'justify-center h-11 px-0' : 'px-3.5 py-2.5'
+                  } ${
+                    active
+                      ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold'
+                      : 'text-[#444746] dark:text-[#C4C7C5] hover:bg-[#E2E9F4]/80 dark:hover:bg-[#282A2C] font-medium'
+                  }`}
+                >
+                  {item.icon}
+                  {!effectiveRailCollapsed && <span className="truncate">{item.label}</span>}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Subtle Divider + Admin Section */}
+          <div className="my-3 border-t border-[#DDE3EA] dark:border-[#333639]" />
+
+          {!effectiveRailCollapsed && (
+            <div className="px-3.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
+              Admin
+            </div>
+          )}
+
+          <div className="space-y-1">
+            {adminNavItems.map((item) => {
+              const active = workspace === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setWorkspace(item.id)}
+                  title={
+                    isAdminAuthenticated ? item.label : `${item.label} (Admin sign-in required)`
+                  }
+                  className={`w-full flex items-center gap-3 rounded-full transition-all duration-150 text-xs ${
+                    effectiveRailCollapsed ? 'justify-center h-11 px-0 relative' : 'px-3.5 py-2.5'
+                  } ${
+                    active
+                      ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold'
+                      : 'text-[#444746] dark:text-[#C4C7C5] hover:bg-[#E2E9F4]/80 dark:hover:bg-[#282A2C] font-medium'
+                  }`}
+                >
+                  {item.icon}
+                  {!effectiveRailCollapsed && <span className="truncate">{item.label}</span>}
+                  {!isAdminAuthenticated &&
+                    (effectiveRailCollapsed ? (
+                      <Lock className="w-2.5 h-2.5 text-[#5F6368] dark:text-[#9AA0A6] absolute top-2 right-2.5" />
+                    ) : (
+                      <Lock className="w-3 h-3 ml-auto text-[#5F6368]/80 dark:text-[#9AA0A6]/80 shrink-0" />
+                    ))}
+                </button>
+              );
+            })}
+          </div>
 
           <div className="my-3 border-t border-[#DDE3EA] dark:border-[#333639]" />
 
-          {/* Ambient Gemini-Style AI Panel Toggle in Rail */}
+          {/* Clean Ask AI Toggle */}
           <button
             type="button"
             onClick={() => setAssistantOpen((v) => !v)}
@@ -297,31 +362,9 @@ export const App: React.FC = () => {
             }`}
           >
             <Sparkles className="w-[18px] h-[18px] text-[#1A73E8] dark:text-[#8AB4F8] shrink-0" />
-            {!effectiveRailCollapsed && (
-              <>
-                <span className="truncate">Ask AI</span>
-                <span className="ml-auto rounded-full bg-white/80 dark:bg-[#131314]/60 px-1.5 py-0.5 text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6]">
-                  A2UI
-                </span>
-              </>
-            )}
+            {!effectiveRailCollapsed && <span className="truncate">Ask AI</span>}
           </button>
         </nav>
-
-        {/* Subtle Bottom Status Pill */}
-        {!effectiveRailCollapsed && (
-          <div className="mt-auto pt-3">
-            <div className="rounded-2xl bg-white/80 dark:bg-[#131314]/70 border border-[#E0E6F0] dark:border-[#333639] px-3 py-2.5 space-y-1">
-              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#137333] dark:text-[#81C995]">
-                <span className="w-2 h-2 rounded-full bg-[#1E8E3E] animate-pulse" />
-                Live Streaming Engine
-              </div>
-              <div className="text-[10px] text-[#5F6368] dark:text-[#9AA0A6]">
-                Flink 1.20 · PG16 · ClickHouse
-              </div>
-            </div>
-          </div>
-        )}
       </aside>
 
       {/* Right Main Column: Minimalist Google Top Bar + Workspace + Docked AI Side Panel */}
@@ -392,9 +435,9 @@ export const App: React.FC = () => {
             ) : (
               <button
                 type="button"
-                onClick={() => setWorkspace('studio')}
+                onClick={() => setWorkspace('workflows')}
                 className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#333639] bg-white dark:bg-[#1E1F20] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-3 py-2 text-xs font-medium text-[#444746] dark:text-[#C4C7C5] transition"
-                title="Sign in for Workflow Studio administration"
+                title="Sign in for Admin Workflows & Integrations"
               >
                 <Lock className="w-3 h-3 opacity-70" />
                 Admin
@@ -418,29 +461,29 @@ export const App: React.FC = () => {
           </div>
         </header>
 
-        {/* Mobile Bottom-Style Pill Nav Row */}
-        <div className="md:hidden px-4 pb-2 flex items-center gap-1.5">
-          {navItems.map((item) => (
+        {/* Mobile Pill Nav Row */}
+        <div className="md:hidden px-4 pb-2 flex items-center gap-1.5 overflow-x-auto">
+          {allNavItems.map((item) => (
             <button
               key={item.id}
               type="button"
               onClick={() => setWorkspace(item.id)}
-              className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-full py-2 text-xs font-medium transition ${
+              className={`shrink-0 inline-flex items-center justify-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-medium transition ${
                 workspace === item.id
                   ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold'
                   : 'bg-[#F0F4F9] dark:bg-[#1E1F20] text-[#5F6368] dark:text-[#9AA0A6]'
               }`}
             >
               {item.icon}
-              <span>{item.label === 'Workflow Studio' ? 'Studio' : item.label}</span>
+              <span>{item.mobileLabel}</span>
             </button>
           ))}
         </div>
 
-        {/* Workspace Canvas + Docked Gemini-Style A2UI Side Panel (Full-bleed spacious width!) */}
+        {/* Workspace Canvas + Docked Gemini-Style AI Side Panel */}
         <div
           className={`flex-1 flex items-start gap-5 px-4 sm:px-6 lg:px-7 pb-8 pt-2 w-full mx-auto min-w-0 ${
-            workspace === 'studio' || workspace === 'tracker'
+            workspace === 'workflows' || workspace === 'integrations' || workspace === 'orders'
               ? 'max-w-[1960px]'
               : 'max-w-[1760px]'
           }`}
@@ -449,18 +492,25 @@ export const App: React.FC = () => {
             {workspace === 'overview' && (
               <DashboardsView
                 onInspectOrders={handleInspectOrders}
+                onOpenFallouts={() => setWorkspace('fallouts')}
                 onOnboardNewTracker={handleQuickOnboard}
                 isAdminAuthenticated={isAdminAuthenticated}
               />
             )}
-            {workspace === 'tracker' && (
+            {workspace === 'orders' && (
               <TrackerView
                 initialFilter={trackerDrilldown}
                 onClearInitialFilter={() => setTrackerDrilldown(null)}
                 onActiveEntityChange={(ek) => setActiveEntityKey(ek)}
               />
             )}
-            {workspace === 'studio' &&
+            {workspace === 'fallouts' && (
+              <FalloutsIncidentsView
+                onInspectOrders={handleInspectOrders}
+                isAdminAuthenticated={isAdminAuthenticated}
+              />
+            )}
+            {workspace === 'workflows' &&
               (authLoading ? (
                 <div className="py-20 text-center text-xs text-[#5F6368] dark:text-[#9AA0A6]">
                   Checking admin session...
@@ -475,12 +525,26 @@ export const App: React.FC = () => {
                 <AdminAuthGate
                   authStatus={authStatus}
                   onAuthenticated={handleAuthenticated}
-                  onCancelToTracker={() => setWorkspace('tracker')}
+                  onCancelToTracker={() => setWorkspace('orders')}
+                />
+              ))}
+            {workspace === 'integrations' &&
+              (authLoading ? (
+                <div className="py-20 text-center text-xs text-[#5F6368] dark:text-[#9AA0A6]">
+                  Checking admin session...
+                </div>
+              ) : isAdminAuthenticated ? (
+                <IntegrationsView />
+              ) : (
+                <AdminAuthGate
+                  authStatus={authStatus}
+                  onAuthenticated={handleAuthenticated}
+                  onCancelToTracker={() => setWorkspace('orders')}
                 />
               ))}
           </main>
 
-          {/* Gemini-in-Workspace Docked A2UI v0.9 Side Panel */}
+          {/* Gemini-in-Workspace Docked AI Side Panel */}
           <AiAssistantDrawer
             open={assistantOpen}
             docked
@@ -489,7 +553,7 @@ export const App: React.FC = () => {
             onOpenOrderInTracker={(entityKey, customerId) => {
               setActiveEntityKey(entityKey);
               setTrackerDrilldown({ entityKey, customerId });
-              setWorkspace('tracker');
+              setWorkspace('orders');
             }}
           />
         </div>
