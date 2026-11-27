@@ -39,10 +39,12 @@ public class OnnxEtaPredictor implements Serializable, Closeable {
     private static final long serialVersionUID = 1L;
     private static final Logger LOG = LoggerFactory.getLogger(OnnxEtaPredictor.class);
 
+    private static final Object SHARED_LOCK = new Object();
+    private static volatile OrtEnvironment SHARED_ORT_ENV;
+    private static final ConcurrentHashMap<String, OrtSession> SHARED_SESSION_CACHE = new ConcurrentHashMap<>();
+
     private final String onnxModelDir;
 
-    private transient volatile OrtEnvironment ortEnvironment;
-    private transient ConcurrentHashMap<String, OrtSession> sessionCache;
     private transient Set<String> missingModelIds;
 
     public OnnxEtaPredictor(String onnxModelDir) {
@@ -51,9 +53,6 @@ public class OnnxEtaPredictor implements Serializable, Closeable {
     }
 
     private void initTransients() {
-        if (sessionCache == null) {
-            sessionCache = new ConcurrentHashMap<>();
-        }
         if (missingModelIds == null) {
             missingModelIds = ConcurrentHashMap.newKeySet();
         }
@@ -157,7 +156,7 @@ public class OnnxEtaPredictor implements Serializable, Closeable {
             String inputName = session.getInputNames().iterator().next();
             float[][] inputBatch = new float[][]{features};
 
-            try (OnnxTensor tensor = OnnxTensor.createTensor(ortEnvironment, inputBatch);
+            try (OnnxTensor tensor = OnnxTensor.createTensor(SHARED_ORT_ENV, inputBatch);
                  OrtSession.Result result = session.run(Collections.singletonMap(inputName, tensor))) {
                 double predictedSeconds = extractFirstScalar(result);
                 if (Double.isNaN(predictedSeconds) || Double.isInfinite(predictedSeconds) || predictedSeconds <= 0.0) {
@@ -203,29 +202,31 @@ public class OnnxEtaPredictor implements Serializable, Closeable {
     }
 
     private OrtSession loadOrGetSession(String modelId) throws Exception {
-        OrtSession existing = sessionCache.get(modelId);
+        Path modelPath = Path.of(onnxModelDir, modelId);
+        String cacheKey = modelPath.toAbsolutePath().toString();
+        OrtSession existing = SHARED_SESSION_CACHE.get(cacheKey);
         if (existing != null) {
             return existing;
         }
-        Path modelPath = Path.of(onnxModelDir, modelId);
         if (!Files.isRegularFile(modelPath)) {
             return null;
         }
-        synchronized (this) {
-            existing = sessionCache.get(modelId);
+        synchronized (SHARED_LOCK) {
+            existing = SHARED_SESSION_CACHE.get(cacheKey);
             if (existing != null) {
                 return existing;
             }
-            if (ortEnvironment == null) {
-                ortEnvironment = OrtEnvironment.getEnvironment();
+            if (SHARED_ORT_ENV == null) {
+                SHARED_ORT_ENV = OrtEnvironment.getEnvironment();
             }
-            OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
-            opts.setIntraOpNumThreads(1);
-            opts.setInterOpNumThreads(1);
-            OrtSession created = ortEnvironment.createSession(modelPath.toString(), opts);
-            sessionCache.put(modelId, created);
-            LOG.info("Loaded embedded ONNX SLA model '{}' from {}", modelId, modelPath);
-            return created;
+            try (OrtSession.SessionOptions opts = new OrtSession.SessionOptions()) {
+                opts.setIntraOpNumThreads(1);
+                opts.setInterOpNumThreads(1);
+                OrtSession created = SHARED_ORT_ENV.createSession(modelPath.toString(), opts);
+                SHARED_SESSION_CACHE.put(cacheKey, created);
+                LOG.info("Loaded shared JVM-wide ONNX SLA model '{}' from {}", modelId, modelPath);
+                return created;
+            }
         }
     }
 
@@ -301,15 +302,8 @@ public class OnnxEtaPredictor implements Serializable, Closeable {
 
     @Override
     public void close() {
-        if (sessionCache != null) {
-            for (OrtSession s : sessionCache.values()) {
-                try {
-                    s.close();
-                } catch (Exception ignored) {
-                }
-            }
-            sessionCache.clear();
-        }
+        // SHARED_SESSION_CACHE is JVM-wide and thread-safe across TaskManager slots;
+        // do not close shared native sessions when an individual subtask closes.
     }
 
     public static class EtaPrediction implements Serializable {

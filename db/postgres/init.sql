@@ -27,8 +27,8 @@ CREATE TABLE IF NOT EXISTS tracked_entities (
     parent_entity_key   VARCHAR(128),
     customer_id         VARCHAR(64),
     subscriber_id       VARCHAR(64),
-    account_type        VARCHAR(32)      NOT NULL DEFAULT 'RESIDENTIAL',
-    channel             VARCHAR(32)      NOT NULL DEFAULT 'WEB',
+    account_type        VARCHAR(32),
+    channel             VARCHAR(32),
     region              VARCHAR(32),
     journey_id          VARCHAR(128),
     blueprint_id        VARCHAR(128),
@@ -630,3 +630,9 @@ END;
 $$;
 
 SELECT ensure_jeopardy_monthly_partitions(12);
+
+-- Allow nullable account_type & channel for domain-agnostic / companion BPMNs
+ALTER TABLE tracked_entities ALTER COLUMN account_type DROP NOT NULL;
+ALTER TABLE tracked_entities ALTER COLUMN account_type DROP DEFAULT;
+ALTER TABLE tracked_entities ALTER COLUMN channel DROP NOT NULL;
+ALTER TABLE tracked_entities ALTER COLUMN channel DROP DEFAULT;

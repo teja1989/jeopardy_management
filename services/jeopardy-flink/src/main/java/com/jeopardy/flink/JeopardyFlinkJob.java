@@ -24,6 +24,7 @@ import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend;
+import org.apache.flink.runtime.state.storage.FileSystemCheckpointStorage;
 import org.apache.flink.streaming.api.datastream.AsyncDataStream;
 import org.apache.flink.streaming.api.datastream.BroadcastStream;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -41,6 +42,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -98,16 +100,28 @@ public class JeopardyFlinkJob {
         String chPassword = resolve(cli, "clickhouse-password", "CLICKHOUSE_PASSWORD", "jeopardy");
         String onnxModelDir = resolve(cli, "onnx-model-dir", "ONNX_MODEL_DIR", "/opt/flink/models");
         long checkpointMs = Long.parseLong(resolve(cli, "checkpoint-ms", "CHECKPOINT_INTERVAL_MS", "60000"));
+        String checkpointDir = resolve(cli, "checkpoint-dir", "CHECKPOINT_DIR", "file:///tmp/jeopardy-flink-checkpoints");
+        int explicitParallelism = Integer.parseInt(resolve(cli, "parallelism", "FLINK_PARALLELISM", "0"));
         boolean enableRocksDb = Boolean.parseBoolean(resolve(cli, "enable-rocksdb", "ENABLE_ROCKSDB", "true"));
         String initialBundlePath = resolve(cli, "initial-bundle-file", "INITIAL_BUNDLE_FILE", "");
         String initialBundleJson = loadInitialBundle(initialBundlePath);
+        if (initialBundleJson == null || initialBundleJson.isBlank()) {
+            initialBundleJson = loadInitialBundleFromPostgres(pgJdbcUrl, pgUser, pgPassword);
+        }
 
-        LOG.info("Starting JeopardyFlinkJob [sourceKafka={}, internalKafka={}, configSourceMode={}, configPollMs={}, pg={}, ch={}, onnxDir={}, rocksDb={}]",
+        LOG.info("Starting JeopardyFlinkJob [sourceKafka={}, internalKafka={}, configSourceMode={}, configPollMs={}, pg={}, ch={}, onnxDir={}, rocksDb={}, checkpointDir={}, parallelism={}]",
                 sourceKafkaBootstrap, internalKafkaBootstrap, configSourceMode, configPollMs,
-                pgJdbcUrl, chHttpUrl, onnxModelDir, enableRocksDb);
+                pgJdbcUrl, chHttpUrl, onnxModelDir, enableRocksDb, checkpointDir, explicitParallelism);
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        if (explicitParallelism > 0) {
+            env.setParallelism(explicitParallelism);
+        }
         env.enableCheckpointing(checkpointMs);
+        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(3);
+        if (checkpointDir != null && !checkpointDir.isBlank()) {
+            env.getCheckpointConfig().setCheckpointStorage(new FileSystemCheckpointStorage(checkpointDir));
+        }
         if (enableRocksDb) {
             try {
                 env.setStateBackend(new EmbeddedRocksDBStateBackend(true));
@@ -304,6 +318,7 @@ public class JeopardyFlinkJob {
         mutations
                 .sinkTo(KafkaSink.<EntityMutation>builder()
                         .setBootstrapServers(internalKafkaBootstrap)
+                        .setKafkaProducerConfig(boundedProducerConfig(4 * 1024 * 1024))
                         .setRecordSerializer(KafkaJsonSerializationSchemas.uiUpdatesSchema(TOPIC_UI_UPDATES))
                         .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
                         .build())
@@ -314,6 +329,7 @@ public class JeopardyFlinkJob {
                 .filter(EntityMutation::isHasJeopardyAlert)
                 .sinkTo(KafkaSink.<EntityMutation>builder()
                         .setBootstrapServers(internalKafkaBootstrap)
+                        .setKafkaProducerConfig(boundedProducerConfig(2 * 1024 * 1024))
                         .setRecordSerializer(KafkaJsonSerializationSchemas.alertsOutSchema(TOPIC_ALERTS_OUT))
                         .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
                         .build())
@@ -324,6 +340,7 @@ public class JeopardyFlinkJob {
         crossOrderOut
                 .sinkTo(KafkaSink.<CrossOrderSignal>builder()
                         .setBootstrapServers(internalKafkaBootstrap)
+                        .setKafkaProducerConfig(boundedProducerConfig(2 * 1024 * 1024))
                         .setRecordSerializer(KafkaJsonSerializationSchemas.crossOrderSignalsSchema(TOPIC_CROSS_ORDER_SIGNALS))
                         .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
                         .build())
@@ -336,9 +353,20 @@ public class JeopardyFlinkJob {
     private static KafkaSink<DlqMessage> buildDlqSink(String bootstrapServers, String defaultTopic) {
         return KafkaSink.<DlqMessage>builder()
                 .setBootstrapServers(bootstrapServers)
+                .setKafkaProducerConfig(boundedProducerConfig(2 * 1024 * 1024))
                 .setRecordSerializer(KafkaJsonSerializationSchemas.dlqSchema(defaultTopic))
                 .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
                 .build();
+    }
+
+    private static Properties boundedProducerConfig(int bufferMemoryBytes) {
+        Properties props = new Properties();
+        props.setProperty("buffer.memory", String.valueOf(bufferMemoryBytes));
+        props.setProperty("batch.size", "16384");
+        props.setProperty("linger.ms", "15");
+        props.setProperty("compression.type", "lz4");
+        props.setProperty("acks", "1");
+        return props;
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -386,6 +414,38 @@ public class JeopardyFlinkJob {
             }
         } catch (Exception ex) {
             LOG.warn("Unable to read initial bundle file '{}': {}", path, ex.getMessage());
+        }
+        return "";
+    }
+
+    /**
+     * Synchronously pre-loads the latest PUBLISHED config bundle from PostgreSQL before
+     * starting the Flink topology so Stage 1 &amp; Stage 3 never process backlogged Kafka
+     * events against an empty registry during cold start.
+     */
+    private static String loadInitialBundleFromPostgres(String jdbcUrl, String user, String password) {
+        if (jdbcUrl == null || jdbcUrl.isBlank()) {
+            return "";
+        }
+        String sql = "SELECT bundle_version, bundle_jsonb::text "
+                + "FROM config_publish_audit "
+                + "WHERE status = 'PUBLISHED' AND bundle_jsonb IS NOT NULL "
+                + "ORDER BY bundle_version DESC LIMIT 1";
+        try (java.sql.Connection conn = java.sql.DriverManager.getConnection(jdbcUrl, user, password);
+             java.sql.PreparedStatement ps = conn.prepareStatement(sql);
+             java.sql.ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                int ver = rs.getInt(1);
+                String json = rs.getString(2);
+                if (json != null && !json.isBlank()) {
+                    LOG.info("Pre-loaded initial config bundle v{} ({} chars) from PostgreSQL before topology start (zero cold-start event loss)",
+                            ver, json.length());
+                    return json;
+                }
+            }
+        } catch (Exception ex) {
+            LOG.warn("Could not pre-load initial config bundle from PostgreSQL (will wait for broadcast): {}",
+                    ex.getMessage());
         }
         return "";
     }
