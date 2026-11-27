@@ -437,7 +437,7 @@ public class TrackerRepository {
         }
         String sql = """
                 SELECT * FROM (
-                    SELECT DISTINCT ON (entity_key, template_id)
+                    SELECT DISTINCT ON (entity_key, milestone_id)
                            entity_key, milestone_id, created_at, template_id, display_name, sequence_no,
                            status, started_at, completed_at, paused_at, paused_duration_ms,
                            sla_warning_at, sla_jeopardy_at, sla_breach_at, predicted_p50_at,
@@ -445,7 +445,7 @@ public class TrackerRepository {
                            last_error_code, last_event_time, updated_at
                     FROM entity_milestones
                     WHERE entity_key IN (:entityKeys)
-                    ORDER BY entity_key, template_id, created_at DESC, updated_at DESC
+                    ORDER BY entity_key, milestone_id, last_event_time DESC, created_at DESC
                 ) latest
                 ORDER BY entity_key ASC, sequence_no ASC, milestone_id ASC
                 """;

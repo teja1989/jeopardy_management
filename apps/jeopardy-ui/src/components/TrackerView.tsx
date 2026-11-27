@@ -13,8 +13,11 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Layers,
   Link2,
+  MapPin,
   MoreHorizontal,
+  Package,
   PauseCircle,
   RefreshCw,
   Repeat,
@@ -22,8 +25,11 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Sparkles,
+  Store,
+  Truck,
   User,
   X,
+  Zap,
 } from 'lucide-react';
 import {
   getAnalyticsFacets,
@@ -45,6 +51,8 @@ import type {
   FalloutDto,
   JourneyBlueprintRecord,
   MilestoneDto,
+  OrderItemTrackOverviewDto,
+  OrderItemTrackSummary,
   SseConnectionState,
   TimelineHistogramResponse,
 } from '../api/types';
@@ -176,6 +184,217 @@ function falloutStageIndex(status: string): number {
   return 0;
 }
 
+function classifyMilestonePhase(
+  templateId: string,
+  displayName: string,
+): {
+  label: 'Fulfillment' | 'Provisioning' | 'Billing' | 'Order';
+  toneClass: string;
+} {
+  const haystack = `${templateId || ''} ${displayName || ''}`.toUpperCase();
+  if (
+    /BILL|INVOIC|CHARGE|TAX|CREDIT_APPLY|SETTLE|ACCOUNT_LEDGER|MRC|NRC|AUTOPAY|FINANC|INSTALLMENT|TRADE_IN_CREDIT/.test(
+      haystack,
+    )
+  ) {
+    return {
+      label: 'Billing',
+      toneClass:
+        'bg-[#FEF7E0] text-[#B06000] dark:bg-[#332609] dark:text-[#FDD663]',
+    };
+  }
+  if (
+    /PROVISION|ACTIVAT|ESIM|SIM_|PORT|LNP|FOC|NETWORK|HLR|HSS|UDM|NUMBER|MSISDN|MDN|IMEI|SWITCH|LINE_SETUP|PLAN_CHANGE|SOC|FEATURE|ROAM|VOICEMAIL|WIFI_CALL|5G|SERVICE_/.test(
+      haystack,
+    )
+  ) {
+    return {
+      label: 'Provisioning',
+      toneClass:
+        'bg-[#F3E8FD] text-[#7627BB] dark:bg-[#2D1B3E] dark:text-[#D7AEFB]',
+    };
+  }
+  if (
+    /FULFILL|SHIP|DELIVER|PICKUP|BOPIS|STORE|WAREHOUSE|WMS|CARRIER|FEDEX|UPS|USPS|TRACKING|PACK|DISPATCH|INVENTORY|ALLOCAT|LABEL|HANDOFF|KIT|RETURN_SHIP|INSPECT|DEVICE_RESERV/.test(
+      haystack,
+    )
+  ) {
+    return {
+      label: 'Fulfillment',
+      toneClass:
+        'bg-[#E6F4EA] text-[#137333] dark:bg-[#132E1C] dark:text-[#81C995]',
+    };
+  }
+  return {
+    label: 'Order',
+    toneClass:
+      'bg-[#E8F0FE] text-[#1967D2] dark:bg-[#004A77]/70 dark:text-[#C2E7FF]',
+  };
+}
+
+type FulfillmentGroupKey = 'SHIP_TO_HOME' | 'IN_STORE_PICKUP' | 'DIGITAL';
+
+function normalizeFulfillmentGroup(
+  fulfillmentType: string | null | undefined,
+): FulfillmentGroupKey {
+  const ft = (fulfillmentType || '').toUpperCase();
+  if (ft === 'SHIP_TO_HOME') return 'SHIP_TO_HOME';
+  if (ft === 'IN_STORE_PICKUP') return 'IN_STORE_PICKUP';
+  return 'DIGITAL';
+}
+
+function inferFulfillmentFromEntity(ent: EntitySummaryDto): {
+  fulfillmentType: string;
+  fulfillmentLabel: string;
+  storeLocation: string | null;
+} {
+  const attrs = ent.attributes ?? {};
+  const rawType = String(
+    attrs.fulfillmentType ??
+      attrs.fulfillment_type ??
+      attrs.fulfillmentMethod ??
+      attrs.fulfillment_method ??
+      '',
+  ).toUpperCase();
+  const storeLoc = attrs.storeLocation ?? attrs.store_location ?? attrs.storeId ?? attrs.store_id;
+  const storeLocation = storeLoc ? String(storeLoc) : null;
+  const itemUpper = (ent.itemType || '').toUpperCase();
+
+  if (
+    rawType.includes('PICKUP') ||
+    rawType.includes('STORE') ||
+    rawType.includes('BOPIS') ||
+    Boolean(storeLocation)
+  ) {
+    return {
+      fulfillmentType: 'IN_STORE_PICKUP',
+      fulfillmentLabel: 'In-Store Pickup',
+      storeLocation,
+    };
+  }
+  if (
+    rawType.includes('SHIP') ||
+    rawType.includes('DELIVER') ||
+    rawType.includes('HOME') ||
+    /PHONE|DEVICE|WATCH|TABLET|ACCESSORY|ROUTER|MODEM|HARDWARE|KIT/.test(itemUpper)
+  ) {
+    return {
+      fulfillmentType: 'SHIP_TO_HOME',
+      fulfillmentLabel: 'Ship to Home',
+      storeLocation: null,
+    };
+  }
+  return {
+    fulfillmentType: 'DIGITAL',
+    fulfillmentLabel: 'Digital & Service',
+    storeLocation: null,
+  };
+}
+
+function isItemNeedingAttention(status: string, hasActiveFallout: boolean): boolean {
+  const s = (status || '').toUpperCase();
+  return (
+    hasActiveFallout ||
+    s === 'IN_FALLOUT' ||
+    s === 'BREACHED' ||
+    s === 'JEOPARDY' ||
+    s === 'WARNING'
+  );
+}
+
+function trackStatusStyle(status: string): {
+  shortLabel: string;
+  pillClass: string;
+  dotClass: string;
+  isDone: boolean;
+  isIssue: boolean;
+} {
+  const s = (status || '').toUpperCase();
+  if (s === 'COMPLETED') {
+    return {
+      shortLabel: 'Completed',
+      pillClass:
+        'bg-[#E6F4EA] text-[#137333] border-[#1E8E3E]/20 dark:bg-[#132E1C] dark:text-[#81C995] dark:border-[#81C995]/20',
+      dotClass: 'bg-[#1E8E3E]',
+      isDone: true,
+      isIssue: false,
+    };
+  }
+  if (s === 'IN_FALLOUT' || s === 'BREACHED' || s === 'FAILED' || s === 'ERROR') {
+    return {
+      shortLabel: s === 'BREACHED' ? 'SLA Overdue' : 'Action Needed',
+      pillClass:
+        'bg-[#FCE8E6] text-[#C5221F] border-[#D93025]/25 dark:bg-[#3C1919] dark:text-[#F28B82] dark:border-[#F28B82]/25',
+      dotClass: 'bg-[#D93025]',
+      isDone: false,
+      isIssue: true,
+    };
+  }
+  if (s === 'JEOPARDY' || s === 'WARNING' || s === 'DELAYED') {
+    return {
+      shortLabel: 'Delayed',
+      pillClass:
+        'bg-[#FEF7E0] text-[#B06000] border-[#F9AB00]/30 dark:bg-[#332609] dark:text-[#FDD663] dark:border-[#FDD663]/25',
+      dotClass: 'bg-[#F9AB00]',
+      isDone: false,
+      isIssue: true,
+    };
+  }
+  if (s === 'PAUSED' || s === 'ON_HOLD') {
+    return {
+      shortLabel: 'On Hold',
+      pillClass:
+        'bg-[#F3E8FD] text-[#7627BB] border-[#9334E6]/25 dark:bg-[#2D1B3E] dark:text-[#D7AEFB] dark:border-[#D7AEFB]/20',
+      dotClass: 'bg-[#9334E6]',
+      isDone: false,
+      isIssue: false,
+    };
+  }
+  if (s === 'IN_PROGRESS' || s === 'ACTIVE') {
+    return {
+      shortLabel: 'In Progress',
+      pillClass:
+        'bg-[#E8F0FE] text-[#1967D2] border-[#1A73E8]/20 dark:bg-[#004A77]/70 dark:text-[#C2E7FF] dark:border-[#8AB4F8]/25',
+      dotClass: 'bg-[#1A73E8]',
+      isDone: false,
+      isIssue: false,
+    };
+  }
+  return {
+    shortLabel: 'Pending',
+    pillClass:
+      'bg-[#F0F4F9] text-[#5F6368] border-[#DDE3EA] dark:bg-[#282A2C] dark:text-[#9AA0A6] dark:border-[#3C4043]',
+    dotClass: 'bg-[#9AA0A6]',
+    isDone: false,
+    isIssue: false,
+  };
+}
+
+function humanTrackCustomerSummary(track: OrderItemTrackSummary): string {
+  const s = (track.status || '').toUpperCase();
+  const stepText = track.currentStepName ? track.currentStepName : null;
+  const counts =
+    track.totalSteps > 0 ? ` (${track.completedSteps}/${track.totalSteps} steps)` : '';
+  if (s === 'COMPLETED') {
+    return `${track.label}: Completed${stepText ? ` — ${stepText}` : ''}`;
+  }
+  if (s === 'IN_FALLOUT' || s === 'BREACHED' || s === 'FAILED' || s === 'ERROR') {
+    return `${track.label}: Delayed — our team is actively resolving${
+      stepText ? ` (${stepText})` : ''
+    }`;
+  }
+  if (s === 'JEOPARDY' || s === 'WARNING' || s === 'DELAYED') {
+    return `${track.label}: Running behind schedule${stepText ? ` — ${stepText}` : ''}${counts}`;
+  }
+  if (s === 'PAUSED' || s === 'ON_HOLD') {
+    return `${track.label}: Temporarily on hold${stepText ? ` — ${stepText}` : ''}`;
+  }
+  if (s === 'IN_PROGRESS' || s === 'ACTIVE') {
+    return `${track.label}: In progress${stepText ? ` — ${stepText}` : ''}${counts}`;
+  }
+  return `${track.label}: Scheduled next`;
+}
+
 function mapIncomingStatus(raw?: string): {
   quick: StatusQuickFilter;
   extra?: string;
@@ -281,6 +500,9 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineError, setTimelineError] = useState<string | null>(null);
   const [selectedStageIndex, setSelectedStageIndex] = useState<number | null>(null);
+  const [stagePhaseFilter, setStagePhaseFilter] = useState<
+    'ALL' | 'Fulfillment' | 'Provisioning' | 'Billing' | 'Order'
+  >('ALL');
 
   // Technical Audit tab state (only fetches ClickHouse when detailTab === 'audit')
   const [includeNoise, setIncludeNoise] = useState(false);
@@ -289,7 +511,9 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   // Overflow menu & copy feedback
   const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
   const overflowMenuRef = useRef<HTMLDivElement | null>(null);
-  const [copiedAction, setCopiedAction] = useState<'id' | 'summary' | 'api' | null>(null);
+  const [copiedAction, setCopiedAction] = useState<
+    'id' | 'summary' | 'api' | 'customerUpdate' | null
+  >(null);
 
   // Live SSE state & refs
   const [sseState, setSseState] = useState<SseConnectionState>('CLOSED');
@@ -297,7 +521,9 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   const selectedEntityKeyRef = useRef<string | null>(selectedEntityKey);
   const detailTabRef = useRef<OrderDetailTab>(detailTab);
   const includeNoiseRef = useRef<boolean>(includeNoise);
+  const rawAuditLoadedKeyRef = useRef<string | null>(null);
   const timelineReqSeqRef = useRef<number>(0);
+  const isInDetailView = Boolean(selectedEntityKey);
 
   useEffect(() => {
     selectedEntityKeyRef.current = selectedEntityKey;
@@ -523,6 +749,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
       const res = await getEntityTimeline(key, noise, loadRawAudit ? 100 : 0);
       if (reqSeq !== timelineReqSeqRef.current) return;
       setTimelineData(res);
+      rawAuditLoadedKeyRef.current = loadRawAudit ? `${key}|${noise}` : null;
       // Keep selectedCustomerId strictly synced with the currently tracked Order's account
       if (res.entity?.customerId) {
         setSelectedCustomerId(res.entity.customerId);
@@ -539,19 +766,36 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     }
   }, []);
 
+  // Bug 1 Fix: Fetch fast PG-only timeline (rawLimit=0) ONLY when selectedEntityKey changes
   useEffect(() => {
-    if (!selectedEntityKey) return;
-    void loadTimeline(selectedEntityKey, detailTab === 'audit', includeNoise);
+    setStagePhaseFilter('ALL');
+    if (!selectedEntityKey) {
+      rawAuditLoadedKeyRef.current = null;
+      return;
+    }
+    rawAuditLoadedKeyRef.current = null;
+    if (detailTabRef.current !== 'audit') {
+      void loadTimeline(selectedEntityKey, false, includeNoiseRef.current);
+    }
+  }, [selectedEntityKey, loadTimeline]);
+
+  // Bug 1 Fix: Fetch raw ClickHouse audit events ONLY when Audit tab is opened (or noise toggled) and not yet cached
+  useEffect(() => {
+    if (!selectedEntityKey || detailTab !== 'audit') return;
+    const auditCacheKey = `${selectedEntityKey}|${includeNoise}`;
+    if (rawAuditLoadedKeyRef.current === auditCacheKey) return;
+    void loadTimeline(selectedEntityKey, true, includeNoise);
   }, [selectedEntityKey, detailTab, includeNoise, loadTimeline]);
 
+  // Bug 2 Fix: Keep Customer Journeys/Orders warm while switching sibling items of the SAME order
   useEffect(() => {
-    if (!selectedEntityKey || !selectedCustomerId) return;
+    if (!isInDetailView || !selectedCustomerId) return;
     void loadCustomerJourneys(selectedCustomerId);
-  }, [selectedEntityKey, selectedCustomerId, loadCustomerJourneys]);
+  }, [isInDetailView, selectedCustomerId, loadCustomerJourneys]);
 
-  // Live SSE auto-sync while viewing an Order Detail (Mode 2)
+  // Bug 2 Fix: Keep Live SSE connected while switching sibling items of the SAME order
   useEffect(() => {
-    if (!selectedEntityKey || !selectedCustomerId) {
+    if (!isInDetailView || !selectedCustomerId) {
       setSseState('CLOSED');
       return undefined;
     }
@@ -576,7 +820,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
       sub.close();
       if (reloadDebounceRef.current) window.clearTimeout(reloadDebounceRef.current);
     };
-  }, [selectedEntityKey, selectedCustomerId, loadCustomerJourneys, loadTimeline]);
+  }, [isInDetailView, selectedCustomerId, loadCustomerJourneys, loadTimeline]);
 
   // Navigation helpers
   const openOrder = useCallback((entityKey: string, customerId?: string | null) => {
@@ -597,6 +841,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     setSelectedStageIndex(null);
     setDetailTab('progress');
     setOverflowMenuOpen(false);
+    rawAuditLoadedKeyRef.current = null;
     if (initialFilter?.entityKey) {
       onClearInitialFilter();
     }
@@ -620,15 +865,18 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     onClearInitialFilter();
   }, [onClearInitialFilter]);
 
-  const copyWithFeedback = useCallback((kind: 'id' | 'summary' | 'api', text: string) => {
-    if (navigator.clipboard) {
-      void navigator.clipboard.writeText(text);
-    }
-    setCopiedAction(kind);
-    window.setTimeout(() => {
-      setCopiedAction((cur) => (cur === kind ? null : cur));
-    }, 1800);
-  }, []);
+  const copyWithFeedback = useCallback(
+    (kind: 'id' | 'summary' | 'api' | 'customerUpdate', text: string) => {
+      if (navigator.clipboard) {
+        void navigator.clipboard.writeText(text);
+      }
+      setCopiedAction(kind);
+      window.setTimeout(() => {
+        setCopiedAction((cur) => (cur === kind ? null : cur));
+      }, 1800);
+    },
+    [],
+  );
 
   // Group queue items by root Order # for Mode 1 table
   const groupedOrders = useMemo(() => {
@@ -820,12 +1068,101 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     dimValFilter,
   ]);
 
-  // Mode 2: Deduplicated Domino's / BMW style stage list
+  const customerEntities = useMemo(() => {
+    const seen = new Set<string>();
+    const all: EntitySummaryDto[] = [];
+    for (const grp of journeyData?.journeys ?? []) {
+      for (const e of grp.entities) {
+        if (!seen.has(e.entityKey)) {
+          seen.add(e.entityKey);
+          all.push(e);
+        }
+      }
+    }
+    return all;
+  }, [journeyData]);
+
+  // Bug 3 Fix: Instant Optimistic Entity & same-order continuity while milestones sync
+  const isTimelineSynced = Boolean(
+    selectedEntityKey && timelineData?.entity?.entityKey === selectedEntityKey,
+  );
+  const syncedTimeline = isTimelineSynced ? timelineData : null;
+
+  const sameOrderTimeline = useMemo<EntityTimelineResponse | null>(() => {
+    if (!selectedEntityKey || !timelineData?.entity?.entityKey) return null;
+    const selRoot = selectedEntityKey.includes(':')
+      ? selectedEntityKey.split(':')[0]
+      : selectedEntityKey;
+    const dataRoot = timelineData.entity.entityKey.includes(':')
+      ? timelineData.entity.entityKey.split(':')[0]
+      : timelineData.entity.entityKey;
+    return selRoot === dataRoot ? timelineData : null;
+  }, [selectedEntityKey, timelineData]);
+
+  const optimisticEntity = useMemo<EntitySummaryDto | null>(() => {
+    if (!selectedEntityKey) return null;
+    if (syncedTimeline?.entity) return syncedTimeline.entity;
+    const fromOrder = sameOrderTimeline?.orderEntities?.find(
+      (e) => e.entityKey === selectedEntityKey,
+    );
+    if (fromOrder) return fromOrder;
+    const fromQueue = queueItems.find((e) => e.entityKey === selectedEntityKey);
+    if (fromQueue) return fromQueue;
+    const fromCustomer = customerEntities.find((e) => e.entityKey === selectedEntityKey);
+    if (fromCustomer) return fromCustomer;
+    const fromOverview = sameOrderTimeline?.itemOverviews?.find(
+      (o) => o.entityKey === selectedEntityKey,
+    );
+    if (fromOverview) {
+      return {
+        entityKey: fromOverview.entityKey,
+        createdAt: null,
+        entityLevel: fromOverview.entityLevel,
+        orderFamily: null,
+        orderType: fromOverview.orderType,
+        itemType: fromOverview.itemType,
+        parentEntityKey: selectedEntityKey.includes(':')
+          ? selectedEntityKey.split(':')[0]
+          : null,
+        customerId: selectedCustomerId || sameOrderTimeline?.entity?.customerId || null,
+        subscriberId: null,
+        accountType: sameOrderTimeline?.entity?.accountType ?? null,
+        channel: sameOrderTimeline?.entity?.channel ?? null,
+        region: sameOrderTimeline?.entity?.region ?? null,
+        journeyId: sameOrderTimeline?.entity?.journeyId ?? null,
+        blueprintId: null,
+        blueprintVersion: null,
+        status: fromOverview.status,
+        jeopardySeverity: null,
+        hasActiveFallout: fromOverview.hasActiveFallout,
+        predictedP50At: fromOverview.predictedP50At,
+        predictedP90At: null,
+        breachProbability: null,
+        attributes: null,
+        lastEventTime: null,
+        updatedAt: null,
+        closedAt: fromOverview.closedAt,
+      };
+    }
+    return null;
+  }, [
+    selectedEntityKey,
+    syncedTimeline,
+    sameOrderTimeline,
+    queueItems,
+    customerEntities,
+    selectedCustomerId,
+  ]);
+
+  const entity = optimisticEntity;
+  const heroStatus = entity ? humanStatusLabel(entity.status, entity.hasActiveFallout) : null;
+
+  // Mode 2: Deduplicated Domino's / BMW style stage list (strictly from syncedTimeline)
   const stages = useMemo<UnifiedStage[]>(() => {
-    if (!timelineData) return [];
+    if (!syncedTimeline) return [];
 
     const latestByTemplate = new Map<string, MilestoneDto>();
-    for (const m of timelineData.milestones) {
+    for (const m of syncedTimeline.milestones) {
       const prev = latestByTemplate.get(m.templateId);
       if (!prev) {
         latestByTemplate.set(m.templateId, m);
@@ -839,14 +1176,14 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     }
 
     const falloutsFor = (templateId: string, milestoneId?: string): FalloutDto[] =>
-      (timelineData.fallouts ?? []).filter(
+      (syncedTimeline.fallouts ?? []).filter(
         (f) =>
           (f.templateId && f.templateId === templateId) ||
           (milestoneId && f.milestoneId === milestoneId),
       );
 
-    const bp = timelineData.entity.blueprintId
-      ? blueprintsById.get(timelineData.entity.blueprintId)
+    const bp = syncedTimeline.entity.blueprintId
+      ? blueprintsById.get(syncedTimeline.entity.blueprintId)
       : undefined;
     const bpSteps = Array.isArray((bp?.definition as Record<string, unknown> | undefined)?.steps)
       ? (((bp?.definition as Record<string, unknown>).steps as BlueprintStepDefinition[]) ?? [])
@@ -871,7 +1208,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
           else if (st === 'PAUSED') status = 'PAUSED';
           else if (st === 'IN_FALLOUT') status = 'IN_FALLOUT';
           else status = 'IN_PROGRESS';
-        } else if (timelineData.entity.status === 'COMPLETED') {
+        } else if (syncedTimeline.entity.status === 'COMPLETED') {
           status = 'COMPLETED';
         }
 
@@ -895,7 +1232,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
           s.status === 'BREACHED' ||
           s.status === 'PAUSED',
       );
-      if (!hasActive && timelineData.entity.status !== 'COMPLETED') {
+      if (!hasActive && syncedTimeline.entity.status !== 'COMPLETED') {
         const firstUpcoming = list.findIndex((s) => s.status === 'UPCOMING');
         if (firstUpcoming >= 0) {
           list[firstUpcoming] = { ...list[firstUpcoming], status: 'IN_PROGRESS' };
@@ -920,7 +1257,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
           internalStepId: m.milestoneId,
         };
       });
-  }, [timelineData, blueprintsById]);
+  }, [syncedTimeline, blueprintsById]);
 
   const currentStageIndex = useMemo(() => {
     if (stages.length === 0) return -1;
@@ -946,50 +1283,205 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
         : null;
 
   const completedCount = stages.filter((s) => s.status === 'COMPLETED').length;
-  const progressPct =
-    stages.length > 1
-      ? Math.round((Math.max(0, currentStageIndex) / (stages.length - 1)) * 100)
-      : completedCount > 0
-        ? 100
-        : 0;
-
-  const customerEntities = useMemo(() => {
-    const seen = new Set<string>();
-    const all: EntitySummaryDto[] = [];
-    for (const grp of journeyData?.journeys ?? []) {
-      for (const e of grp.entities) {
-        if (!seen.has(e.entityKey)) {
-          seen.add(e.entityKey);
-          all.push(e);
-        }
-      }
+  const stagePhaseCounts = useMemo(() => {
+    const counts: Record<'Fulfillment' | 'Provisioning' | 'Billing' | 'Order', number> = {
+      Fulfillment: 0,
+      Provisioning: 0,
+      Billing: 0,
+      Order: 0,
+    };
+    for (const s of stages) {
+      const p = classifyMilestonePhase(s.templateId, s.title);
+      counts[p.label] += 1;
     }
-    return all;
-  }, [journeyData]);
+    return counts;
+  }, [stages]);
 
-  const activeFallouts = useMemo(
-    () => (timelineData?.fallouts ?? []).filter((f) => f.falloutStatus !== 'RESOLVED'),
-    [timelineData],
+  const distinctStagePhases = useMemo(
+    () =>
+      (['Order', 'Fulfillment', 'Provisioning', 'Billing'] as const).filter(
+        (k) => stagePhaseCounts[k] > 0,
+      ),
+    [stagePhaseCounts],
   );
 
-  const entity = timelineData?.entity ?? null;
-  const heroStatus = entity ? humanStatusLabel(entity.status, entity.hasActiveFallout) : null;
+  const visibleStages = useMemo(
+    () =>
+      stages
+        .map((st, idx) => ({ st, idx, phase: classifyMilestonePhase(st.templateId, st.title) }))
+        .filter((entry) => stagePhaseFilter === 'ALL' || entry.phase.label === stagePhaseFilter),
+    [stages, stagePhaseFilter],
+  );
 
-  // Strictly order-scoped entities for Linked Orders tab
+  const progressPct =
+    stages.length > 0 ? Math.round((completedCount / stages.length) * 100) : 0;
+
+  const activeFallouts = useMemo(
+    () => (syncedTimeline?.fallouts ?? []).filter((f) => f.falloutStatus !== 'RESOLVED'),
+    [syncedTimeline],
+  );
+
+  // Strictly order-scoped entities for Linked Orders tab & multi-item fallback
   const scopedOrderEntities = useMemo(() => {
     if (!entity) return [];
     const currentRootOrderId = entity.entityKey.includes(':')
       ? entity.entityKey.split(':')[0]
       : entity.entityKey;
-    if ((timelineData?.orderEntities ?? []).length > 0) {
-      return timelineData!.orderEntities!;
+    if ((sameOrderTimeline?.orderEntities ?? []).length > 0) {
+      return sameOrderTimeline!.orderEntities!;
     }
     return customerEntities.filter(
       (e) =>
         e.entityKey === currentRootOrderId ||
         e.entityKey.startsWith(`${currentRootOrderId}:`),
     );
-  }, [entity, timelineData, customerEntities]);
+  }, [entity, sameOrderTimeline, customerEntities]);
+
+  // Multi-item fulfillment + provisioning + billing overviews (from backend itemOverviews or fallback)
+  const childItemOverviews = useMemo<OrderItemTrackOverviewDto[]>(() => {
+    const rawOverviews = sameOrderTimeline?.itemOverviews ?? [];
+    const fromBackend = rawOverviews.filter(
+      (o) => (o.entityLevel || '').toUpperCase() === 'ORDER_ITEM',
+    );
+    if (fromBackend.length > 0) {
+      return [...fromBackend].sort((a, b) =>
+        a.entityKey.localeCompare(b.entityKey, undefined, { numeric: true }),
+      );
+    }
+    return scopedOrderEntities
+      .filter((e) => (e.entityLevel || '').toUpperCase() === 'ORDER_ITEM')
+      .sort((a, b) => a.entityKey.localeCompare(b.entityKey, undefined, { numeric: true }))
+      .map((e) => {
+        const inf = inferFulfillmentFromEntity(e);
+        return {
+          entityKey: e.entityKey,
+          entityLevel: e.entityLevel,
+          orderType: e.orderType,
+          itemType: e.itemType,
+          displayTitle: friendlyEntityTitle(e),
+          fulfillmentType: inf.fulfillmentType,
+          fulfillmentLabel: inf.fulfillmentLabel,
+          storeLocation: inf.storeLocation,
+          status: e.status,
+          hasActiveFallout: e.hasActiveFallout,
+          completedSteps: 0,
+          totalSteps: 0,
+          currentStepName: null,
+          predictedP50At: e.predictedP50At,
+          closedAt: e.closedAt,
+          tracks: [],
+          linkedCompanionKeys: [],
+        };
+      });
+  }, [sameOrderTimeline, scopedOrderEntities]);
+
+  const itemRollup = useMemo(() => {
+    let completedItems = 0;
+    let inProgressItems = 0;
+    let attentionItems = 0;
+    let shipToHomeCount = 0;
+    let inStorePickupCount = 0;
+    let digitalCount = 0;
+
+    for (const item of childItemOverviews) {
+      if (isItemNeedingAttention(item.status, item.hasActiveFallout)) {
+        attentionItems++;
+      } else if ((item.status || '').toUpperCase() === 'COMPLETED') {
+        completedItems++;
+      } else {
+        inProgressItems++;
+      }
+      const grp = normalizeFulfillmentGroup(item.fulfillmentType);
+      if (grp === 'SHIP_TO_HOME') shipToHomeCount++;
+      else if (grp === 'IN_STORE_PICKUP') inStorePickupCount++;
+      else digitalCount++;
+    }
+
+    return {
+      totalItems: childItemOverviews.length,
+      completedItems,
+      inProgressItems,
+      attentionItems,
+      shipToHomeCount,
+      inStorePickupCount,
+      digitalCount,
+    };
+  }, [childItemOverviews]);
+
+  const groupedChildItems = useMemo(() => {
+    const buckets: Record<FulfillmentGroupKey, OrderItemTrackOverviewDto[]> = {
+      SHIP_TO_HOME: [],
+      IN_STORE_PICKUP: [],
+      DIGITAL: [],
+    };
+    for (const item of childItemOverviews) {
+      buckets[normalizeFulfillmentGroup(item.fulfillmentType)].push(item);
+    }
+    const defs: Array<{ key: FulfillmentGroupKey; title: string }> = [
+      { key: 'SHIP_TO_HOME', title: 'Ship to Home' },
+      { key: 'IN_STORE_PICKUP', title: 'In-Store Pickup' },
+      { key: 'DIGITAL', title: 'Digital & Service' },
+    ];
+    return defs
+      .filter((d) => buckets[d.key].length > 0)
+      .map((d) => ({
+        key: d.key,
+        title: d.title,
+        items: buckets[d.key],
+      }));
+  }, [childItemOverviews]);
+
+  const buildCustomerUpdate = useCallback(() => {
+    if (!entity) return '';
+    const rootId = entity.entityKey.includes(':')
+      ? entity.entityKey.split(':')[0]
+      : entity.entityKey;
+    const rollupParts: string[] = [];
+    if (itemRollup.completedItems > 0) {
+      rollupParts.push(`${itemRollup.completedItems} Completed / Ready`);
+    }
+    if (itemRollup.inProgressItems > 0) {
+      rollupParts.push(`${itemRollup.inProgressItems} In Progress`);
+    }
+    if (itemRollup.attentionItems > 0) {
+      rollupParts.push(`${itemRollup.attentionItems} Needs Attention`);
+    }
+    const lines: string[] = [
+      `Order #${rootId} Update — ${itemRollup.totalItems} ${
+        itemRollup.totalItems === 1 ? 'Item' : 'Items'
+      }${rollupParts.length > 0 ? ` (${rollupParts.join(', ')})` : ''}`,
+    ];
+
+    for (const grp of groupedChildItems) {
+      lines.push('');
+      lines.push(
+        `${grp.title} (${grp.items.length} ${grp.items.length === 1 ? 'item' : 'items'}):`,
+      );
+      for (const item of grp.items) {
+        const linePart = item.entityKey.includes(':')
+          ? item.entityKey.split(':')[1]
+          : item.entityKey;
+        const st = humanStatusLabel(item.status, item.hasActiveFallout);
+        const storeText = item.storeLocation ? ` · ${item.storeLocation}` : '';
+        const etaText = item.closedAt
+          ? ` · Completed ${formatShortTime(item.closedAt)}`
+          : item.predictedP50At
+            ? ` · Est. ${formatShortTime(item.predictedP50At)}`
+            : '';
+        lines.push(
+          `- ${item.displayTitle || prettifyName(item.itemType)} (${linePart}${storeText}) — ${st.label}${etaText}`,
+        );
+        if (item.tracks.length > 0) {
+          for (const tr of item.tracks) {
+            lines.push(`  • ${humanTrackCustomerSummary(tr)}`);
+          }
+        } else if (item.currentStepName) {
+          lines.push(`  • Current step: ${item.currentStepName}`);
+        }
+      }
+    }
+    return lines.join('\n');
+  }, [entity, itemRollup, groupedChildItems]);
 
   const buildSupportSummary = useCallback(() => {
     if (!entity) return '';
@@ -1673,6 +2165,8 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     ? activeKeyForBreadcrumb.split(':')[0]
     : activeKeyForBreadcrumb;
   const lineItemId = hasLineInKey ? activeKeyForBreadcrumb.split(':')[1] : null;
+  const isLineItemView =
+    (entity?.entityLevel || '').toUpperCase() === 'ORDER_ITEM' || hasLineInKey;
   const acctOrderCount = customerOrders?.totalOrders ?? 0;
 
   return (
@@ -1701,9 +2195,20 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
               Orders
             </button>
             <span>/</span>
-            <span className="font-mono font-medium text-[#1F1F1F] dark:text-white">
-              Order #{rootOrderNum}
-            </span>
+            {lineItemId ? (
+              <button
+                type="button"
+                onClick={() => openOrder(rootOrderNum, entity?.customerId)}
+                className="font-mono font-medium text-[#1A73E8] dark:text-[#8AB4F8] hover:underline transition"
+                title={`View full Sales Order #${rootOrderNum}`}
+              >
+                Order #{rootOrderNum}
+              </button>
+            ) : (
+              <span className="font-mono font-medium text-[#1F1F1F] dark:text-white">
+                Order #{rootOrderNum}
+              </span>
+            )}
             {lineItemId && (
               <>
                 <span>/</span>
@@ -1716,6 +2221,13 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {(timelineLoading || !isTimelineSynced) && entity && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#E8F0FE] dark:bg-[#004A77]/60 px-2.5 py-1 text-[11px] font-medium text-[#1967D2] dark:text-[#C2E7FF]">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              Syncing milestones...
+            </span>
+          )}
+
           {sseState === 'LIVE' && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-[#E6F4EA] dark:bg-[#132E1C] px-2.5 py-1 text-[11px] font-medium text-[#137333] dark:text-[#81C995]">
               <span className="w-1.5 h-1.5 rounded-full bg-[#1E8E3E] animate-pulse" />
@@ -1892,7 +2404,11 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
 
                 {/* 1-Line Plain-English Progress Headline */}
                 <p className="text-sm text-[#444746] dark:text-[#C4C7C5]">
-                  {entity.status === 'COMPLETED' ? (
+                  {!isTimelineSynced && timelineLoading ? (
+                    <span className="text-[#5F6368] dark:text-[#9AA0A6]">
+                      Syncing latest milestones and SLA clocks...
+                    </span>
+                  ) : entity.status === 'COMPLETED' ? (
                     <>All {stages.length} milestones completed for this order.</>
                   ) : currentStageIndex >= 0 && stages[currentStageIndex] ? (
                     <>
@@ -1914,6 +2430,57 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                     <>Order tracking initialized.</>
                   )}
                 </p>
+
+                {/* Smart Multi-Item Rollup Pill Bar */}
+                {childItemOverviews.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-3 py-1 text-xs font-semibold text-[#1F1F1F] dark:text-white tabular-nums">
+                      <Package className="w-3.5 h-3.5 text-[#1A73E8] dark:text-[#8AB4F8]" />
+                      {itemRollup.totalItems} {itemRollup.totalItems === 1 ? 'Item' : 'Items'}
+                    </span>
+
+                    {itemRollup.completedItems > 0 && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#E6F4EA] dark:bg-[#132E1C] px-3 py-1 text-xs font-semibold text-[#137333] dark:text-[#81C995] tabular-nums">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#1E8E3E]" />
+                        {itemRollup.completedItems} Completed / Ready
+                      </span>
+                    )}
+
+                    {itemRollup.inProgressItems > 0 && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#E8F0FE] dark:bg-[#004A77]/70 px-3 py-1 text-xs font-semibold text-[#1967D2] dark:text-[#C2E7FF] tabular-nums">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#1A73E8]" />
+                        {itemRollup.inProgressItems} In Progress
+                      </span>
+                    )}
+
+                    {itemRollup.attentionItems > 0 && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#FCE8E6] dark:bg-[#3C1919] px-3 py-1 text-xs font-semibold text-[#C5221F] dark:text-[#F28B82] tabular-nums">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#D93025]" />
+                        {itemRollup.attentionItems} Needs Attention
+                      </span>
+                    )}
+
+                    {(itemRollup.shipToHomeCount > 0 ||
+                      itemRollup.inStorePickupCount > 0 ||
+                      itemRollup.digitalCount > 0) && (
+                      <span className="text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6] pl-1">
+                        {[
+                          itemRollup.shipToHomeCount > 0
+                            ? `${itemRollup.shipToHomeCount} Ship to Home`
+                            : null,
+                          itemRollup.inStorePickupCount > 0
+                            ? `${itemRollup.inStorePickupCount} In-Store Pickup`
+                            : null,
+                          itemRollup.digitalCount > 0
+                            ? `${itemRollup.digitalCount} Digital`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {/* Inline Order Facts Row (only populated fields) */}
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 pt-1 text-xs text-[#5F6368] dark:text-[#9AA0A6]">
@@ -1960,23 +2527,46 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                 </div>
               </div>
 
-              {/* Right Calm ETA / Completed Card */}
-              <div className="p-4 rounded-2xl bg-[#F8FAFD] dark:bg-[#131314] border border-[#E0E6F0]/80 dark:border-[#333639] min-w-[220px] shrink-0">
-                <div className="text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6]">
-                  {entity.status === 'COMPLETED' ? 'Completed At' : 'Estimated Completion'}
-                </div>
-                <div className="mt-1 flex items-center gap-2 font-display text-base font-bold tabular-nums text-[#1F1F1F] dark:text-white">
-                  <Clock className="w-4 h-4 text-[#1A73E8] dark:text-[#8AB4F8] shrink-0" />
-                  {entity.closedAt
-                    ? formatShortTime(entity.closedAt)
-                    : entity.predictedP50At
-                      ? formatShortTime(entity.predictedP50At)
-                      : 'Calculating...'}
-                </div>
-                {entity.lastEventTime && (
-                  <div className="mt-1.5 text-[11px] text-[#5F6368] dark:text-[#9AA0A6] tabular-nums">
-                    Updated {formatShortTime(entity.lastEventTime)}
+              {/* Right Calm ETA / Completed Card + 1-Click Copy Customer Update */}
+              <div className="flex flex-col items-stretch gap-2.5 min-w-[230px] shrink-0">
+                <div className="p-4 rounded-2xl bg-[#F8FAFD] dark:bg-[#131314] border border-[#E0E6F0]/80 dark:border-[#333639]">
+                  <div className="text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6]">
+                    {entity.status === 'COMPLETED' ? 'Completed At' : 'Estimated Completion'}
                   </div>
+                  <div className="mt-1 flex items-center gap-2 font-display text-base font-bold tabular-nums text-[#1F1F1F] dark:text-white">
+                    <Clock className="w-4 h-4 text-[#1A73E8] dark:text-[#8AB4F8] shrink-0" />
+                    {entity.closedAt
+                      ? formatShortTime(entity.closedAt)
+                      : entity.predictedP50At
+                        ? formatShortTime(entity.predictedP50At)
+                        : 'Calculating...'}
+                  </div>
+                  {entity.lastEventTime && (
+                    <div className="mt-1.5 text-[11px] text-[#5F6368] dark:text-[#9AA0A6] tabular-nums">
+                      Updated {formatShortTime(entity.lastEventTime)}
+                    </div>
+                  )}
+                </div>
+
+                {childItemOverviews.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => copyWithFeedback('customerUpdate', buildCustomerUpdate())}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-[#D3E3FD] dark:bg-[#004A77] hover:bg-[#C2E7FF] dark:hover:bg-[#005B91] px-4 py-2 text-xs font-semibold text-[#041E49] dark:text-[#C2E7FF] transition shadow-sm"
+                    title="Copy a plain-English customer update grouped by Ship to Home & In-Store Pickup"
+                  >
+                    {copiedAction === 'customerUpdate' ? (
+                      <>
+                        <ClipboardCheck className="w-3.5 h-3.5 text-[#137333] dark:text-[#81C995]" />
+                        <span>Copied Customer Update</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy Customer Update</span>
+                      </>
+                    )}
+                  </button>
                 )}
               </div>
             </div>
@@ -2045,190 +2635,421 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
             {/* TAB 1: PROGRESS (Default) */}
             {detailTab === 'progress' && (
               <div className="p-6 space-y-6">
-                {/* Full-Width Domino's / BMW Horizontal Milestone Stepper */}
-                {stages.length === 0 ? (
-                  <div className="py-10 text-center text-sm text-[#5F6368] dark:text-[#9AA0A6]">
+                {/* Compact Order Items Switcher Bar (when viewing a specific Line Item) */}
+                {isLineItemView && childItemOverviews.length > 0 && (
+                  <div className="rounded-2xl bg-[#F8FAFD] dark:bg-[#131314] border border-[#E0E6F0] dark:border-[#333639] p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Package className="w-4 h-4 text-[#1A73E8] dark:text-[#8AB4F8]" />
+                        <span className="font-display text-xs font-bold text-[#1F1F1F] dark:text-white">
+                          Order #{rootOrderNum} Items ({childItemOverviews.length})
+                        </span>
+                        <span className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                          Switch line items in 1 click
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => openOrder(rootOrderNum, entity.customerId)}
+                        className="inline-flex items-center gap-1.5 rounded-full bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] hover:bg-[#E8F0FE] dark:hover:bg-[#004A77]/60 hover:border-[#1A73E8]/40 px-3 py-1 text-[11px] font-semibold text-[#1967D2] dark:text-[#8AB4F8] transition"
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        View Full Sales Order Overview
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {groupedChildItems.map((grp) => {
+                        const GroupIcon =
+                          grp.key === 'SHIP_TO_HOME'
+                            ? Truck
+                            : grp.key === 'IN_STORE_PICKUP'
+                              ? Store
+                              : Zap;
+                        return (
+                          <div
+                            key={grp.key}
+                            className="flex flex-wrap items-center gap-2"
+                          >
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6] min-w-[116px]">
+                              <GroupIcon className="w-3 h-3 opacity-80" />
+                              {grp.title}
+                            </span>
+
+                            <div className="flex flex-wrap items-center gap-1.5 flex-1">
+                              {grp.items.map((item) => {
+                                const isActiveItem = item.entityKey === entity.entityKey;
+                                const linePart = item.entityKey.includes(':')
+                                  ? item.entityKey.split(':')[1]
+                                  : item.entityKey;
+                                const st = humanStatusLabel(item.status, item.hasActiveFallout);
+                                const issueTrack = item.tracks.find(
+                                  (t) => trackStatusStyle(t.status).isIssue,
+                                );
+                                const hasIssue =
+                                  isItemNeedingAttention(item.status, item.hasActiveFallout) ||
+                                  Boolean(issueTrack);
+
+                                return (
+                                  <button
+                                    key={item.entityKey}
+                                    type="button"
+                                    onClick={() => openOrder(item.entityKey, entity.customerId)}
+                                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition ${
+                                      isActiveItem
+                                        ? 'border-[#1A73E8] bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold ring-2 ring-[#1A73E8]/20'
+                                        : hasIssue
+                                          ? 'border-[#D93025]/35 bg-[#FCE8E6]/55 dark:bg-[#3C1919]/50 text-[#1F1F1F] dark:text-[#E3E3E3] hover:border-[#D93025]/60'
+                                          : 'border-[#DDE3EA] dark:border-[#333639] bg-white dark:bg-[#1E1F20] text-[#444746] dark:text-[#C4C7C5] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]'
+                                    }`}
+                                    title={`${item.displayTitle || prettifyName(item.itemType)} (${linePart}) — ${st.label}${
+                                      issueTrack
+                                        ? ` · ${issueTrack.label}: ${issueTrack.lastErrorCode || issueTrack.status}`
+                                        : ''
+                                    }`}
+                                  >
+                                    <span className={`w-2 h-2 rounded-full shrink-0 ${st.dotClass}`} />
+                                    <span className="font-mono text-[10px] font-semibold opacity-80">
+                                      {linePart}
+                                    </span>
+                                    <span className="truncate max-w-[140px]">
+                                      {item.displayTitle || prettifyName(item.itemType)}
+                                    </span>
+                                    {hasIssue && (
+                                      <span className="inline-flex items-center gap-0.5 rounded-full bg-[#FCE8E6] dark:bg-[#3C1919] px-1.5 py-0 text-[10px] font-semibold text-[#C5221F] dark:text-[#F28B82]">
+                                        <AlertTriangle className="w-2.5 h-2.5" />
+                                        {issueTrack ? issueTrack.label : 'Alert'}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Shared Order Gates header when viewing Root Sales Order with multiple line items */}
+                {!isLineItemView && childItemOverviews.length > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h2 className="font-display text-sm font-bold text-[#1F1F1F] dark:text-white">
+                        Shared Order Gates
+                      </h2>
+                      <p className="text-xs text-[#5F6368] dark:text-[#9AA0A6]">
+                        Order-wide validation gates completed before individual item fulfillment, provisioning, and billing.
+                      </p>
+                    </div>
+                    {stages.length > 0 && (
+                      <span className="rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-3 py-1 text-[11px] font-semibold text-[#444746] dark:text-[#C4C7C5] tabular-nums">
+                        {completedCount} of {stages.length} gates complete
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Compact, Scalable M3 Milestone Progress Rail & Step Chips (scales cleanly from 3 to 12+ steps) */}
+                {!isTimelineSynced && timelineLoading ? (
+                  <div className="rounded-2xl bg-[#F8FAFD] dark:bg-[#131314] border border-[#E0E6F0]/80 dark:border-[#333639] p-4 space-y-3 animate-pulse">
+                    <div className="flex items-center justify-between">
+                      <div className="h-3 w-36 rounded-full bg-[#E0E6F0] dark:bg-[#282A2C]" />
+                      <div className="h-3 w-20 rounded-full bg-[#E0E6F0] dark:bg-[#282A2C]" />
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-[#E0E6F0] dark:bg-[#282A2C]" />
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {[1, 2, 3, 4].map((n) => (
+                        <div
+                          key={n}
+                          className="h-12 rounded-xl bg-[#E0E6F0]/70 dark:bg-[#282A2C]"
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : stages.length === 0 ? (
+                  <div className="py-8 text-center text-sm text-[#5F6368] dark:text-[#9AA0A6]">
                     Waiting for first milestone event...
                   </div>
                 ) : (
-                  <div className="relative pt-2 pb-1 overflow-x-auto">
-                    <div className="min-w-[540px] relative">
-                      {/* Background Track Line */}
-                      <div className="hidden sm:block absolute top-5 left-10 right-10 h-1.5 rounded-full bg-[#E8EEF7] dark:bg-[#282A2C] overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all duration-500 ${
-                            activeFallouts.length > 0 || entity.status === 'BREACHED'
-                              ? 'bg-gradient-to-r from-[#1E8E3E] via-[#F9AB00] to-[#D93025]'
-                              : entity.status === 'COMPLETED'
-                                ? 'bg-[#1E8E3E]'
-                                : 'bg-gradient-to-r from-[#1E8E3E] to-[#1A73E8]'
-                          }`}
-                          style={{ width: `${progressPct}%` }}
-                        />
-                      </div>
+                  <div className="space-y-3">
+                    {/* 1. Sleek Segmented Linear Progress Bar + Optional Phase Filter Pills */}
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-semibold text-[#1F1F1F] dark:text-white tabular-nums">
+                            {completedCount} of {stages.length} complete
+                          </span>
+                          <span className="rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2 py-0.5 text-[11px] font-mono font-semibold text-[#5F6368] dark:text-[#9AA0A6] tabular-nums">
+                            {progressPct}%
+                          </span>
+                        </div>
 
-                      {/* Step Nodes */}
-                      <div
-                        className="relative grid gap-4"
-                        style={{
-                          gridTemplateColumns: `repeat(${stages.length}, minmax(0, 1fr))`,
-                        }}
-                      >
-                        {stages.map((st, idx) => {
-                          const isSelected = inspectedStage?.stepNumber === st.stepNumber;
-                          const isDone = st.status === 'COMPLETED';
-                          const isBlocked =
-                            st.status === 'IN_FALLOUT' || st.status === 'BREACHED';
-                          const isWarn = st.status === 'JEOPARDY' || st.status === 'WARNING';
-                          const isActive = st.status === 'IN_PROGRESS';
-                          const isPaused = st.status === 'PAUSED';
-
-                          const circleClasses = isDone
-                            ? 'bg-[#1E8E3E] text-white border-[#1E8E3E] shadow-sm'
-                            : isBlocked
-                              ? 'bg-[#D93025] text-white border-[#D93025] ring-4 ring-[#D93025]/20'
-                              : isWarn
-                                ? 'bg-[#F9AB00] text-white border-[#F9AB00] ring-4 ring-[#F9AB00]/20'
-                                : isPaused
-                                  ? 'bg-[#9334E6] text-white border-[#9334E6] ring-4 ring-[#9334E6]/20'
-                                  : isActive
-                                    ? 'bg-[#1A73E8] text-white border-[#1A73E8] ring-4 ring-[#1A73E8]/25'
-                                    : 'bg-white dark:bg-[#1E1F20] text-[#5F6368] dark:text-[#9AA0A6] border-[#DDE3EA] dark:border-[#3C4043]';
-
-                          const statusSubtext = isDone
-                            ? st.milestone?.startedAt && st.milestone?.completedAt
-                              ? `Done · ${formatElapsedBetween(st.milestone.startedAt, st.milestone.completedAt)}`
-                              : 'Done'
-                            : isBlocked
-                              ? 'Blocked'
-                              : isWarn
-                                ? 'Delayed'
-                                : isPaused
-                                  ? 'On Hold'
-                                  : isActive
-                                    ? 'In progress'
-                                    : 'Up next';
-
-                          return (
+                        {distinctStagePhases.length > 1 && (
+                          <div className="flex flex-wrap items-center gap-1">
                             <button
-                              key={`${st.templateId}-${st.stepNumber}`}
                               type="button"
-                              onClick={() => setSelectedStageIndex(idx)}
-                              className={`flex flex-col items-center text-center group rounded-2xl p-2.5 -m-1 transition ${
-                                isSelected
-                                  ? 'bg-[#F0F4F9] dark:bg-[#282A2C]'
-                                  : 'hover:bg-[#F8FAFD] dark:hover:bg-[#282A2C]/50'
+                              onClick={() => setStagePhaseFilter('ALL')}
+                              className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                                stagePhaseFilter === 'ALL'
+                                  ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF]'
+                                  : 'bg-[#F0F4F9] dark:bg-[#282A2C] text-[#5F6368] dark:text-[#9AA0A6] hover:text-[#1F1F1F] dark:hover:text-white'
                               }`}
                             >
-                              <div
-                                className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-xs font-bold transition ${circleClasses}`}
-                              >
-                                {isDone ? (
-                                  <Check className="w-5 h-5 stroke-[2.5]" />
-                                ) : isBlocked || isWarn ? (
-                                  <AlertTriangle className="w-4 h-4" />
-                                ) : isPaused ? (
-                                  <PauseCircle className="w-4 h-4" />
-                                ) : (
-                                  st.stepNumber
-                                )}
-                              </div>
-
-                              <div className="mt-3 text-xs font-semibold text-[#1F1F1F] dark:text-white leading-snug line-clamp-2">
-                                {st.title}
-                              </div>
-                              <div
-                                className={`mt-1 text-[11px] font-medium ${
-                                  isBlocked
-                                    ? 'text-[#C5221F] dark:text-[#F28B82]'
-                                    : isWarn
-                                      ? 'text-[#B06000] dark:text-[#FDD663]'
-                                      : isActive
-                                        ? 'text-[#1967D2] dark:text-[#8AB4F8]'
-                                        : isDone
-                                          ? 'text-[#137333] dark:text-[#81C995]'
-                                          : 'text-[#5F6368] dark:text-[#9AA0A6]'
+                              All ({stages.length})
+                            </button>
+                            {distinctStagePhases.map((phaseKey) => (
+                              <button
+                                key={phaseKey}
+                                type="button"
+                                onClick={() => setStagePhaseFilter(phaseKey)}
+                                className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                                  stagePhaseFilter === phaseKey
+                                    ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF]'
+                                    : 'bg-[#F0F4F9] dark:bg-[#282A2C] text-[#5F6368] dark:text-[#9AA0A6] hover:text-[#1F1F1F] dark:hover:text-white'
                                 }`}
                               >
-                                {statusSubtext}
-                              </div>
-                            </button>
+                                {phaseKey} ({stagePhaseCounts[phaseKey]})
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Segmented Pill Rail — always 1 compact horizontal line regardless of 3 or 12+ milestones */}
+                      <div className="flex items-center gap-1" role="list" aria-label="Milestone progress">
+                        {stages.map((st, idx) => {
+                          const isSelected = inspectedStage?.stepNumber === st.stepNumber;
+                          const segColor =
+                            st.status === 'COMPLETED'
+                              ? 'bg-[#1E8E3E]'
+                              : st.status === 'IN_FALLOUT' || st.status === 'BREACHED'
+                                ? 'bg-[#D93025]'
+                                : st.status === 'JEOPARDY' || st.status === 'WARNING'
+                                  ? 'bg-[#F9AB00]'
+                                  : st.status === 'PAUSED'
+                                    ? 'bg-[#9334E6]'
+                                    : st.status === 'IN_PROGRESS'
+                                      ? 'bg-[#1A73E8]'
+                                      : 'bg-[#E2E8F0] dark:bg-[#2F3236]';
+                          const dimmed =
+                            stagePhaseFilter !== 'ALL' &&
+                            classifyMilestonePhase(st.templateId, st.title).label !==
+                              stagePhaseFilter;
+                          return (
+                            <button
+                              key={`seg-${st.templateId}-${st.stepNumber}`}
+                              type="button"
+                              onClick={() => setSelectedStageIndex(idx)}
+                              title={`Step ${st.stepNumber}: ${st.title} (${prettifyName(st.status)})`}
+                              className={`h-2 flex-1 rounded-full transition-all ${segColor} ${
+                                isSelected
+                                  ? 'ring-2 ring-offset-1 ring-[#1A73E8]/60 dark:ring-offset-[#1E1F20] scale-y-125'
+                                  : 'hover:opacity-85'
+                              } ${dimmed ? 'opacity-25' : ''}`}
+                            />
                           );
                         })}
                       </div>
                     </div>
+
+                    {/* 2. Compact Wrapping Milestone Chips (never squishes even with 6–12+ milestones) */}
+                    <div
+                      className={`grid gap-2 ${
+                        visibleStages.length <= 2
+                          ? 'grid-cols-1 sm:grid-cols-2'
+                          : visibleStages.length === 3
+                            ? 'grid-cols-1 sm:grid-cols-3'
+                            : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
+                      }`}
+                    >
+                      {visibleStages.map(({ st, idx, phase }) => {
+                        const isSelected = inspectedStage?.stepNumber === st.stepNumber;
+                        const isDone = st.status === 'COMPLETED';
+                        const isBlocked =
+                          st.status === 'IN_FALLOUT' || st.status === 'BREACHED';
+                        const isWarn = st.status === 'JEOPARDY' || st.status === 'WARNING';
+                        const isActive = st.status === 'IN_PROGRESS';
+                        const isPaused = st.status === 'PAUSED';
+
+                        const circleClasses = isDone
+                          ? 'bg-[#1E8E3E] text-white border-[#1E8E3E]'
+                          : isBlocked
+                            ? 'bg-[#D93025] text-white border-[#D93025] ring-2 ring-[#D93025]/25'
+                            : isWarn
+                              ? 'bg-[#F9AB00] text-white border-[#F9AB00] ring-2 ring-[#F9AB00]/25'
+                              : isPaused
+                                ? 'bg-[#9334E6] text-white border-[#9334E6] ring-2 ring-[#9334E6]/25'
+                                : isActive
+                                  ? 'bg-[#1A73E8] text-white border-[#1A73E8] ring-2 ring-[#1A73E8]/25'
+                                  : 'bg-white dark:bg-[#1E1F20] text-[#5F6368] dark:text-[#9AA0A6] border-[#D0D7E2] dark:border-[#3C4043]';
+
+                        const statusSubtext = isDone
+                          ? st.milestone?.startedAt && st.milestone?.completedAt
+                            ? `Done · ${formatElapsedBetween(st.milestone.startedAt, st.milestone.completedAt)}`
+                            : 'Done'
+                          : isBlocked
+                            ? st.milestone?.lastErrorCode
+                              ? `Blocked · ${st.milestone.lastErrorCode}`
+                              : 'Blocked'
+                            : isWarn
+                              ? 'Delayed'
+                              : isPaused
+                                ? 'On Hold'
+                                : isActive
+                                  ? 'In progress'
+                                  : 'Up next';
+
+                        return (
+                          <button
+                            key={`${st.templateId}-${st.stepNumber}`}
+                            type="button"
+                            onClick={() => setSelectedStageIndex(idx)}
+                            title={`Step ${st.stepNumber}: ${st.title} (${phase.label}) — ${statusSubtext}`}
+                            className={`flex items-center gap-2.5 text-left rounded-xl border px-3 py-2 transition min-w-0 ${
+                              isSelected
+                                ? 'border-[#1A73E8] bg-[#E8F0FE]/70 dark:bg-[#004A77]/35 ring-1 ring-[#1A73E8]/25'
+                                : isBlocked
+                                  ? 'border-[#D93025]/35 bg-[#FCE8E6]/45 dark:bg-[#3C1919]/35 hover:border-[#D93025]/60'
+                                  : 'border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD]/70 dark:bg-[#131314]/70 hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]'
+                            }`}
+                          >
+                            <div
+                              className={`w-6 h-6 rounded-full border flex items-center justify-center text-[11px] font-bold shrink-0 ${circleClasses}`}
+                            >
+                              {isDone ? (
+                                <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                              ) : isBlocked || isWarn ? (
+                                <AlertTriangle className="w-3 h-3" />
+                              ) : isPaused ? (
+                                <PauseCircle className="w-3 h-3" />
+                              ) : (
+                                st.stepNumber
+                              )}
+                            </div>
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="text-xs font-semibold text-[#1F1F1F] dark:text-white truncate">
+                                  {st.title}
+                                </span>
+                              </div>
+                              <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
+                                <span
+                                  className={`text-[11px] font-medium truncate ${
+                                    isBlocked
+                                      ? 'text-[#C5221F] dark:text-[#F28B82]'
+                                      : isWarn
+                                        ? 'text-[#B06000] dark:text-[#FDD663]'
+                                        : isActive
+                                          ? 'text-[#1967D2] dark:text-[#8AB4F8]'
+                                          : isDone
+                                            ? 'text-[#137333] dark:text-[#81C995]'
+                                            : 'text-[#5F6368] dark:text-[#9AA0A6]'
+                                  }`}
+                                >
+                                  {statusSubtext}
+                                </span>
+                                {distinctStagePhases.length > 1 && (
+                                  <span
+                                    className={`shrink-0 rounded-full px-1.5 py-0 text-[9px] font-semibold ${phase.toneClass}`}
+                                  >
+                                    {phase.label}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 
-                {/* Selected Step Details Panel */}
-                {inspectedStage && (
-                  <div className="rounded-2xl bg-[#F8FAFD] dark:bg-[#131314] border border-[#E0E6F0]/80 dark:border-[#333639] p-5 flex flex-wrap items-center justify-between gap-5">
-                    <div className="space-y-1">
-                      <div className="text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6]">
-                        Step {inspectedStage.stepNumber} of {stages.length}
-                      </div>
-                      <div className="font-display text-base font-bold text-[#1F1F1F] dark:text-white">
-                        {inspectedStage.title}
-                      </div>
-                      {inspectedStage.milestone?.lastErrorCode && (
-                        <div className="pt-0.5 inline-flex items-center gap-1.5 text-xs text-[#C5221F] dark:text-[#F28B82] font-medium">
-                          <AlertTriangle className="w-3.5 h-3.5" />
-                          Error Code: <span className="font-mono">{inspectedStage.milestone.lastErrorCode}</span>
+                {/* Compact Selected Step Details Strip */}
+                {inspectedStage && (() => {
+                  const inspectedPhase = classifyMilestonePhase(
+                    inspectedStage.templateId,
+                    inspectedStage.title,
+                  );
+                  return (
+                    <div className="rounded-2xl bg-[#F8FAFD] dark:bg-[#131314] border border-[#E0E6F0]/80 dark:border-[#333639] px-4 py-3.5 flex flex-wrap items-center justify-between gap-4">
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] font-medium text-[#5F6368] dark:text-[#9AA0A6]">
+                            Step {inspectedStage.stepNumber} of {stages.length}
+                          </span>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${inspectedPhase.toneClass}`}
+                          >
+                            {inspectedPhase.label}
+                          </span>
                         </div>
-                      )}
-                    </div>
+                        <div className="font-display text-sm font-bold text-[#1F1F1F] dark:text-white">
+                          {inspectedStage.title}
+                        </div>
+                        {inspectedStage.milestone?.lastErrorCode && (
+                          <div className="pt-0.5 inline-flex items-center gap-1.5 text-xs text-[#C5221F] dark:text-[#F28B82] font-medium">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            Error Code: <span className="font-mono">{inspectedStage.milestone.lastErrorCode}</span>
+                          </div>
+                        )}
+                      </div>
 
-                    <div className="flex flex-wrap items-center gap-6 text-xs">
-                      <div>
-                        <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
-                          Started
-                        </div>
-                        <div className="mt-0.5 font-medium tabular-nums text-[#1F1F1F] dark:text-[#E3E3E3]">
-                          {inspectedStage.milestone?.startedAt
-                            ? formatShortTime(inspectedStage.milestone.startedAt)
-                            : 'Not started'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
-                          Completed
-                        </div>
-                        <div className="mt-0.5 font-medium tabular-nums text-[#1F1F1F] dark:text-[#E3E3E3]">
-                          {inspectedStage.milestone?.completedAt
-                            ? formatShortTime(inspectedStage.milestone.completedAt)
-                            : inspectedStage.status === 'UPCOMING'
-                              ? 'Pending'
-                              : 'In progress'}
-                        </div>
-                      </div>
-                      {inspectedStage.milestone?.hardMaxMs && (
+                      <div className="flex flex-wrap items-center gap-5 text-xs">
                         <div>
                           <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
-                            SLA Limit
+                            Started
                           </div>
                           <div className="mt-0.5 font-medium tabular-nums text-[#1F1F1F] dark:text-[#E3E3E3]">
-                            {formatDurationMs(inspectedStage.milestone.hardMaxMs)}
+                            {inspectedStage.milestone?.startedAt
+                              ? formatShortTime(inspectedStage.milestone.startedAt)
+                              : 'Not started'}
                           </div>
                         </div>
-                      )}
-                      {(inspectedStage.milestone?.retryCount ?? 0) > 0 && (
                         <div>
                           <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
-                            Retries
+                            Completed
                           </div>
-                          <div className="mt-0.5 font-semibold tabular-nums text-[#B06000] dark:text-[#FDD663]">
-                            {inspectedStage.milestone?.retryCount}
+                          <div className="mt-0.5 font-medium tabular-nums text-[#1F1F1F] dark:text-[#E3E3E3]">
+                            {inspectedStage.milestone?.completedAt
+                              ? formatShortTime(inspectedStage.milestone.completedAt)
+                              : inspectedStage.status === 'UPCOMING'
+                                ? 'Pending'
+                                : 'In progress'}
                           </div>
                         </div>
-                      )}
+                        {inspectedStage.milestone?.hardMaxMs && (
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
+                              SLA Limit
+                            </div>
+                            <div className="mt-0.5 font-medium tabular-nums text-[#1F1F1F] dark:text-[#E3E3E3]">
+                              {formatDurationMs(inspectedStage.milestone.hardMaxMs)}
+                            </div>
+                          </div>
+                        )}
+                        {(inspectedStage.milestone?.retryCount ?? 0) > 0 && (
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
+                              Retries
+                            </div>
+                            <div className="mt-0.5 font-semibold tabular-nums text-[#B06000] dark:text-[#FDD663]">
+                              {inspectedStage.milestone?.retryCount}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* Active / Resolved Fallout Resolution Cards */}
-                {(timelineData?.fallouts ?? []).length > 0 &&
+                {(syncedTimeline?.fallouts ?? []).length > 0 &&
                   (() => {
-                    const allFallouts = timelineData?.fallouts ?? [];
+                    const allFallouts = syncedTimeline?.fallouts ?? [];
                     const chronological = [...allFallouts].sort((a, b) => {
                       const ta = Date.parse(a.openedAt || a.createdAt || '') || 0;
                       const tb = Date.parse(b.openedAt || b.createdAt || '') || 0;
@@ -2462,6 +3283,258 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                       </div>
                     );
                   })()}
+
+                {/* Fulfillment-Grouped Multi-Item Panel (when viewing Root Sales Order with child line items) */}
+                {!isLineItemView && childItemOverviews.length > 0 && (
+                  <div className="pt-2 border-t border-[#E0E6F0]/80 dark:border-[#333639] space-y-5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h2 className="font-display text-sm font-bold text-[#1F1F1F] dark:text-white flex items-center gap-2">
+                          <Package className="w-4 h-4 text-[#1A73E8] dark:text-[#8AB4F8]" />
+                          Order Items by Fulfillment ({childItemOverviews.length})
+                        </h2>
+                        <p className="text-xs text-[#5F6368] dark:text-[#9AA0A6] mt-0.5">
+                          Live Fulfillment, Provisioning &amp; Billing status per line item — click any card to inspect its milestone stepper and SLA clocks.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-5">
+                      {groupedChildItems.map((grp) => {
+                        const GroupIcon =
+                          grp.key === 'SHIP_TO_HOME'
+                            ? Truck
+                            : grp.key === 'IN_STORE_PICKUP'
+                              ? Store
+                              : Zap;
+                        const groupTone =
+                          grp.key === 'SHIP_TO_HOME'
+                            ? 'bg-[#E8F0FE] text-[#1967D2] dark:bg-[#004A77]/70 dark:text-[#C2E7FF]'
+                            : grp.key === 'IN_STORE_PICKUP'
+                              ? 'bg-[#E6F4EA] text-[#137333] dark:bg-[#132E1C] dark:text-[#81C995]'
+                              : 'bg-[#F3E8FD] text-[#7627BB] dark:bg-[#2D1B3E] dark:text-[#D7AEFB]';
+                        const uniqueStores =
+                          grp.key === 'IN_STORE_PICKUP'
+                            ? Array.from(
+                                new Set(
+                                  grp.items
+                                    .map((it) => it.storeLocation)
+                                    .filter((loc): loc is string => Boolean(loc && loc.trim())),
+                                ),
+                              )
+                            : [];
+
+                        return (
+                          <div key={grp.key} className="space-y-3">
+                            {/* Fulfillment Group Header */}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`inline-flex items-center justify-center w-7 h-7 rounded-xl ${groupTone}`}
+                              >
+                                <GroupIcon className="w-3.5 h-3.5" />
+                              </span>
+                              <span className="font-display text-xs font-bold text-[#1F1F1F] dark:text-white">
+                                {grp.title}
+                              </span>
+                              <span className="rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2.5 py-0.5 text-[11px] font-semibold text-[#444746] dark:text-[#C4C7C5] tabular-nums">
+                                {grp.items.length} {grp.items.length === 1 ? 'item' : 'items'}
+                              </span>
+                              {uniqueStores.map((loc) => (
+                                <span
+                                  key={loc}
+                                  className="inline-flex items-center gap-1 rounded-full bg-[#E6F4EA]/80 dark:bg-[#132E1C]/80 px-2.5 py-0.5 text-[11px] font-medium text-[#137333] dark:text-[#81C995]"
+                                >
+                                  <MapPin className="w-3 h-3 shrink-0" />
+                                  {loc}
+                                </span>
+                              ))}
+                            </div>
+
+                            {/* Item Cards Grid */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                              {grp.items.map((item) => {
+                                const linePart = item.entityKey.includes(':')
+                                  ? item.entityKey.split(':')[1]
+                                  : item.entityKey;
+                                const itemStatus = humanStatusLabel(
+                                  item.status,
+                                  item.hasActiveFallout,
+                                );
+                                const hasAlert = isItemNeedingAttention(
+                                  item.status,
+                                  item.hasActiveFallout,
+                                );
+                                const etaText = item.closedAt
+                                  ? `Completed ${formatShortTime(item.closedAt)}`
+                                  : item.predictedP50At
+                                    ? `Est. ${formatShortTime(item.predictedP50At)}`
+                                    : null;
+
+                                return (
+                                  <div
+                                    key={item.entityKey}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => openOrder(item.entityKey, entity.customerId)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        openOrder(item.entityKey, entity.customerId);
+                                      }
+                                    }}
+                                    className={`group text-left rounded-[20px] border p-4 space-y-3.5 cursor-pointer transition shadow-[0_1px_2px_rgba(16,24,40,0.03)] hover:shadow-md ${
+                                      hasAlert
+                                        ? 'border-[#D93025]/35 bg-[#FCE8E6]/25 dark:bg-[#3C1919]/20 hover:border-[#D93025]/60'
+                                        : 'border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314] hover:border-[#1A73E8]/50 dark:hover:border-[#8AB4F8]/50'
+                                    }`}
+                                  >
+                                    {/* Card Top Row: Title + Line ID + Fulfillment/Store + Status & ETA */}
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="space-y-1.5 min-w-0">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <span className="font-display text-sm font-bold text-[#1F1F1F] dark:text-white group-hover:text-[#1A73E8] dark:group-hover:text-[#8AB4F8] transition truncate">
+                                            {item.displayTitle || prettifyName(item.itemType)}
+                                          </span>
+                                          <span className="rounded-full bg-[#F3E8FD] dark:bg-[#2D1B3E] px-2 py-0.5 font-mono text-[10px] font-semibold text-[#7627BB] dark:text-[#D7AEFB]">
+                                            {linePart}
+                                          </span>
+                                        </div>
+
+                                        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                                          <span className="inline-flex items-center gap-1 rounded-full bg-white dark:bg-[#1E1F20] border border-[#E0E6F0] dark:border-[#333639] px-2 py-0.5 font-medium text-[#444746] dark:text-[#C4C7C5]">
+                                            <GroupIcon className="w-3 h-3 opacity-75" />
+                                            {item.fulfillmentLabel || grp.title}
+                                          </span>
+                                          {item.storeLocation && (
+                                            <span className="inline-flex items-center gap-1 rounded-full bg-[#E6F4EA]/75 dark:bg-[#132E1C]/75 px-2 py-0.5 font-medium text-[#137333] dark:text-[#81C995]">
+                                              <MapPin className="w-3 h-3 shrink-0" />
+                                              {item.storeLocation}
+                                            </span>
+                                          )}
+                                          {item.totalSteps > 0 && (
+                                            <span className="tabular-nums pl-0.5">
+                                              {item.completedSteps}/{item.totalSteps} steps
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+
+                                      <div className="flex flex-col items-end gap-1 shrink-0">
+                                        <span
+                                          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${itemStatus.badgeClass}`}
+                                        >
+                                          <span
+                                            className={`w-1.5 h-1.5 rounded-full ${itemStatus.dotClass}`}
+                                          />
+                                          {itemStatus.label}
+                                        </span>
+                                        {etaText && (
+                                          <span className="text-[10px] font-mono tabular-nums text-[#5F6368] dark:text-[#9AA0A6]">
+                                            {etaText}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Per-Item Multi-Track Status Pills (Fulfillment · Provisioning · Billing) */}
+                                    {item.tracks.length > 0 ? (
+                                      <div className="flex flex-wrap items-stretch gap-2">
+                                        {item.tracks.map((tr) => {
+                                          const ts = trackStatusStyle(tr.status);
+                                          const statusDetail =
+                                            ts.isIssue && tr.lastErrorCode
+                                              ? `${ts.shortLabel} · ${tr.lastErrorCode}`
+                                              : ts.isDone
+                                                ? tr.currentStepName || 'Completed'
+                                                : tr.currentStepName || ts.shortLabel;
+                                          const tooltip = `${tr.label}: ${tr.status}${
+                                            tr.totalSteps > 0
+                                              ? ` (${tr.completedSteps}/${tr.totalSteps})`
+                                              : ''
+                                          }${tr.currentStepName ? ` — ${tr.currentStepName}` : ''}${
+                                            tr.lastErrorCode ? ` · Error: ${tr.lastErrorCode}` : ''
+                                          }${
+                                            tr.assignedQueue
+                                              ? ` · Queue: ${prettifyName(tr.assignedQueue)}`
+                                              : ''
+                                          }`;
+
+                                          return (
+                                            <div
+                                              key={`${item.entityKey}-${tr.domain}`}
+                                              title={tooltip}
+                                              className={`inline-flex flex-col justify-center rounded-xl border px-2.5 py-1.5 text-[11px] leading-tight min-w-[130px] flex-1 ${ts.pillClass}`}
+                                            >
+                                              <div className="flex items-center justify-between gap-2">
+                                                <span className="inline-flex items-center gap-1.5 font-semibold">
+                                                  {ts.isDone ? (
+                                                    <Check className="w-3 h-3 stroke-[2.75] shrink-0" />
+                                                  ) : ts.isIssue ? (
+                                                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                                                  ) : (
+                                                    <span
+                                                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${ts.dotClass}`}
+                                                    />
+                                                  )}
+                                                  <span>{tr.label}</span>
+                                                </span>
+                                                {tr.totalSteps > 0 && (
+                                                  <span className="font-mono text-[10px] opacity-80 tabular-nums">
+                                                    {tr.completedSteps}/{tr.totalSteps}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <div className="mt-0.5 text-[10px] font-medium opacity-90 truncate">
+                                                {statusDetail}
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    ) : item.currentStepName ? (
+                                      <div className="text-xs text-[#444746] dark:text-[#C4C7C5]">
+                                        Current step:{' '}
+                                        <span className="font-semibold text-[#1F1F1F] dark:text-white">
+                                          {item.currentStepName}
+                                        </span>
+                                      </div>
+                                    ) : null}
+
+                                    {/* Bottom Row: Companion Order Chips + Inspect Milestones CTA */}
+                                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-[#E0E6F0]/70 dark:border-[#333639]/80">
+                                      <div className="flex flex-wrap items-center gap-1.5">
+                                        {item.linkedCompanionKeys.map((compKey) => (
+                                          <button
+                                            key={compKey}
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              openOrder(compKey, entity.customerId);
+                                            }}
+                                            className="inline-flex items-center gap-1 rounded-full bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] hover:border-[#1A73E8] dark:hover:border-[#8AB4F8] hover:bg-[#E8F0FE]/70 dark:hover:bg-[#004A77]/50 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-[#1967D2] dark:text-[#8AB4F8] transition"
+                                            title={`Open linked companion order ${compKey}`}
+                                          >
+                                            <Link2 className="w-2.5 h-2.5 shrink-0" />
+                                            {compKey}
+                                          </button>
+                                        ))}
+                                      </div>
+
+                                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#1A73E8] dark:text-[#8AB4F8] ml-auto group-hover:translate-x-0.5 transition-transform">
+                                        Inspect milestones
+                                        <ArrowRight className="w-3 h-3" />
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -2472,7 +3545,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                   string,
                   { label: string; rawType: string; isCompanion: boolean }
                 >();
-                for (const rel of timelineData?.relationships ?? []) {
+                for (const rel of sameOrderTimeline?.relationships ?? []) {
                   const otherKey =
                     rel.sourceEntityKey === entity.entityKey
                       ? rel.targetEntityKey
@@ -2913,7 +3986,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                       Kafka &amp; Flowable Events (ClickHouse Audit)
                     </span>
                     <span className="rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2.5 py-0.5 text-[10px] font-semibold text-[#5F6368] dark:text-[#9AA0A6] tabular-nums">
-                      {(timelineData?.rawEvents ?? []).length} events
+                      {(syncedTimeline?.rawEvents ?? []).length} events
                     </span>
                   </div>
 
@@ -2928,18 +4001,18 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                   </label>
                 </div>
 
-                {timelineLoading ? (
+                {timelineLoading || !isTimelineSynced ? (
                   <div className="py-10 text-center text-xs text-[#5F6368] dark:text-[#9AA0A6]">
                     Loading raw audit events from ClickHouse...
                   </div>
-                ) : (timelineData?.rawEvents ?? []).length === 0 ? (
+                ) : (syncedTimeline?.rawEvents ?? []).length === 0 ? (
                   <div className="py-10 text-center text-xs text-[#5F6368] dark:text-[#9AA0A6]">
-                    {timelineData?.rawEventsWarning ||
+                    {syncedTimeline?.rawEventsWarning ||
                       'No raw audit events recorded for this order yet.'}
                   </div>
                 ) : (
                   <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1">
-                    {(timelineData?.rawEvents ?? []).map((ev) => {
+                    {(syncedTimeline?.rawEvents ?? []).map((ev) => {
                       const expanded = expandedEventId === ev.eventId;
                       return (
                         <div

@@ -364,6 +364,37 @@ export interface RawEventDto {
   payloadJson: string | null;
 }
 
+export interface OrderItemTrackSummary {
+  domain: string;
+  label: string;
+  status: string;
+  completedSteps: number;
+  totalSteps: number;
+  currentStepName: string | null;
+  lastErrorCode: string | null;
+  assignedQueue: string | null;
+}
+
+export interface OrderItemTrackOverviewDto {
+  entityKey: string;
+  entityLevel: string;
+  orderType: string | null;
+  itemType: string | null;
+  displayTitle: string;
+  fulfillmentType: 'SHIP_TO_HOME' | 'IN_STORE_PICKUP' | 'DIGITAL' | 'COMPANION' | 'ORDER' | string;
+  fulfillmentLabel: string;
+  storeLocation: string | null;
+  status: string;
+  hasActiveFallout: boolean;
+  completedSteps: number;
+  totalSteps: number;
+  currentStepName: string | null;
+  predictedP50At: string | null;
+  closedAt: string | null;
+  tracks: OrderItemTrackSummary[];
+  linkedCompanionKeys: string[];
+}
+
 export interface EntityTimelineResponse {
   entity: EntitySummaryDto;
   milestones: MilestoneDto[];
@@ -375,6 +406,7 @@ export interface EntityTimelineResponse {
   rawEventsAvailable: boolean;
   rawEventsWarning: string | null;
   orderEntities?: EntitySummaryDto[];
+  itemOverviews?: OrderItemTrackOverviewDto[];
 }
 
 // ---------------------------------------------------------------------------

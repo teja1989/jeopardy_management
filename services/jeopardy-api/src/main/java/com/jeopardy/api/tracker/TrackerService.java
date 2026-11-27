@@ -1,12 +1,19 @@
 package com.jeopardy.api.tracker;
 
 import com.jeopardy.api.common.ResourceNotFoundException;
+import jakarta.annotation.PreDestroy;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,16 +23,51 @@ import org.springframework.stereotype.Service;
 public class TrackerService {
 
     private static final Logger log = LoggerFactory.getLogger(TrackerService.class);
+    private static final AtomicInteger THREAD_SEQ = new AtomicInteger(1);
+    private static final int MAX_OVERVIEW_BATCH_KEYS = 60;
 
     private static final Set<String> AT_RISK_ENTITY_STATUSES = Set.of("JEOPARDY", "IN_FALLOUT", "BREACHED");
     private static final Set<String> AT_RISK_SEVERITIES = Set.of("JEOPARDY", "CRITICAL", "BREACHED");
     private static final Set<String> WARNING_ENTITY_STATUSES = Set.of("WARNING", "PAUSED");
     private static final Set<String> TERMINAL_STATUSES = Set.of("COMPLETED", "CANCELLED");
 
+    private static final List<String> STORE_FULFILLMENT_KEYWORDS = List.of(
+            "IN_STORE", "STORE", "BOPIS", "PICKUP");
+    private static final List<String> SHIP_FULFILLMENT_KEYWORDS = List.of(
+            "SHIP", "HOME", "MAIL", "DELIVER", "COURIER", "KIT", "HANDSET", "DEVICE", "GATEWAY", "ACCESSORY");
+    private static final List<String> COMPANION_ORDER_KEYWORDS = List.of(
+            "PROMO", "INSURANCE", "TRADE", "CHANGE", "SUPP");
+
+    private static final List<String> STRONG_FULFILLMENT_TRACK_KEYWORDS = List.of(
+            "FULFILL", "WAREHOUSE", "SHIP", "DELIVER", "STORE", "PICKUP", "BOPIS", "KIT",
+            "RETURN", "INSPECT", "INVENTORY");
+    private static final List<String> PROVISIONING_TRACK_KEYWORDS = List.of(
+            "PROVISION", "ESIM", "SIM", "PORT", "FOC", "ACTIVAT", "NETWORK", "LINE", "MDN",
+            "NUMBER", "PROMO", "ENROLL", "PARTNER", "INSURANCE");
+    private static final List<String> BILLING_TRACK_KEYWORDS = List.of(
+            "BILL", "INVOICE", "CREDIT", "EIP", "CHARGE", "TAX", "FINANC", "ACCOUNT_SYNC", "RATE_PLAN", "MRC");
+
+    private static final Set<String> EXACT_SHORT_TOKENS = Set.of("SIM", "FOC", "MDN", "EIP", "MRC");
+
+    private record RawEventsFetchResult(List<RawEventDto> events, boolean available, String warning) {}
+
+    private record FulfillmentClassification(String type, String label) {}
+
     private final TrackerRepository repository;
+    private final ExecutorService queryExecutor;
 
     public TrackerService(TrackerRepository repository) {
         this.repository = repository;
+        this.queryExecutor = Executors.newFixedThreadPool(8, r -> {
+            Thread t = new Thread(r, "jeopardy-tracker-" + THREAD_SEQ.getAndIncrement());
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    @PreDestroy
+    public void shutdownExecutor() {
+        queryExecutor.shutdownNow();
     }
 
     public QueueSearchResponse searchQueue(
@@ -212,21 +254,39 @@ public class TrackerService {
         EntitySummaryDto entity = repository.findEntityByKey(entityKey)
                 .orElseThrow(() -> new ResourceNotFoundException("Tracked entity not found: " + entityKey));
 
-        List<MilestoneDto> milestones = repository.findMilestonesByEntityKey(entityKey);
-        List<FalloutDto> fallouts = repository.findFalloutsByEntityKey(entityKey);
-        List<JeopardyCaseDto> jeopardyCases = repository.findJeopardyCasesByEntityKey(entityKey);
+        String rootOrderId = extractRootOrderId(entityKey);
+
+        // Wave 1: Parallel PostgreSQL + optional ClickHouse fan-out
+        CompletableFuture<List<MilestoneDto>> milestonesFuture = CompletableFuture.supplyAsync(
+                () -> safeList(repository.findMilestonesByEntityKey(entityKey)), queryExecutor);
+        CompletableFuture<List<FalloutDto>> falloutsFuture = CompletableFuture.supplyAsync(
+                () -> safeList(repository.findFalloutsByEntityKey(entityKey)), queryExecutor);
+        CompletableFuture<List<JeopardyCaseDto>> jeopardyCasesFuture = CompletableFuture.supplyAsync(
+                () -> safeList(repository.findJeopardyCasesByEntityKey(entityKey)), queryExecutor);
+        CompletableFuture<List<EntitySummaryDto>> sameOrderFuture = CompletableFuture.supplyAsync(
+                () -> safeList(repository.findEntitiesByOrderId(rootOrderId)), queryExecutor);
+        CompletableFuture<RawEventsFetchResult> rawEventsFuture = rawLimit > 0
+                ? CompletableFuture.supplyAsync(() -> {
+                    try {
+                        List<RawEventDto> rows = safeList(
+                                repository.findRawEventsByEntityKey(entityKey, includeNoise, rawLimit));
+                        return new RawEventsFetchResult(rows, true, null);
+                    } catch (Exception ex) {
+                        log.warn("ClickHouse raw_events query failed for entityKey={}: {}", entityKey, ex.getMessage());
+                        return new RawEventsFetchResult(
+                                List.of(), false, "ClickHouse raw event audit temporarily unavailable");
+                    }
+                }, queryExecutor)
+                : CompletableFuture.completedFuture(new RawEventsFetchResult(List.of(), true, null));
 
         // Fetch strictly ORDER-SCOPED entities FIRST so viewing a line item (ORD-88412:ITM-1)
         // also discovers companion BPMNs linked to its parent order (ORD-88412) and vice versa.
-        String rootOrderId = extractRootOrderId(entityKey);
         Map<String, EntitySummaryDto> orderScopedMap = new LinkedHashMap<>();
         orderScopedMap.put(entity.entityKey(), entity);
-        List<EntitySummaryDto> sameOrderRows = repository.findEntitiesByOrderId(rootOrderId);
-        if (sameOrderRows != null) {
-            for (EntitySummaryDto row : sameOrderRows) {
-                if (row != null && row.entityKey() != null) {
-                    orderScopedMap.putIfAbsent(row.entityKey(), row);
-                }
+        List<EntitySummaryDto> sameOrderRows = joinUnwrapped(sameOrderFuture);
+        for (EntitySummaryDto row : sameOrderRows) {
+            if (row != null && row.entityKey() != null) {
+                orderScopedMap.putIfAbsent(row.entityKey(), row);
             }
         }
 
@@ -309,18 +369,38 @@ public class TrackerService {
 
         List<EntitySummaryDto> orderEntities = new ArrayList<>(orderScopedMap.values());
 
-        List<RawEventDto> rawEvents = List.of();
-        boolean rawEventsAvailable = true;
-        String rawEventsWarning = null;
-        if (rawLimit > 0) {
-            try {
-                rawEvents = repository.findRawEventsByEntityKey(entityKey, includeNoise, rawLimit);
-            } catch (Exception ex) {
-                rawEventsAvailable = false;
-                rawEventsWarning = "ClickHouse raw event audit temporarily unavailable";
-                log.warn("ClickHouse raw_events query failed for entityKey={}: {}", entityKey, ex.getMessage());
-            }
-        }
+        // Wave 2: Parallel batch-fetch milestones & fallouts across all orderEntities (capped at 60 keys)
+        List<String> batchKeys = orderEntities.stream()
+                .map(EntitySummaryDto::entityKey)
+                .filter(k -> k != null && !k.isBlank())
+                .distinct()
+                .limit(MAX_OVERVIEW_BATCH_KEYS)
+                .toList();
+
+        CompletableFuture<List<MilestoneDto>> batchMilestonesFuture = batchKeys.isEmpty()
+                ? CompletableFuture.completedFuture(List.of())
+                : CompletableFuture.supplyAsync(
+                        () -> safeList(repository.findMilestonesByEntityKeys(batchKeys)), queryExecutor);
+        CompletableFuture<List<FalloutDto>> batchFalloutsFuture = batchKeys.isEmpty()
+                ? CompletableFuture.completedFuture(List.of())
+                : CompletableFuture.supplyAsync(
+                        () -> safeList(repository.findFalloutsByEntityKeys(batchKeys)), queryExecutor);
+
+        List<MilestoneDto> milestones = joinUnwrapped(milestonesFuture);
+        List<FalloutDto> fallouts = joinUnwrapped(falloutsFuture);
+        List<JeopardyCaseDto> jeopardyCases = joinUnwrapped(jeopardyCasesFuture);
+        List<MilestoneDto> batchMilestones = joinUnwrapped(batchMilestonesFuture);
+        List<FalloutDto> batchFallouts = joinUnwrapped(batchFalloutsFuture);
+        RawEventsFetchResult rawEventsResult = joinUnwrapped(rawEventsFuture);
+
+        List<OrderItemTrackOverviewDto> itemOverviews = buildItemOverviews(
+                entity,
+                orderEntities,
+                milestones,
+                fallouts,
+                batchMilestones,
+                batchFallouts,
+                relationships);
 
         return new EntityTimelineResponse(
                 entity,
@@ -328,12 +408,467 @@ public class TrackerService {
                 fallouts,
                 jeopardyCases,
                 relationships,
-                rawEvents,
+                rawEventsResult.events(),
                 includeNoise,
-                rawEventsAvailable,
-                rawEventsWarning,
-                orderEntities
+                rawEventsResult.available(),
+                rawEventsResult.warning(),
+                orderEntities,
+                itemOverviews
         );
+    }
+
+    private List<OrderItemTrackOverviewDto> buildItemOverviews(
+            EntitySummaryDto focusEntity,
+            List<EntitySummaryDto> orderEntities,
+            List<MilestoneDto> focusMilestones,
+            List<FalloutDto> focusFallouts,
+            List<MilestoneDto> batchMilestones,
+            List<FalloutDto> batchFallouts,
+            List<EntityRelationshipDto> relationships) {
+        if (orderEntities == null || orderEntities.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, List<MilestoneDto>> milestonesByKey = batchMilestones.stream()
+                .filter(m -> m != null && m.entityKey() != null)
+                .collect(Collectors.groupingBy(MilestoneDto::entityKey, LinkedHashMap::new, Collectors.toList()));
+        Map<String, List<FalloutDto>> falloutsByKey = batchFallouts.stream()
+                .filter(f -> f != null && f.entityKey() != null)
+                .collect(Collectors.groupingBy(FalloutDto::entityKey, LinkedHashMap::new, Collectors.toList()));
+
+        List<OrderItemTrackOverviewDto> overviews = new ArrayList<>(orderEntities.size());
+        for (EntitySummaryDto ent : orderEntities) {
+            if (ent == null || ent.entityKey() == null) {
+                continue;
+            }
+            List<MilestoneDto> entMilestones = milestonesByKey.getOrDefault(ent.entityKey(), List.of());
+            if (entMilestones.isEmpty() && ent.entityKey().equals(focusEntity.entityKey()) && !focusMilestones.isEmpty()) {
+                entMilestones = focusMilestones;
+            }
+            List<FalloutDto> entFallouts = falloutsByKey.getOrDefault(ent.entityKey(), List.of());
+            if (entFallouts.isEmpty() && ent.entityKey().equals(focusEntity.entityKey()) && !focusFallouts.isEmpty()) {
+                entFallouts = focusFallouts;
+            }
+
+            FulfillmentClassification fulfillment = classifyFulfillment(ent);
+            String storeLocation = extractAttribute(
+                    ent.attributes(), "store_location", "pickup_store", "store_id", "sales_rep_store");
+            String displayTitle = resolveDisplayTitle(ent);
+
+            int totalSteps = entMilestones.size();
+            int completedSteps = (int) entMilestones.stream()
+                    .filter(m -> "COMPLETED".equalsIgnoreCase(m.status()))
+                    .count();
+            String currentStepName = resolveCurrentStepName(entMilestones, entFallouts);
+            boolean hasActiveFallout = ent.hasActiveFallout()
+                    || entFallouts.stream().anyMatch(FalloutDto::isActive);
+
+            List<OrderItemTrackOverviewDto.TrackSummary> tracks = buildTracks(ent, entMilestones, entFallouts);
+            List<String> linkedCompanions = resolveLinkedCompanionKeys(ent.entityKey(), relationships);
+
+            overviews.add(new OrderItemTrackOverviewDto(
+                    ent.entityKey(),
+                    ent.entityLevel(),
+                    ent.orderType(),
+                    ent.itemType(),
+                    displayTitle,
+                    fulfillment.type(),
+                    fulfillment.label(),
+                    storeLocation,
+                    ent.status(),
+                    hasActiveFallout,
+                    completedSteps,
+                    totalSteps,
+                    currentStepName,
+                    ent.predictedP50At(),
+                    ent.closedAt(),
+                    tracks,
+                    linkedCompanions
+            ));
+        }
+        return overviews;
+    }
+
+    private FulfillmentClassification classifyFulfillment(EntitySummaryDto ent) {
+        String attrFulfillment = extractAttribute(
+                ent.attributes(), "fulfillment_method", "fulfillmentType", "delivery_method");
+        if (attrFulfillment != null) {
+            if (containsAnyKeyword(attrFulfillment, STORE_FULFILLMENT_KEYWORDS)) {
+                return new FulfillmentClassification("IN_STORE_PICKUP", "In-Store Pickup");
+            }
+            if (containsAnyKeyword(attrFulfillment, SHIP_FULFILLMENT_KEYWORDS)) {
+                return new FulfillmentClassification("SHIP_TO_HOME", "Ship to Home");
+            }
+        }
+
+        if ("ORDER".equalsIgnoreCase(ent.entityLevel()) && "ROOT_ORDER".equalsIgnoreCase(ent.itemType())) {
+            return new FulfillmentClassification("ORDER", "Order Level");
+        }
+
+        String itemType = ent.itemType();
+        if (itemType != null && !itemType.isBlank()) {
+            if (containsAnyKeyword(itemType, STORE_FULFILLMENT_KEYWORDS)) {
+                return new FulfillmentClassification("IN_STORE_PICKUP", "In-Store Pickup");
+            }
+            if (containsAnyKeyword(itemType, SHIP_FULFILLMENT_KEYWORDS)) {
+                return new FulfillmentClassification("SHIP_TO_HOME", "Ship to Home");
+            }
+        }
+
+        String orderType = ent.orderType();
+        if (orderType != null && !orderType.isBlank()) {
+            if (containsAnyKeyword(orderType, STORE_FULFILLMENT_KEYWORDS)) {
+                return new FulfillmentClassification("IN_STORE_PICKUP", "In-Store Pickup");
+            }
+            if (containsAnyKeyword(orderType, COMPANION_ORDER_KEYWORDS)) {
+                return new FulfillmentClassification("COMPANION", "Linked Order");
+            }
+            if (containsAnyKeyword(orderType, SHIP_FULFILLMENT_KEYWORDS)) {
+                return new FulfillmentClassification("SHIP_TO_HOME", "Ship to Home");
+            }
+        }
+
+        return new FulfillmentClassification("DIGITAL", "Digital / Service");
+    }
+
+    private List<OrderItemTrackOverviewDto.TrackSummary> buildTracks(
+            EntitySummaryDto ent,
+            List<MilestoneDto> milestones,
+            List<FalloutDto> fallouts) {
+        if (milestones == null || milestones.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, List<MilestoneDto>> byDomain = new LinkedHashMap<>();
+        for (MilestoneDto m : milestones) {
+            if (m == null) {
+                continue;
+            }
+            String domain = classifyMilestoneDomain(m);
+            byDomain.computeIfAbsent(domain, k -> new ArrayList<>()).add(m);
+        }
+
+        boolean isRootOrder = "ORDER".equalsIgnoreCase(ent.entityLevel())
+                && (ent.entityKey() == null || !ent.entityKey().contains(":"));
+        List<String> domainOrder = isRootOrder
+                ? List.of("ORDER", "FULFILLMENT", "PROVISIONING", "BILLING")
+                : List.of("FULFILLMENT", "PROVISIONING", "BILLING", "ORDER");
+
+        List<FalloutDto> activeFallouts = fallouts == null
+                ? List.of()
+                : fallouts.stream().filter(f -> f != null && f.isActive()).toList();
+
+        List<OrderItemTrackOverviewDto.TrackSummary> tracks = new ArrayList<>();
+        for (String domain : domainOrder) {
+            List<MilestoneDto> domainMilestones = byDomain.get(domain);
+            if (domainMilestones == null || domainMilestones.isEmpty()) {
+                continue;
+            }
+
+            Set<String> trackMilestoneIds = domainMilestones.stream()
+                    .map(MilestoneDto::milestoneId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .collect(Collectors.toSet());
+            Set<String> trackTemplateIds = domainMilestones.stream()
+                    .map(MilestoneDto::templateId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .collect(Collectors.toSet());
+
+            List<FalloutDto> matchingFallouts = activeFallouts.stream()
+                    .filter(fo -> (fo.milestoneId() != null && trackMilestoneIds.contains(fo.milestoneId()))
+                            || (fo.templateId() != null && trackTemplateIds.contains(fo.templateId())))
+                    .toList();
+
+            int total = domainMilestones.size();
+            int completed = (int) domainMilestones.stream()
+                    .filter(m -> "COMPLETED".equalsIgnoreCase(m.status()))
+                    .count();
+
+            String trackStatus = resolveTrackStatus(domainMilestones, !matchingFallouts.isEmpty(), completed, total);
+            String currentStepName = resolveCurrentStepName(domainMilestones, matchingFallouts);
+
+            FalloutDto primaryFallout = matchingFallouts.isEmpty() ? null : matchingFallouts.get(0);
+            String lastErrorCode = (primaryFallout != null
+                    && primaryFallout.errorCode() != null && !primaryFallout.errorCode().isBlank())
+                    ? primaryFallout.errorCode()
+                    : domainMilestones.stream()
+                            .filter(m -> !"COMPLETED".equalsIgnoreCase(m.status())
+                                    && m.lastErrorCode() != null && !m.lastErrorCode().isBlank())
+                            .map(MilestoneDto::lastErrorCode)
+                            .findFirst()
+                            .orElseGet(() -> domainMilestones.stream()
+                                    .map(MilestoneDto::lastErrorCode)
+                                    .filter(c -> c != null && !c.isBlank())
+                                    .findFirst()
+                                    .orElse(null));
+            String assignedQueue = (primaryFallout != null
+                    && primaryFallout.assignedGroup() != null && !primaryFallout.assignedGroup().isBlank())
+                    ? primaryFallout.assignedGroup()
+                    : null;
+
+            tracks.add(new OrderItemTrackOverviewDto.TrackSummary(
+                    domain,
+                    domainLabel(domain),
+                    trackStatus,
+                    completed,
+                    total,
+                    currentStepName,
+                    lastErrorCode,
+                    assignedQueue
+            ));
+        }
+        return tracks;
+    }
+
+    private static String classifyMilestoneDomain(MilestoneDto milestone) {
+        String combined = ((milestone.templateId() != null ? milestone.templateId() : "")
+                + " " + (milestone.displayName() != null ? milestone.displayName() : "")).trim();
+        if (combined.isEmpty()) {
+            return "ORDER";
+        }
+        if (containsAnyKeyword(combined, List.of("FRAUD"))) {
+            return "ORDER";
+        }
+        if (containsAnyKeyword(combined, BILLING_TRACK_KEYWORDS)) {
+            return "BILLING";
+        }
+        if (containsAnyKeyword(combined, STRONG_FULFILLMENT_TRACK_KEYWORDS)) {
+            return "FULFILLMENT";
+        }
+        if (containsAnyKeyword(combined, PROVISIONING_TRACK_KEYWORDS)) {
+            return "PROVISIONING";
+        }
+        if (containsAnyKeyword(combined, List.of("CARRIER"))) {
+            return "FULFILLMENT";
+        }
+        return "ORDER";
+    }
+
+    private static String domainLabel(String domain) {
+        return switch (domain) {
+            case "FULFILLMENT" -> "Fulfillment";
+            case "PROVISIONING" -> "Provisioning";
+            case "BILLING" -> "Billing";
+            default -> "Order";
+        };
+    }
+
+    private static String resolveTrackStatus(
+            List<MilestoneDto> milestones,
+            boolean hasActiveFallout,
+            int completed,
+            int total) {
+        if (hasActiveFallout) {
+            return "IN_FALLOUT";
+        }
+        int worstRank = 0;
+        for (MilestoneDto m : milestones) {
+            worstRank = Math.max(worstRank, trackStatusRank(m.status()));
+        }
+        return switch (worstRank) {
+            case 7 -> "IN_FALLOUT";
+            case 6 -> "BREACHED";
+            case 5 -> "JEOPARDY";
+            case 4 -> "WARNING";
+            case 3 -> "PAUSED";
+            case 2 -> "IN_PROGRESS";
+            default -> (completed == total && total > 0) ? "COMPLETED" : "PENDING";
+        };
+    }
+
+    private static int trackStatusRank(String status) {
+        if (status == null) {
+            return 0;
+        }
+        return switch (status.toUpperCase(Locale.ROOT)) {
+            case "IN_FALLOUT" -> 7;
+            case "BREACHED" -> 6;
+            case "JEOPARDY" -> 5;
+            case "WARNING" -> 4;
+            case "PAUSED" -> 3;
+            case "IN_PROGRESS" -> 2;
+            case "PENDING" -> 1;
+            default -> 0;
+        };
+    }
+
+    private static String resolveCurrentStepName(List<MilestoneDto> milestones, List<FalloutDto> fallouts) {
+        if (milestones == null || milestones.isEmpty()) {
+            return null;
+        }
+        if (fallouts != null) {
+            for (FalloutDto fo : fallouts) {
+                if (fo == null || !fo.isActive()) {
+                    continue;
+                }
+                for (MilestoneDto m : milestones) {
+                    if ((fo.milestoneId() != null && fo.milestoneId().equals(m.milestoneId()))
+                            || (fo.templateId() != null && fo.templateId().equals(m.templateId()))) {
+                        return m.displayName();
+                    }
+                }
+            }
+        }
+        MilestoneDto chosen = null;
+        int bestRank = -1;
+        for (MilestoneDto m : milestones) {
+            if ("COMPLETED".equalsIgnoreCase(m.status())) {
+                continue;
+            }
+            int rank = trackStatusRank(m.status());
+            if (rank > bestRank) {
+                bestRank = rank;
+                chosen = m;
+            }
+        }
+        if (chosen != null) {
+            return chosen.displayName();
+        }
+        return milestones.get(milestones.size() - 1).displayName();
+    }
+
+    private static List<String> resolveLinkedCompanionKeys(
+            String entityKey,
+            List<EntityRelationshipDto> relationships) {
+        if (entityKey == null || entityKey.isBlank() || relationships == null || relationships.isEmpty()) {
+            return List.of();
+        }
+        String ownRoot = extractRootOrderId(entityKey);
+        Set<String> companions = new LinkedHashSet<>();
+        for (EntityRelationshipDto rel : relationships) {
+            if (rel == null) {
+                continue;
+            }
+            if (entityKey.equals(rel.sourceEntityKey())
+                    && rel.targetEntityKey() != null && !rel.targetEntityKey().isBlank()) {
+                if (!ownRoot.equals(extractRootOrderId(rel.targetEntityKey()))) {
+                    companions.add(rel.targetEntityKey());
+                }
+            } else if (entityKey.equals(rel.targetEntityKey())
+                    && rel.sourceEntityKey() != null && !rel.sourceEntityKey().isBlank()) {
+                if (!ownRoot.equals(extractRootOrderId(rel.sourceEntityKey()))) {
+                    companions.add(rel.sourceEntityKey());
+                }
+            }
+        }
+        return new ArrayList<>(companions);
+    }
+
+    private static String resolveDisplayTitle(EntitySummaryDto ent) {
+        String attrTitle = extractAttribute(
+                ent.attributes(), "device_model", "product_name", "item_name", "deviceModel", "productName", "itemName");
+        if (attrTitle != null) {
+            return attrTitle;
+        }
+        if (ent.itemType() != null && !ent.itemType().isBlank() && !"ROOT_ORDER".equalsIgnoreCase(ent.itemType())) {
+            return prettifyCode(ent.itemType());
+        }
+        if (ent.orderType() != null && !ent.orderType().isBlank()) {
+            return prettifyCode(ent.orderType());
+        }
+        return ent.entityKey();
+    }
+
+    private static String extractAttribute(Map<String, Object> attributes, String... keys) {
+        if (attributes == null || attributes.isEmpty()) {
+            return null;
+        }
+        for (String key : keys) {
+            Object val = attributes.get(key);
+            if (val != null) {
+                String str = String.valueOf(val).trim();
+                if (!str.isEmpty() && !"null".equalsIgnoreCase(str)) {
+                    return str;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String prettifyCode(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return raw;
+        }
+        String[] parts = raw.trim().split("[_\\-\\s]+");
+        StringBuilder sb = new StringBuilder();
+        for (String part : parts) {
+            if (part.isEmpty()) {
+                continue;
+            }
+            if (!sb.isEmpty()) {
+                sb.append(' ');
+            }
+            String upper = part.toUpperCase(Locale.ROOT);
+            if (upper.equals("ESIM")) {
+                sb.append("eSIM");
+            } else if (upper.equals("SIM") || upper.equals("BOPIS") || upper.equals("BYOD")
+                    || upper.equals("5G") || upper.equals("EIP") || upper.equals("FWA")
+                    || upper.equals("MDN") || upper.equals("MRC")) {
+                sb.append(upper);
+            } else {
+                sb.append(Character.toUpperCase(part.charAt(0)));
+                if (part.length() > 1) {
+                    sb.append(part.substring(1).toLowerCase(Locale.ROOT));
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    private static boolean containsAnyKeyword(String text, List<String> keywords) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        String camelSplit = text.replaceAll("([a-z0-9])([A-Z][a-z])", "$1_$2");
+        String normalized = camelSplit.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]+", "_");
+        String[] tokens = normalized.split("_+");
+        for (String kw : keywords) {
+            if (kw.contains("_")) {
+                if (normalized.contains(kw)) {
+                    return true;
+                }
+            } else if (EXACT_SHORT_TOKENS.contains(kw)) {
+                for (String tok : tokens) {
+                    if (tok.equals(kw)) {
+                        return true;
+                    }
+                }
+            } else if (kw.equals("LINE") || kw.equals("KIT")) {
+                for (String tok : tokens) {
+                    if (tok.equals(kw) || tok.equals(kw + "S")) {
+                        return true;
+                    }
+                }
+            } else if (kw.equals("TAX")) {
+                for (String tok : tokens) {
+                    if (tok.equals("TAX") || tok.equals("TAXES") || tok.equals("TAXATION")) {
+                        return true;
+                    }
+                }
+            } else {
+                for (String tok : tokens) {
+                    if (tok.startsWith(kw)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static <T> List<T> safeList(List<T> list) {
+        return list != null ? list : List.of();
+    }
+
+    private static <T> T joinUnwrapped(CompletableFuture<T> future) {
+        try {
+            return future.join();
+        } catch (CompletionException ex) {
+            if (ex.getCause() instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw ex;
+        }
     }
 
     /**
