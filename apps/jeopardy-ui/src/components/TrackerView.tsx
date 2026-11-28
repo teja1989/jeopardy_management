@@ -1196,7 +1196,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   const entity = optimisticEntity;
   const heroStatus = entity ? humanStatusLabel(entity.status, entity.hasActiveFallout) : null;
 
-  // Mode 2: Deduplicated Domino's / BMW style stage list (strictly from syncedTimeline)
+  // Mode 2: Deduplicated step-by-step milestone stage list (strictly from syncedTimeline)
   const stages = useMemo<UnifiedStage[]>(() => {
     if (!syncedTimeline) return [];
 

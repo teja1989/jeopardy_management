@@ -283,7 +283,7 @@ export const GuidePlaybookView: React.FC<GuidePlaybookViewProps> = ({
       {
         title: 'Look Up Sample Order ORD-88412',
         description:
-          'See the Domino’s-style progress track, plain-English ETA, linked companion orders, and full Account history in one view.',
+          'See the step-by-step milestone progress rail, plain-English ETA, linked companion orders, and full Account history in one view.',
         cta: 'Open ORD-88412',
         onClick: () => onInspectOrders({ entityKey: 'ORD-88412' }),
       },

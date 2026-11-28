@@ -757,7 +757,7 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
                   Step ID
                   <InfoTooltip
                     title="Internal Step ID"
-                    definition="Short unique identifier within this workflow (e.g., S1, S2) used by Depends On links. Hidden from the main Domino's/BMW tracker bar and shown only in Technical Details."
+                    definition="Short unique identifier within this workflow (e.g., S1, S2) used by Depends On links. Hidden from the main Order Progress bar and shown only in Technical Details."
                     impact="Controls dependency wiring inside Flink without cluttering the user-facing Order Tracker."
                     align="left"
                   />
