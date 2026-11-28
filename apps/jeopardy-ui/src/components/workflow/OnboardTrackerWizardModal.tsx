@@ -4,13 +4,18 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Eye,
   EyeOff,
   GitBranch,
   Layers,
   Link2,
+  Plus,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
+  Tag,
   Users,
   Workflow,
   X,
@@ -19,9 +24,11 @@ import type { MilestoneTemplateRecord } from '../../api/types';
 import {
   ORDER_FAMILY_OPTIONS,
   createStarterWorkflowDraft,
+  normalizeReportingGroupCode,
   type EditableWorkflowDraft,
   type LinkedOrderConfig,
   type LinkedSlaBehavior,
+  type ReportingGroupOption,
   type StarterPresetId,
   type TrackerAudienceVisibility,
   type WorkflowRoleType,
@@ -31,6 +38,8 @@ interface OnboardTrackerWizardModalProps {
   open: boolean;
   templates: MilestoneTemplateRecord[];
   existingOrderTypes: string[];
+  reportingGroups?: ReportingGroupOption[];
+  onCreateReportingGroup?: (groupCode: string, displayLabel: string) => Promise<void> | void;
   onClose: () => void;
   onCreateDraft: (draft: EditableWorkflowDraft) => void;
 }
@@ -57,12 +66,12 @@ interface PatternOption {
 }
 
 const PATTERN_OPTIONS: PatternOption[] = [
-  // Linked Internal / Companion Order Patterns (Separate BPMN + Parent Sales Order Context)
+  // Companion / Follow-Up Order Patterns (Linked to Parent Order)
   {
     id: 'insurance_addon',
     role: 'LINKED_COMPANION',
     label: 'Device Insurance / Protection Add-On',
-    tagline: 'Separate BPMN spawned per upgraded line (e.g., Plan Upgrade -> Insurance Order)',
+    tagline: 'Spawned per upgraded line (e.g., Plan Upgrade -> Insurance Order)',
     defaultOrderType: 'INTERNAL_INSURANCE_ORDER',
     defaultItemType: 'LINE_DEVICE_INSURANCE',
     defaultDisplayName: 'Line Device Insurance Enrollment',
@@ -82,7 +91,7 @@ const PATTERN_OPTIONS: PatternOption[] = [
     id: 'partner_perk',
     role: 'LINKED_COMPANION',
     label: 'Partner Perk / Loyalty / Streaming Promo',
-    tagline: 'Internal fulfillment order spawned when customer activates an eligible plan',
+    tagline: 'Follow-up fulfillment order spawned when a customer activates an eligible plan',
     defaultOrderType: 'INTERNAL_PROMO_PROVISIONING',
     defaultItemType: 'PARTNER_STREAMING_PERK',
     defaultDisplayName: 'Partner Streaming Perk Provisioning',
@@ -102,7 +111,7 @@ const PATTERN_OPTIONS: PatternOption[] = [
     id: 'trade_in',
     role: 'LINKED_COMPANION',
     label: '60-Day Device Trade-In / Return',
-    tagline: 'Long-running return kit, warehouse inspection & bill credit BPMN linked to Upgrade',
+    tagline: 'Long-running return kit, warehouse inspection & bill credit linked to an Upgrade',
     defaultOrderType: 'DEVICE_TRADE_IN',
     defaultItemType: 'DEVICE_TRADE_IN',
     defaultDisplayName: 'Device Trade-In & Credit Fulfillment',
@@ -122,7 +131,7 @@ const PATTERN_OPTIONS: PatternOption[] = [
     id: 'field_install',
     role: 'LINKED_COMPANION',
     label: 'Field Tech Dispatch / Fiber Install',
-    tagline: 'Internal work-order BPMN spun up for broadband/hardware installation',
+    tagline: 'Follow-up work order spun up for broadband or hardware installation',
     defaultOrderType: 'INTERNAL_WORK_ORDER',
     defaultItemType: 'FIELD_TECH_INSTALL',
     defaultDisplayName: 'Field Technician Installation Order',
@@ -140,15 +149,15 @@ const PATTERN_OPTIONS: PatternOption[] = [
   {
     id: 'blank',
     role: 'LINKED_COMPANION',
-    label: 'Custom Internal / Companion BPMN',
-    tagline: 'Any spawned internal workflow (compliance, credit, warranty, SIM swap, etc.)',
+    label: 'Custom Companion / Follow-Up Order',
+    tagline: 'Any spawned follow-up workflow (compliance, credit, warranty, SIM swap, etc.)',
     defaultOrderType: 'INTERNAL_COMPANION',
     defaultItemType: 'CUSTOM_COMPANION_FLOW',
     defaultDisplayName: 'Custom Companion Fulfillment',
     defaultCustomerLabel: 'Additional Feature Setup',
     defaultFamily: 'PLAN_PROMO',
     defaultEntityLevel: 'INTERNAL_PROMO',
-    defaultBpmnKey: 'customCompanionBpmn',
+    defaultBpmnKey: '',
     defaultEntityKeyPath: '$.variables.companionOrderId',
     defaultParentOrderPath: '$.variables.parentOrderId',
     defaultRelationship: 'TRIGGERED_BY_ORDER',
@@ -282,6 +291,8 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
   open,
   templates,
   existingOrderTypes,
+  reportingGroups,
+  onCreateReportingGroup,
   onClose,
   onCreateDraft,
 }) => {
@@ -299,7 +310,15 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
   const [visibility, setVisibility] = useState<TrackerAudienceVisibility>('CUSTOMER_AND_INTERNAL');
   const [internalOwningTeam, setInternalOwningTeam] = useState('Partner Protection Ops');
 
-  // Step 3: Linked Context & BPMN Correlation
+  // Inline "+ New Group" creator state
+  const [localGroups, setLocalGroups] = useState<ReportingGroupOption[]>([]);
+  const [addingGroup, setAddingGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupCode, setNewGroupCode] = useState('');
+  const [newGroupCodeEdited, setNewGroupCodeEdited] = useState(false);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+
+  // Step 3: Link to Parent Order
   const [parentOrderTypes, setParentOrderTypes] = useState<string[]>(['SALES', 'CHANGE']);
   const [customParentType, setCustomParentType] = useState('');
   const [bpmnProcessKey, setBpmnProcessKey] = useState('lineInsuranceEnrollmentBpmn');
@@ -311,6 +330,7 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
     useState<LinkedOrderConfig['relationshipType']>('TRIGGERED_BY_ORDER');
   const [slaBehavior, setSlaBehavior] = useState<LinkedSlaBehavior>('INDEPENDENT_PARALLEL');
   const [autoWireAdapterRule, setAutoWireAdapterRule] = useState(true);
+  const [showAdvancedRouting, setShowAdvancedRouting] = useState(false);
 
   const rolePatterns = useMemo(
     () => PATTERN_OPTIONS.filter((p) => p.role === role),
@@ -321,6 +341,44 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
     const set = new Set<string>([...DEFAULT_PARENT_TYPES, ...existingOrderTypes]);
     return Array.from(set).filter(Boolean).slice(0, 12);
   }, [existingOrderTypes]);
+
+  const effectiveReportingGroups = useMemo<ReportingGroupOption[]>(() => {
+    const map = new Map<string, ReportingGroupOption>();
+    const source =
+      reportingGroups && reportingGroups.length > 0 ? reportingGroups : ORDER_FAMILY_OPTIONS;
+    for (const g of source) {
+      map.set(g.id, { id: g.id, label: g.label });
+    }
+    for (const g of localGroups) {
+      map.set(g.id, g);
+    }
+    if (orderFamily && !map.has(orderFamily)) {
+      map.set(orderFamily, { id: orderFamily, label: orderFamily });
+    }
+    return Array.from(map.values());
+  }, [reportingGroups, localGroups, orderFamily]);
+
+  const handleAddReportingGroup = async () => {
+    const label = newGroupName.trim();
+    const code = normalizeReportingGroupCode(newGroupCode || label);
+    if (!code) return;
+    const finalLabel = label || code;
+    setCreatingGroup(true);
+    try {
+      setLocalGroups((prev) => [
+        ...prev.filter((g) => g.id !== code),
+        { id: code, label: finalLabel },
+      ]);
+      setOrderFamily(code);
+      await onCreateReportingGroup?.(code, finalLabel);
+      setAddingGroup(false);
+      setNewGroupName('');
+      setNewGroupCode('');
+      setNewGroupCodeEdited(false);
+    } finally {
+      setCreatingGroup(false);
+    }
+  };
 
   const applyPattern = (pat: PatternOption) => {
     setPreset(pat.id);
@@ -413,6 +471,8 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
 
     onCreateDraft(draft);
     setStep(1);
+    setAddingGroup(false);
+    setShowAdvancedRouting(false);
     onClose();
   };
 
@@ -431,14 +491,14 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                 ? 'What kind of order workflow are you onboarding?'
                 : step === 2
                   ? 'Choose starter pattern, name & who should see it'
-                  : 'Connect this separate BPMN back to the parent Sales / Customer Order'}
+                  : 'Link this companion workflow to its parent order'}
             </h2>
             <p className="text-xs text-[#5F6368] dark:text-[#9AA0A6] mt-0.5">
               {step === 1
-                ? 'Track standalone customer orders OR internal companion workflows (like Insurance, Trade-In, Installs, Perks) that run on their own BPMN with parent order context.'
+                ? 'Track standalone customer orders or companion follow-up workflows (like Device Insurance, Trade-In, Field Installs, or Partner Perks) that stay linked to a parent order.'
                 : step === 2
                   ? 'Pick plain-English labels for customers/care agents and technical codes for Flink & DevOps.'
-                  : 'We automatically wire the correlation rule so Flink links this companion BPMN to the parent order with zero code or YAML editing.'}
+                  : 'Choose which parent orders spawn this companion, map the correlation ID fields, and set its SLA behavior.'}
             </p>
           </div>
 
@@ -457,7 +517,7 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
           {[
             { num: 1 as const, label: '1. Order Role' },
             { num: 2 as const, label: '2. Pattern & Visibility' },
-            ...(needsLinkStep ? [{ num: 3 as const, label: '3. Parent Order Context & BPMN Link' }] : []),
+            ...(needsLinkStep ? [{ num: 3 as const, label: '3. Link to Parent Order' }] : []),
           ].map((s) => (
             <button
               key={s.num}
@@ -486,9 +546,9 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                 {
                   id: 'LINKED_COMPANION' as const,
                   icon: <Link2 className="w-5 h-5 text-[#1A73E8] dark:text-[#8AB4F8]" />,
-                  badge: 'Multi-BPMN · Linked to Parent Order',
-                  title: 'Linked Internal / Companion Order (Separate BPMN)',
-                  desc: 'Spun up automatically from a customer or agent order to fulfill an additional feature — e.g., Plan Upgrade spawning a Line Insurance BPMN, Trade-In Return, Field Tech Install, or Partner Perk. Runs its own SLA while staying linked to the parent Sales Order.',
+                  badge: 'Linked to Parent Order',
+                  title: 'Companion / Follow-Up Order',
+                  desc: 'Automatically spawned from a primary order (e.g., Device Insurance, Trade-In, Field Install, or Partner Perk). Tracks its own SLA while staying linked to the parent order.',
                   examples: ['Plan Upgrade -> Device Insurance', 'Sales -> Trade-In Kit', 'Broadband -> Field Tech Install', 'Sales -> Streaming Perk'],
                 },
                 {
@@ -639,17 +699,27 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
-                    Order Family (Reporting Group)
-                  </label>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5]">
+                      Order Family (Reporting Group)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setAddingGroup((v) => !v)}
+                      className="inline-flex items-center gap-1 rounded-full bg-[#E8F0FE] dark:bg-[#004A77]/60 hover:bg-[#D3E3FD] dark:hover:bg-[#004A77] px-2.5 py-0.5 text-[11px] font-semibold text-[#1967D2] dark:text-[#C2E7FF] transition"
+                    >
+                      <Plus className="w-3 h-3" />
+                      New Group
+                    </button>
+                  </div>
                   <select
                     value={orderFamily}
                     onChange={(e) => setOrderFamily(e.target.value)}
-                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3 py-2 text-xs"
+                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3 py-2 text-xs focus:outline-none focus:border-[#1A73E8]"
                   >
-                    {ORDER_FAMILY_OPTIONS.map((f) => (
+                    {effectiveReportingGroups.map((f) => (
                       <option key={f.id} value={f.id}>
-                        {f.label}
+                        {f.label} ({f.id})
                       </option>
                     ))}
                   </select>
@@ -666,6 +736,99 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                     className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs focus:outline-none focus:border-[#1A73E8]"
                   />
                 </div>
+                {addingGroup && (
+                  <div className="sm:col-span-2 rounded-2xl border border-[#C2E7FF] dark:border-[#004A77] bg-[#F0F7FF] dark:bg-[#002844]/40 p-3.5 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1967D2] dark:text-[#8AB4F8]">
+                        <Tag className="w-3.5 h-3.5" />
+                        Create New Reporting Group
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddingGroup(false);
+                          setNewGroupName('');
+                          setNewGroupCode('');
+                          setNewGroupCodeEdited(false);
+                        }}
+                        className="p-1 rounded-full text-[#5F6368] hover:bg-white/70 dark:hover:bg-[#282A2C]"
+                        aria-label="Cancel new reporting group"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                          Reporting Group Name *
+                        </label>
+                        <input
+                          type="text"
+                          value={newGroupName}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setNewGroupName(val);
+                            if (!newGroupCodeEdited) {
+                              setNewGroupCode(normalizeReportingGroupCode(val));
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              void handleAddReportingGroup();
+                            }
+                          }}
+                          placeholder="e.g. B2B Enterprise or Device Financing"
+                          className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#131314] px-3 py-1.5 text-xs focus:outline-none focus:border-[#1A73E8]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                          Group Code (auto-generated, editable)
+                        </label>
+                        <input
+                          type="text"
+                          value={newGroupCode}
+                          onChange={(e) => {
+                            setNewGroupCodeEdited(true);
+                            setNewGroupCode(normalizeReportingGroupCode(e.target.value));
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              void handleAddReportingGroup();
+                            }
+                          }}
+                          placeholder="e.g. B2B_ENTERPRISE"
+                          className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#131314] px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddingGroup(false);
+                          setNewGroupName('');
+                          setNewGroupCode('');
+                          setNewGroupCodeEdited(false);
+                        }}
+                        className="rounded-full px-3 py-1 text-xs font-medium text-[#5F6368] hover:bg-white/70 dark:text-[#9AA0A6] dark:hover:bg-[#282A2C]"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={creatingGroup || !normalizeReportingGroupCode(newGroupCode || newGroupName)}
+                        onClick={() => void handleAddReportingGroup()}
+                        className="inline-flex items-center gap-1 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-3.5 py-1 text-xs font-semibold shadow-sm transition disabled:opacity-40"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        {creatingGroup ? 'Adding...' : 'Add Group'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Audience Visibility Toggle (Customer + Internal vs Internal Only) */}
@@ -717,18 +880,18 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
             </div>
           )}
 
-          {/* STEP 3: Visual Parent Order Context & Separate BPMN Link Mapper */}
+          {/* STEP 3: Link to Parent Order */}
           {step === 3 && needsLinkStep && (
             <div className="space-y-5">
               {/* Live Visual Relationship Diagram */}
               <div className="rounded-2xl border border-[#C2E7FF] dark:border-[#004A77] bg-gradient-to-r from-[#F0F7FF] via-[#F8FAFD] to-[#F5F0FF] dark:from-[#002844]/60 dark:via-[#131314] dark:to-[#241634]/50 p-4">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[#1967D2] dark:text-[#8AB4F8] mb-2.5 flex items-center gap-1.5">
                   <Workflow className="w-3.5 h-3.5" />
-                  Live Linked-Order Topology Preview
+                  Live Linked-Order Preview
                 </div>
                 <div className="flex flex-wrap items-center gap-2.5 text-xs">
                   <div className="rounded-xl bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] px-3.5 py-2 shadow-sm">
-                    <div className="text-[10px] text-[#5F6368] dark:text-[#9AA0A6]">Parent Customer Order(s)</div>
+                    <div className="text-[10px] text-[#5F6368] dark:text-[#9AA0A6]">Parent Order(s)</div>
                     <div className="font-mono font-semibold text-[#1F1F1F] dark:text-white">
                       {parentOrderTypes.length > 0 ? parentOrderTypes.join(', ') : 'SALES'}
                     </div>
@@ -743,7 +906,7 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                   </div>
                   <div className="rounded-xl bg-white dark:bg-[#1E1F20] border border-[#1A73E8]/50 px-3.5 py-2 shadow-sm">
                     <div className="text-[10px] text-[#1967D2] dark:text-[#8AB4F8] font-medium">
-                      Separate BPMN · {bpmnProcessKey || 'customBpmn'}
+                      Linked Companion
                     </div>
                     <div className="font-semibold text-[#1F1F1F] dark:text-white">
                       {displayName || orderType}
@@ -752,10 +915,10 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                 </div>
               </div>
 
-              {/* Parent Order Types Multi-Select */}
+              {/* 1. Parent Order Types Multi-Select */}
               <div>
                 <label className="block text-xs font-semibold text-[#1F1F1F] dark:text-white mb-2">
-                  Which Parent Order Types can spawn this internal workflow?
+                  Which Parent Orders can spawn this?
                 </label>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {allParentTypeChoices.map((ot) => {
@@ -799,89 +962,69 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                 </div>
               </div>
 
-              {/* Separate BPMN & Parent Context Correlation Paths */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* 2. Event Correlation Fields */}
+              <div className="space-y-3">
                 <div>
-                  <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
-                    Separate BPMN Process Key
+                  <label className="block text-xs font-semibold text-[#1F1F1F] dark:text-white">
+                    Event Correlation Fields
                   </label>
-                  <input
-                    type="text"
-                    value={bpmnProcessKey}
-                    onChange={(e) => setBpmnProcessKey(e.target.value)}
-                    placeholder="e.g. lineInsuranceEnrollmentBpmn"
-                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono"
-                  />
+                  <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] mt-0.5">
+                    Point to the JSON fields that link incoming companion events back to the parent order.
+                  </p>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
-                    Source Event Topic
-                  </label>
-                  <input
-                    type="text"
-                    value={sourceTopic}
-                    onChange={(e) => setSourceTopic(e.target.value)}
-                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
-                    This Companion Order&apos;s ID Path
-                  </label>
-                  <input
-                    type="text"
-                    value={entityKeyPath}
-                    onChange={(e) => setEntityKeyPath(e.target.value)}
-                    placeholder="$.variables.insuranceOrderId"
-                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
-                    Parent Sales / Change Order Context Path
-                  </label>
-                  <input
-                    type="text"
-                    value={parentOrderIdPath}
-                    onChange={(e) => setParentOrderIdPath(e.target.value)}
-                    placeholder="$.variables.salesOrderId"
-                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
-                    Optional Parent Line Item Context Path (Per-Line Add-Ons)
-                  </label>
-                  <input
-                    type="text"
-                    value={parentLineItemIdPath}
-                    onChange={(e) => setParentLineItemIdPath(e.target.value)}
-                    placeholder="$.variables.salesLineItemId (leave blank if order-level)"
-                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
-                    Relationship Type
-                  </label>
-                  <select
-                    value={relationshipType}
-                    onChange={(e) => setRelationshipType(e.target.value)}
-                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3 py-2 text-xs font-mono"
-                  >
-                    <option value="TRIGGERED_BY_ORDER">TRIGGERED_BY_ORDER (Spawned by Order)</option>
-                    <option value="TRIGGERED_BY_ITEM">TRIGGERED_BY_ITEM (Spawned per Line Item)</option>
-                    <option value="BUNDLED_FEATURE">BUNDLED_FEATURE (Bundled Add-On / Trade-In)</option>
-                    <option value="CHILD_WORK_ORDER">CHILD_WORK_ORDER (Internal Work Order / Dispatch)</option>
-                    <option value="CHANGE_ORDER_OF">CHANGE_ORDER_OF (Supplemental Change Order)</option>
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                      Parent Order ID Field
+                    </label>
+                    <input
+                      type="text"
+                      value={parentOrderIdPath}
+                      onChange={(e) => setParentOrderIdPath(e.target.value)}
+                      placeholder="$.variables.salesOrderId"
+                      className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                    />
+                    <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] mt-1">
+                      Field in incoming events containing the parent order&apos;s ID
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                      Companion Order ID Field
+                    </label>
+                    <input
+                      type="text"
+                      value={entityKeyPath}
+                      onChange={(e) => setEntityKeyPath(e.target.value)}
+                      placeholder="$.variables.insuranceOrderId"
+                      className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                    />
+                    <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] mt-1">
+                      Unique ID received for this companion order — stored verbatim, never modified
+                    </p>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                      Parent Line Item ID Field (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={parentLineItemIdPath}
+                      onChange={(e) => setParentLineItemIdPath(e.target.value)}
+                      placeholder="$.variables.salesLineItemId (leave blank if order-level)"
+                      className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                    />
+                    <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] mt-1">
+                      Only for per-line add-ons like line insurance
+                    </p>
+                  </div>
                 </div>
               </div>
 
-              {/* SLA Coupling Behavior */}
+              {/* 3. SLA Coupling Behavior */}
               <div>
                 <label className="block text-xs font-semibold text-[#1F1F1F] dark:text-white mb-2">
-                  How does this companion order affect the Parent Order&apos;s SLA?
+                  How does this affect the Parent Order&apos;s SLA?
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                   {[
@@ -922,24 +1065,115 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                 </div>
               </div>
 
-              {/* Auto-Wire Adapter Toggle */}
-              <label className="flex items-start gap-3 rounded-2xl border border-[#CEEAD6] dark:border-[#1E4620] bg-[#E6F4EA]/60 dark:bg-[#132E1C]/40 p-3.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoWireAdapterRule}
-                  onChange={(e) => setAutoWireAdapterRule(e.target.checked)}
-                  className="mt-0.5 rounded border-slate-300"
-                />
-                <div className="text-xs">
-                  <div className="font-semibold text-[#137333] dark:text-[#81C995] flex items-center gap-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                    Auto-register Flowable BPMN correlation rule on Publish Live (Recommended)
+              {/* Collapsible Advanced Event Routing (Optional) */}
+              <div className="rounded-2xl border border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314]/70 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedRouting((v) => !v)}
+                  className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]/60 transition"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    {showAdvancedRouting ? (
+                      <ChevronDown className="w-4 h-4 text-[#5F6368] dark:text-[#9AA0A6] shrink-0" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-[#5F6368] dark:text-[#9AA0A6] shrink-0" />
+                    )}
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-[#1A73E8] dark:text-[#8AB4F8] shrink-0" />
+                    <span className="text-xs font-semibold text-[#1F1F1F] dark:text-white">
+                      Advanced Event Routing (Optional)
+                    </span>
                   </div>
-                  <p className="text-[11px] text-[#444746] dark:text-[#C4C7C5] mt-0.5">
-                    Automatically adds <code className="font-mono">{bpmnProcessKey || 'yourBpmnKey'}</code> + parent <code className="font-mono">extraLinks</code> to <code className="font-mono">adapter-flowable-bpmn</code> so Flink links companion orders to their parent Sales Order with zero manual YAML editing.
-                  </p>
-                </div>
-              </label>
+                  <span className="rounded-full bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] px-2.5 py-0.5 text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6] shrink-0">
+                    {bpmnProcessKey.trim()
+                      ? `Flowable: ${bpmnProcessKey.trim()}`
+                      : 'Standard domain events'}
+                  </span>
+                </button>
+
+                {showAdvancedRouting && (
+                  <div className="px-4 pb-4 pt-2 border-t border-[#E0E6F0]/80 dark:border-[#333639] space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                          Flowable Process Definition ID (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          value={bpmnProcessKey}
+                          onChange={(e) => setBpmnProcessKey(e.target.value)}
+                          placeholder="e.g. lineInsuranceEnrollmentBpmn (optional)"
+                          className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] px-3.5 py-2 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                        />
+                        <p className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] mt-1">
+                          Optional — only fill this if this companion runs as its own Flowable BPMN process and you want auto-wiring into{' '}
+                          <code className="font-mono">adapter-flowable-bpmn</code>. Leave blank for standard domain events.
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                          Source Event Topic
+                        </label>
+                        <input
+                          type="text"
+                          value={sourceTopic}
+                          onChange={(e) => setSourceTopic(e.target.value)}
+                          className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] px-3.5 py-2 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                          Link Relationship Code
+                        </label>
+                        <select
+                          value={relationshipType}
+                          onChange={(e) => setRelationshipType(e.target.value)}
+                          className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] px-3 py-2 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                        >
+                          <option value="TRIGGERED_BY_ORDER">TRIGGERED_BY_ORDER (Spawned by Order)</option>
+                          <option value="TRIGGERED_BY_ITEM">TRIGGERED_BY_ITEM (Spawned per Line Item)</option>
+                          <option value="BUNDLED_FEATURE">BUNDLED_FEATURE (Bundled Add-On / Trade-In)</option>
+                          <option value="CHILD_WORK_ORDER">CHILD_WORK_ORDER (Internal Work Order / Dispatch)</option>
+                          <option value="CHANGE_ORDER_OF">CHANGE_ORDER_OF (Supplemental Change Order)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Auto-Wire Adapter Toggle */}
+                    <label
+                      className={`flex items-start gap-3 rounded-2xl border p-3.5 cursor-pointer transition ${
+                        bpmnProcessKey.trim()
+                          ? 'border-[#CEEAD6] dark:border-[#1E4620] bg-[#E6F4EA]/60 dark:bg-[#132E1C]/40'
+                          : 'border-[#E0E6F0] dark:border-[#333639] bg-white/70 dark:bg-[#1E1F20]/50 opacity-75'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={autoWireAdapterRule && Boolean(bpmnProcessKey.trim())}
+                        disabled={!bpmnProcessKey.trim()}
+                        onChange={(e) => setAutoWireAdapterRule(e.target.checked)}
+                        className="mt-0.5 rounded border-slate-300"
+                      />
+                      <div className="text-xs">
+                        <div className="font-semibold text-[#137333] dark:text-[#81C995] flex items-center gap-1.5">
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Auto-wire Flowable adapter rule on Publish Live
+                        </div>
+                        <p className="text-[11px] text-[#444746] dark:text-[#C4C7C5] mt-0.5">
+                          {bpmnProcessKey.trim() ? (
+                            <>
+                              Automatically adds <code className="font-mono">{bpmnProcessKey.trim()}</code> + parent{' '}
+                              <code className="font-mono">extraLinks</code> to{' '}
+                              <code className="font-mono">adapter-flowable-bpmn</code> so Flink links companion orders with zero manual YAML editing.
+                            </>
+                          ) : (
+                            'Enter a Flowable Process Definition ID above if you want automatic Flowable adapter rule registration.'
+                          )}
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

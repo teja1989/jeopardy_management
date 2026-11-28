@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowLeft,
   ArrowRight,
@@ -12,12 +13,17 @@ import {
   EyeOff,
   GitBranch,
   Link2,
+  Loader2,
+  PauseCircle,
   Play,
+  PlayCircle,
   Plus,
   Rocket,
   Save,
   Search,
   Sparkles,
+  Tag,
+  Trash2,
   X,
   Zap,
 } from 'lucide-react';
@@ -25,10 +31,14 @@ import {
   createAdapterVersion,
   createBlueprintVersion,
   createTemplateVersion,
+  deleteBlueprint,
+  deleteOrderFamily,
   listAdapters,
   listBlueprints,
+  listOrderFamilies,
   listTemplates,
   publishConfigs,
+  setBlueprintStatus,
   upsertOrderFamily,
 } from '../../api/client';
 import type {
@@ -36,6 +46,7 @@ import type {
   JourneyBlueprintRecord,
   MilestonePredicate,
   MilestoneTemplateRecord,
+  OrderFamilyRecord,
 } from '../../api/types';
 import { JsonEventPickerModal } from './JsonEventPickerModal';
 import { MilestoneInspector } from './MilestoneInspector';
@@ -43,9 +54,12 @@ import { OnboardTrackerWizardModal } from './OnboardTrackerWizardModal';
 import {
   blueprintToDraft,
   buildNodeFromTemplate,
+  buildReportingGroupOptions,
   domainAccentClasses,
+  normalizeReportingGroupCode,
   type EditableMilestoneNode,
   type EditableWorkflowDraft,
+  type ReportingGroupOption,
 } from './workflowModels';
 
 interface WorkflowStudioViewProps {
@@ -54,7 +68,7 @@ interface WorkflowStudioViewProps {
   adminUsername?: string;
 }
 
-type CategoryFilter = 'ALL' | 'LINKED' | 'SALES' | 'CHANGE' | 'OTHER';
+type CategoryFilter = 'ALL' | 'LINKED' | 'SALES' | 'CHANGE' | 'OTHER' | 'DISABLED';
 
 function classifyBlueprint(bp: JourneyBlueprintRecord): 'LINKED' | 'SALES' | 'CHANGE' | 'OTHER' {
   const def = (bp.definition ?? {}) as Record<string, unknown>;
@@ -81,6 +95,8 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
   const [adapters, setAdapters] = useState<EventAdapterRecord[]>([]);
   const [templates, setTemplates] = useState<MilestoneTemplateRecord[]>([]);
   const [blueprints, setBlueprints] = useState<JourneyBlueprintRecord[]>([]);
+  const [orderFamilies, setOrderFamilies] = useState<OrderFamilyRecord[]>([]);
+  const [customGroupLabels, setCustomGroupLabels] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
 
   // Mode 1: Full-Width Workflows Directory filters
@@ -92,14 +108,37 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
+  // Mode 2 inline "+ New Group" creator
+  const [editorAddingGroup, setEditorAddingGroup] = useState(false);
+  const [editorNewGroupName, setEditorNewGroupName] = useState('');
+  const [editorNewGroupCode, setEditorNewGroupCode] = useState('');
+  const [editorNewGroupCodeEdited, setEditorNewGroupCodeEdited] = useState(false);
+
   // Add Milestone modal
   const [addStepAtIndex, setAddStepAtIndex] = useState<number | null>(null);
   const [milestoneSearch, setMilestoneSearch] = useState('');
   const [newMilestoneName, setNewMilestoneName] = useState('');
   const [newMilestoneDomain, setNewMilestoneDomain] = useState('PROVISIONING');
 
-  // Guided Linked & Companion Order Onboarding Wizard Modal
+  // Guided Companion Order Onboarding Wizard Modal
   const [onboardOpen, setOnboardOpen] = useState(false);
+
+  // Reporting Groups Manager Modal
+  const [groupsModalOpen, setGroupsModalOpen] = useState(false);
+  const [groupFormName, setGroupFormName] = useState('');
+  const [groupFormCode, setGroupFormCode] = useState('');
+  const [groupFormCodeEdited, setGroupFormCodeEdited] = useState(false);
+  const [groupFormOrderType, setGroupFormOrderType] = useState('');
+  const [groupFormDesc, setGroupFormDesc] = useState('');
+  const [groupBusyKey, setGroupBusyKey] = useState<string | null>(null);
+
+  // Disable / Enable & Delete Workflow state
+  const [mutatingBlueprintId, setMutatingBlueprintId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    blueprintId: string;
+    displayName: string;
+  } | null>(null);
+  const [deletingBlueprint, setDeletingBlueprint] = useState(false);
 
   // Dry-run modal
   const [dryRunOpen, setDryRunOpen] = useState(false);
@@ -111,14 +150,16 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
   const loadAllConfigs = useCallback(async () => {
     setLoading(true);
     try {
-      const [adRes, tmplRes, bpRes] = await Promise.all([
+      const [adRes, tmplRes, bpRes, famRes] = await Promise.all([
         listAdapters(),
         listTemplates(),
-        listBlueprints(),
+        listBlueprints(true),
+        listOrderFamilies(),
       ]);
       setAdapters(adRes);
       setTemplates(tmplRes);
       setBlueprints(bpRes);
+      setOrderFamilies(famRes);
     } catch (err) {
       setToast({
         tone: 'err',
@@ -140,6 +181,23 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
     }
   }, [autoOpenOnboard, onConsumedAutoOpen]);
 
+  const reportingGroups = useMemo<ReportingGroupOption[]>(() => {
+    const merged = buildReportingGroupOptions(orderFamilies, blueprints);
+    const byCode = new Map<string, ReportingGroupOption>(merged.map((g) => [g.id, g]));
+    for (const [code, label] of Object.entries(customGroupLabels)) {
+      byCode.set(code, { id: code, label });
+    }
+    if (draft?.orderFamily && !byCode.has(draft.orderFamily)) {
+      byCode.set(draft.orderFamily, { id: draft.orderFamily, label: draft.orderFamily });
+    }
+    return Array.from(byCode.values());
+  }, [orderFamilies, blueprints, customGroupLabels, draft?.orderFamily]);
+
+  const getReportingGroupLabel = useCallback(
+    (code: string) => reportingGroups.find((g) => g.id === code)?.label ?? code,
+    [reportingGroups],
+  );
+
   // Category counts (computed over full catalog for filter pill clarity)
   const categoryCounts = useMemo(() => {
     const counts: Record<CategoryFilter, number> = {
@@ -148,9 +206,13 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
       SALES: 0,
       CHANGE: 0,
       OTHER: 0,
+      DISABLED: 0,
     };
     for (const bp of blueprints) {
       counts[classifyBlueprint(bp)] += 1;
+      if (!bp.active) {
+        counts.DISABLED += 1;
+      }
     }
     return counts;
   }, [blueprints]);
@@ -159,13 +221,19 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
   const filteredBlueprints = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return blueprints.filter((bp) => {
-      const category = classifyBlueprint(bp);
-      if (categoryFilter !== 'ALL' && category !== categoryFilter) {
-        return false;
+      if (categoryFilter === 'DISABLED') {
+        if (bp.active) return false;
+      } else if (categoryFilter !== 'ALL') {
+        const category = classifyBlueprint(bp);
+        if (category !== categoryFilter) {
+          return false;
+        }
       }
       if (!q) return true;
       const def = (bp.definition ?? {}) as Record<string, unknown>;
       const disp = String(def.displayName ?? '');
+      const famCode = String(def.orderFamily ?? '');
+      const famLabel = getReportingGroupLabel(famCode);
       const linkedCfg = def.linkedOrderConfig as Record<string, unknown> | undefined;
       const bpmnKey = String(linkedCfg?.bpmnProcessKey ?? '');
       return (
@@ -173,10 +241,12 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         bp.orderType.toLowerCase().includes(q) ||
         (bp.itemType ?? '').toLowerCase().includes(q) ||
         disp.toLowerCase().includes(q) ||
+        famCode.toLowerCase().includes(q) ||
+        famLabel.toLowerCase().includes(q) ||
         bpmnKey.toLowerCase().includes(q)
       );
     });
-  }, [blueprints, searchQuery, categoryFilter]);
+  }, [blueprints, searchQuery, categoryFilter, getReportingGroupLabel]);
 
   const existingOrderTypes = useMemo(
     () => Array.from(new Set(blueprints.map((b) => b.orderType).filter(Boolean))).sort(),
@@ -219,6 +289,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
     setDraft(next);
     setSelectedStepId(next.steps[0]?.stepId ?? null);
     setDirty(false);
+    setEditorAddingGroup(false);
     setToast(null);
   };
 
@@ -226,7 +297,180 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
     setDraft(null);
     setSelectedStepId(null);
     setDirty(false);
+    setEditorAddingGroup(false);
     setToast(null);
+  };
+
+  const handleCreateReportingGroup = useCallback(
+    (groupCode: string, displayLabel: string) => {
+      const normalized = normalizeReportingGroupCode(groupCode);
+      if (!normalized) return;
+      setCustomGroupLabels((prev) => ({
+        ...prev,
+        [normalized]: displayLabel.trim() || normalized,
+      }));
+    },
+    [],
+  );
+
+  const handleEditorAddReportingGroup = () => {
+    const label = editorNewGroupName.trim();
+    const code = normalizeReportingGroupCode(editorNewGroupCode || label);
+    if (!code) return;
+    handleCreateReportingGroup(code, label || code);
+    updateDraft((prev) => ({ ...prev, orderFamily: code }));
+    setEditorAddingGroup(false);
+    setEditorNewGroupName('');
+    setEditorNewGroupCode('');
+    setEditorNewGroupCodeEdited(false);
+  };
+
+  const handleAddGroupMapping = async () => {
+    const label = groupFormName.trim();
+    const groupCode = normalizeReportingGroupCode(groupFormCode || label);
+    const orderTypeCode = normalizeReportingGroupCode(groupFormOrderType);
+    if (!groupCode || !orderTypeCode) return;
+
+    setGroupBusyKey('__add__');
+    try {
+      await upsertOrderFamily({
+        orderType: orderTypeCode,
+        orderFamily: groupCode,
+        description: groupFormDesc.trim() || label || groupCode,
+      });
+      if (label) {
+        handleCreateReportingGroup(groupCode, label);
+      }
+      const freshFamilies = await listOrderFamilies();
+      setOrderFamilies(freshFamilies);
+      setGroupFormName('');
+      setGroupFormCode('');
+      setGroupFormCodeEdited(false);
+      setGroupFormOrderType('');
+      setGroupFormDesc('');
+      setToast({
+        tone: 'ok',
+        text: `Mapped order type "${orderTypeCode}" to reporting group "${label || groupCode}".`,
+      });
+    } catch (err) {
+      setToast({
+        tone: 'err',
+        text: err instanceof Error ? err.message : 'Failed to save reporting group mapping',
+      });
+    } finally {
+      setGroupBusyKey(null);
+    }
+  };
+
+  const handleReassignOrderFamily = async (fam: OrderFamilyRecord, nextGroupCode: string) => {
+    if (!nextGroupCode || nextGroupCode === fam.orderFamily) return;
+    setGroupBusyKey(fam.orderType);
+    try {
+      await upsertOrderFamily({
+        orderType: fam.orderType,
+        orderFamily: nextGroupCode,
+        description: fam.description,
+      });
+      const freshFamilies = await listOrderFamilies();
+      setOrderFamilies(freshFamilies);
+      setToast({
+        tone: 'ok',
+        text: `Moved "${fam.orderType}" to reporting group "${getReportingGroupLabel(nextGroupCode)}".`,
+      });
+    } catch (err) {
+      setToast({
+        tone: 'err',
+        text: err instanceof Error ? err.message : 'Failed to reassign order type',
+      });
+    } finally {
+      setGroupBusyKey(null);
+    }
+  };
+
+  const handleDeleteOrderFamily = async (orderTypeCode: string) => {
+    setGroupBusyKey(orderTypeCode);
+    try {
+      await deleteOrderFamily(orderTypeCode);
+      const freshFamilies = await listOrderFamilies();
+      setOrderFamilies(freshFamilies);
+      setToast({
+        tone: 'ok',
+        text: `Removed order type mapping "${orderTypeCode}".`,
+      });
+    } catch (err) {
+      setToast({
+        tone: 'err',
+        text: err instanceof Error ? err.message : 'Failed to remove order type mapping',
+      });
+    } finally {
+      setGroupBusyKey(null);
+    }
+  };
+
+  const handleToggleBlueprintStatus = async (
+    blueprintId: string,
+    displayName: string,
+    nextActive: boolean,
+  ) => {
+    setMutatingBlueprintId(blueprintId);
+    setToast(null);
+    try {
+      const res = await setBlueprintStatus(blueprintId, nextActive, true);
+      await loadAllConfigs();
+      setDraft((prev) =>
+        prev && prev.blueprintId === blueprintId ? { ...prev, active: res.active } : prev,
+      );
+      const bundleNote =
+        res.published && res.bundleVersion != null
+          ? ` & hot-reloaded Bundle v${res.bundleVersion} to Flink`
+          : '';
+      setToast({
+        tone: 'ok',
+        text: `${nextActive ? 'Enabled' : 'Disabled'} workflow "${displayName}"${bundleNote}.`,
+      });
+    } catch (err) {
+      setToast({
+        tone: 'err',
+        text:
+          err instanceof Error
+            ? err.message
+            : `Failed to ${nextActive ? 'enable' : 'disable'} workflow`,
+      });
+    } finally {
+      setMutatingBlueprintId(null);
+    }
+  };
+
+  const handleConfirmDeleteBlueprint = async () => {
+    if (!deleteTarget) return;
+    setDeletingBlueprint(true);
+    setToast(null);
+    try {
+      const res = await deleteBlueprint(deleteTarget.blueprintId, true);
+      await loadAllConfigs();
+      if (draft?.blueprintId === deleteTarget.blueprintId) {
+        setDraft(null);
+        setSelectedStepId(null);
+        setDirty(false);
+        setEditorAddingGroup(false);
+      }
+      const bundleNote =
+        res.published && res.bundleVersion != null
+          ? ` & hot-reloaded Bundle v${res.bundleVersion} to Flink`
+          : '';
+      setToast({
+        tone: 'ok',
+        text: `Deleted workflow "${deleteTarget.displayName}" (${deleteTarget.blueprintId})${bundleNote}.`,
+      });
+      setDeleteTarget(null);
+    } catch (err) {
+      setToast({
+        tone: 'err',
+        text: err instanceof Error ? err.message : 'Failed to delete workflow',
+      });
+    } finally {
+      setDeletingBlueprint(false);
+    }
   };
 
   const updateDraft = (updater: (prev: EditableWorkflowDraft) => EditableWorkflowDraft) => {
@@ -341,8 +585,12 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
     setDraft(starter);
     setSelectedStepId(starter.steps[0]?.stepId ?? null);
     setDirty(true);
-    const linkedNote = starter.linkedOrderConfig?.autoWireAdapterRule
-      ? ` Linked BPMN "${starter.linkedOrderConfig.bpmnProcessKey}" will auto-wire into adapter-flowable-bpmn on Publish Live.`
+    const hasFlowableAutoWire = Boolean(
+      starter.linkedOrderConfig?.autoWireAdapterRule &&
+        starter.linkedOrderConfig.bpmnProcessKey?.trim(),
+    );
+    const linkedNote = hasFlowableAutoWire
+      ? ` Flowable process "${starter.linkedOrderConfig?.bpmnProcessKey.trim()}" will auto-wire into adapter-flowable-bpmn on Publish Live.`
       : '';
     setToast({
       tone: 'ok',
@@ -389,10 +637,22 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         }
       }
 
+      // Sanitize linkedOrderConfig so blank Flowable Process Definition ID never tries to auto-wire
+      const sanitizedLinked = draft.linkedOrderConfig
+        ? {
+            ...draft.linkedOrderConfig,
+            bpmnProcessKey: draft.linkedOrderConfig.bpmnProcessKey?.trim() ?? '',
+            autoWireAdapterRule: Boolean(
+              draft.linkedOrderConfig.autoWireAdapterRule &&
+                draft.linkedOrderConfig.bpmnProcessKey?.trim(),
+            ),
+          }
+        : undefined;
+
       // 3. Save immutable Journey Blueprint version (including linkedOrderConfig metadata)
       const blueprintDef: Record<string, unknown> = {
         blueprintId: draft.blueprintId.trim(),
-        active: true,
+        active: draft.active !== false,
         displayName: draft.displayName.trim(),
         orderFamily: draft.orderFamily,
         orderType: draft.orderType.trim().toUpperCase(),
@@ -405,7 +665,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
           breach: draft.overallBreach,
         },
         crossOrderPolicies: draft.crossOrderPolicies,
-        ...(draft.linkedOrderConfig ? { linkedOrderConfig: draft.linkedOrderConfig } : {}),
+        ...(sanitizedLinked ? { linkedOrderConfig: sanitizedLinked } : {}),
         steps: draft.steps.map((s) => ({
           stepId: s.stepId,
           useTemplate: s.templateId,
@@ -424,10 +684,10 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         createdBy: adminUsername,
       });
 
-      // 3b. Auto-wire Flowable BPMN correlation rule into adapter-flowable-bpmn for Linked Companion Orders!
+      // 3b. Auto-wire Flowable correlation rule into adapter-flowable-bpmn only when Process Definition ID is provided
       let autoWiredBpmn = false;
-      const linked = draft.linkedOrderConfig;
-      if (linked?.autoWireAdapterRule && linked.bpmnProcessKey?.trim()) {
+      const linked = sanitizedLinked;
+      if (linked?.autoWireAdapterRule && linked.bpmnProcessKey.trim()) {
         const bpmnAdapter = adapters.find(
           (a) =>
             a.adapterId === 'adapter-flowable-bpmn' ||
@@ -485,7 +745,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
           if (existingIdx >= 0) {
             existingRules[existingIdx] = newRule;
           } else {
-            // Insert before wildcard "*" rule so exact BPMN key always matches first!
+            // Insert before wildcard "*" rule so exact Flowable key always matches first!
             const wildcardIdx = existingRules.findIndex(
               (r) => String(r.processDefinitionKey ?? '') === '*',
             );
@@ -513,14 +773,14 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         setToast({
           tone: 'ok',
           text: `Live! Saved ${savedBp.blueprintId} v${savedBp.version}${
-            autoWiredBpmn ? ` + auto-wired BPMN "${linked?.bpmnProcessKey}"` : ''
+            autoWiredBpmn ? ` + auto-wired Flowable "${linked?.bpmnProcessKey}"` : ''
           } & hot-reloaded Bundle v${pub.bundleVersion} to Apache Flink.`,
         });
       } else {
         setToast({
           tone: 'ok',
           text: `Saved ${savedBp.blueprintId} v${savedBp.version}${
-            autoWiredBpmn ? ` + auto-wired BPMN "${linked?.bpmnProcessKey}"` : ''
+            autoWiredBpmn ? ` + auto-wired Flowable "${linked?.bpmnProcessKey}"` : ''
           } to PostgreSQL (ready to Publish Live).`,
         });
       }
@@ -532,7 +792,9 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
           ? {
               ...prev,
               version: savedBp.version,
+              active: savedBp.active,
               isNew: false,
+              linkedOrderConfig: sanitizedLinked,
               steps: prev.steps.map((s) => ({ ...s, templateModified: false, isNewTemplate: false })),
             }
           : prev,
@@ -549,10 +811,11 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
 
   const filterPills: Array<{ id: CategoryFilter; label: string; count: number }> = [
     { id: 'ALL', label: 'All', count: categoryCounts.ALL },
-    { id: 'LINKED', label: 'Linked & Companion BPMNs', count: categoryCounts.LINKED },
+    { id: 'LINKED', label: 'Linked & Companion Orders', count: categoryCounts.LINKED },
     { id: 'SALES', label: 'Sales Orders', count: categoryCounts.SALES },
     { id: 'CHANGE', label: 'Change Orders', count: categoryCounts.CHANGE },
     { id: 'OTHER', label: 'Specialized', count: categoryCounts.OTHER },
+    { id: 'DISABLED', label: 'Disabled', count: categoryCounts.DISABLED },
   ];
 
   return (
@@ -593,18 +856,32 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                 Workflows
               </h1>
               <p className="text-sm text-[#5F6368] dark:text-[#9AA0A6]">
-                Configure customer order journeys and linked internal BPMN trackers with zero code.
+                Configure customer order journeys and linked companion order trackers with zero code.
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setOnboardOpen(true)}
-              className="inline-flex items-center gap-2 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-5 py-2.5 text-xs font-semibold shadow-sm transition"
-            >
-              <Plus className="w-4 h-4 stroke-[2.2]" />
-              Onboard New Tracker
-            </button>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setGroupsModalOpen(true)}
+                className="inline-flex items-center gap-2 rounded-full bg-[#E8EEF7] hover:bg-[#D3E3FD] dark:bg-[#282A2C] dark:hover:bg-[#333639] text-[#041E49] dark:text-[#E3E3E3] px-4 py-2.5 text-xs font-semibold transition"
+              >
+                <Tag className="w-3.5 h-3.5 text-[#1A73E8] dark:text-[#8AB4F8]" />
+                Reporting Groups
+                <span className="rounded-full bg-white/80 dark:bg-[#1E1F20] px-1.5 py-0.5 text-[10px] font-mono tabular-nums text-[#5F6368] dark:text-[#9AA0A6]">
+                  {reportingGroups.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setOnboardOpen(true)}
+                className="inline-flex items-center gap-2 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-5 py-2.5 text-xs font-semibold shadow-sm transition"
+              >
+                <Plus className="w-4 h-4 stroke-[2.2]" />
+                Onboard New Tracker
+              </button>
+            </div>
           </div>
 
           {/* Spacious Search & Category Filter Bar */}
@@ -615,7 +892,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search workflows by name, Order Type, Item Type, or BPMN..."
+                placeholder="Search workflows by name, Order Type, Item Type, or Reporting Group..."
                 className="w-full h-11 rounded-full bg-white dark:bg-[#131314] border border-[#DDE3EA] dark:border-[#3C4043] pl-11 pr-10 text-xs text-[#1F1F1F] dark:text-[#E3E3E3] placeholder:text-[#5F6368] dark:placeholder:text-[#9AA0A6] focus:outline-none focus:border-[#1A73E8] focus:ring-2 focus:ring-[#1A73E8]/15 transition"
               />
               {searchQuery && (
@@ -675,7 +952,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                 No matching workflows found
               </div>
               <p className="text-xs text-[#5F6368] dark:text-[#9AA0A6] max-w-md mx-auto">
-                Try adjusting your search or category filter, or onboard a brand-new order or companion BPMN tracker.
+                Try adjusting your search or category filter, or onboard a brand-new order or companion workflow tracker.
               </p>
               <div className="pt-1 flex items-center justify-center gap-2">
                 {(searchQuery || categoryFilter !== 'ALL') && (
@@ -708,26 +985,60 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                 const steps = Array.isArray(def.steps) ? (def.steps as unknown[]) : [];
                 const category = classifyBlueprint(bp);
                 const isCompanion = category === 'LINKED';
+                const orderFamilyCode =
+                  typeof def.orderFamily === 'string' && def.orderFamily.trim()
+                    ? def.orderFamily.trim()
+                    : null;
                 const linkedCfg = def.linkedOrderConfig as Record<string, unknown> | undefined;
                 const bpmnKey =
-                  typeof linkedCfg?.bpmnProcessKey === 'string' ? linkedCfg.bpmnProcessKey : null;
+                  typeof linkedCfg?.bpmnProcessKey === 'string' && linkedCfg.bpmnProcessKey.trim()
+                    ? linkedCfg.bpmnProcessKey.trim()
+                    : null;
                 const isInternalOnly = linkedCfg?.visibility === 'INTERNAL_ONLY';
+                const isBusy = mutatingBlueprintId === bp.blueprintId;
 
                 return (
-                  <button
+                  <div
                     key={`${bp.blueprintId}-v${bp.version}`}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleSelectBlueprint(bp)}
-                    className="group text-left rounded-[24px] border border-[#E0E6F0]/80 dark:border-[#333639] bg-white dark:bg-[#1E1F20] hover:border-[#A8C7FA] dark:hover:border-[#8AB4F8]/60 shadow-[0_1px_2px_rgba(16,24,40,0.04)] hover:shadow-md p-5 flex flex-col justify-between gap-4 transition-all"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleSelectBlueprint(bp);
+                      }
+                    }}
+                    className={`group text-left rounded-[24px] border p-5 flex flex-col justify-between gap-4 transition-all cursor-pointer ${
+                      bp.active
+                        ? 'border-[#E0E6F0]/80 dark:border-[#333639] bg-white dark:bg-[#1E1F20] hover:border-[#A8C7FA] dark:hover:border-[#8AB4F8]/60 shadow-[0_1px_2px_rgba(16,24,40,0.04)] hover:shadow-md'
+                        : 'border-dashed border-[#D2DAE6] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#191A1B] opacity-80 hover:opacity-100 hover:border-[#A8C7FA] dark:hover:border-[#5F6368]'
+                    }`}
                   >
                     <div className="space-y-3">
                       <div className="flex items-start justify-between gap-2">
                         <div className="font-semibold text-sm text-[#1F1F1F] dark:text-white leading-snug group-hover:text-[#1A73E8] dark:group-hover:text-[#8AB4F8] transition-colors">
                           {displayName}
                         </div>
-                        <span className="inline-flex items-center rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2.5 py-0.5 text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6] shrink-0">
-                          v{bp.version}
-                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                              bp.active
+                                ? 'bg-[#E6F4EA] dark:bg-[#132E1C] text-[#137333] dark:text-[#81C995]'
+                                : 'bg-[#FEF7E0] dark:bg-[#332609] text-[#B06000] dark:text-[#FDD663]'
+                            }`}
+                          >
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                bp.active ? 'bg-[#137333] dark:bg-[#81C995]' : 'bg-[#B06000] dark:bg-[#FDD663]'
+                              }`}
+                            />
+                            {bp.active ? 'Active' : 'Disabled'}
+                          </span>
+                          <span className="inline-flex items-center rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2 py-0.5 text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6]">
+                            v{bp.version}
+                          </span>
+                        </div>
                       </div>
 
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -739,10 +1050,16 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                             {bp.itemType}
                           </span>
                         )}
+                        {orderFamilyCode && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2.5 py-0.5 text-[10px] font-medium text-[#444746] dark:text-[#C4C7C5]">
+                            <Tag className="w-2.5 h-2.5 text-[#5F6368] dark:text-[#9AA0A6]" />
+                            {getReportingGroupLabel(orderFamilyCode)}
+                          </span>
+                        )}
                         {isCompanion && (
                           <span className="inline-flex items-center gap-1 rounded-full bg-[#FEF7E0] dark:bg-[#332609] px-2.5 py-0.5 text-[10px] font-semibold text-[#B06000] dark:text-[#FDD663]">
                             <Link2 className="w-3 h-3" />
-                            Linked Companion
+                            Companion Order
                           </span>
                         )}
                         {isInternalOnly && (
@@ -755,21 +1072,69 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
 
                       {bpmnKey && (
                         <div className="text-[11px] font-mono text-[#5F6368] dark:text-[#9AA0A6] truncate">
-                          BPMN: {bpmnKey}
+                          Flowable: {bpmnKey}
                         </div>
                       )}
                     </div>
 
                     <div className="pt-3 border-t border-[#F0F4F9] dark:border-[#282A2C] flex items-center justify-between gap-2 text-xs">
-                      <span className="font-mono text-[11px] text-[#5F6368] dark:text-[#9AA0A6] tabular-nums">
-                        {steps.length} {steps.length === 1 ? 'step' : 'steps'}
-                      </span>
-                      <span className="inline-flex items-center gap-1 font-semibold text-[#1A73E8] dark:text-[#8AB4F8] text-xs">
-                        Edit Workflow
-                        <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-0.5" />
-                      </span>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono text-[11px] text-[#5F6368] dark:text-[#9AA0A6] tabular-nums">
+                          {steps.length} {steps.length === 1 ? 'step' : 'steps'}
+                        </span>
+                        <span className="inline-flex items-center gap-0.5 font-semibold text-[#1A73E8] dark:text-[#8AB4F8] text-[11px]">
+                          Edit
+                          <ArrowRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5" />
+                        </span>
+                      </div>
+
+                      <div
+                        className="flex items-center gap-1 shrink-0"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleToggleBlueprintStatus(
+                              bp.blueprintId,
+                              displayName,
+                              !bp.active,
+                            );
+                          }}
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50 ${
+                            bp.active
+                              ? 'bg-[#F0F4F9] hover:bg-[#FEF7E0] text-[#444746] hover:text-[#B06000] dark:bg-[#282A2C] dark:text-[#C4C7C5] dark:hover:bg-[#332609] dark:hover:text-[#FDD663]'
+                              : 'bg-[#E6F4EA] hover:bg-[#CEEAD6] text-[#137333] dark:bg-[#132E1C] dark:text-[#81C995] dark:hover:bg-[#1E4620]'
+                          }`}
+                          title={bp.active ? 'Disable workflow' : 'Enable workflow'}
+                        >
+                          {isBusy ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : bp.active ? (
+                            <PauseCircle className="w-3 h-3" />
+                          ) : (
+                            <PlayCircle className="w-3 h-3" />
+                          )}
+                          {bp.active ? 'Disable' : 'Enable'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteTarget({ blueprintId: bp.blueprintId, displayName });
+                          }}
+                          className="p-1.5 rounded-full text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FCE8E6] dark:text-[#9AA0A6] dark:hover:text-[#F28B82] dark:hover:bg-[#3C1919] transition disabled:opacity-50"
+                          title="Delete workflow"
+                          aria-label={`Delete ${displayName}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -812,6 +1177,58 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                         Item: {draft.itemType}
                       </span>
                     )}
+                    {/* Editable Reporting Group Pill + Inline "+ New Group" Trigger */}
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] border border-[#DDE3EA] dark:border-[#3C4043] pl-2 pr-1.5 py-0.5 text-[10px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]">
+                      <Tag className="w-2.5 h-2.5 text-[#1A73E8] dark:text-[#8AB4F8] shrink-0" />
+                      <select
+                        value={draft.orderFamily}
+                        onChange={(e) => {
+                          if (e.target.value === '__NEW_GROUP__') {
+                            setEditorAddingGroup(true);
+                            return;
+                          }
+                          updateDraft((p) => ({ ...p, orderFamily: e.target.value }));
+                        }}
+                        aria-label="Reporting Group"
+                        className="bg-transparent text-[10px] font-semibold text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none cursor-pointer pr-1"
+                      >
+                        {reportingGroups.map((g) => (
+                          <option
+                            key={g.id}
+                            value={g.id}
+                            className="bg-white dark:bg-[#1E1F20] text-[#1F1F1F] dark:text-white"
+                          >
+                            {g.label}
+                          </option>
+                        ))}
+                        <option
+                          value="__NEW_GROUP__"
+                          className="bg-white dark:bg-[#1E1F20] text-[#1A73E8] font-semibold"
+                        >
+                          + New Group...
+                        </option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setEditorAddingGroup((v) => !v)}
+                        className="rounded-full bg-white dark:bg-[#1E1F20] hover:bg-[#D3E3FD] dark:hover:bg-[#004A77] text-[#1967D2] dark:text-[#C2E7FF] p-0.5 transition"
+                        title="Create new Reporting Group"
+                        aria-label="Create new Reporting Group"
+                      >
+                        <Plus className="w-2.5 h-2.5" />
+                      </button>
+                    </span>
+                    {!draft.isNew && (
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          draft.active !== false
+                            ? 'bg-[#E6F4EA] dark:bg-[#132E1C] text-[#137333] dark:text-[#81C995]'
+                            : 'bg-[#FEF7E0] dark:bg-[#332609] text-[#B06000] dark:text-[#FDD663]'
+                        }`}
+                      >
+                        {draft.active !== false ? 'Active' : 'Disabled'}
+                      </span>
+                    )}
                     <span className="inline-flex items-center rounded-full bg-[#F0F4F9] dark:bg-[#282A2C] px-2.5 py-0.5 text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6]">
                       {draft.isNew ? 'NEW DRAFT' : `v${draft.version}`}
                     </span>
@@ -834,6 +1251,50 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                   <Play className="w-3.5 h-3.5 text-[#1E8E3E]" />
                   Test JSON
                 </button>
+                {!draft.isNew && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={saving || mutatingBlueprintId === draft.blueprintId}
+                      onClick={() =>
+                        void handleToggleBlueprintStatus(
+                          draft.blueprintId,
+                          draft.displayName,
+                          draft.active === false,
+                        )
+                      }
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-xs font-medium transition disabled:opacity-50 ${
+                        draft.active !== false
+                          ? 'border-[#DDE3EA] dark:border-[#3C4043] text-[#444746] dark:text-[#C4C7C5] hover:bg-[#FEF7E0] hover:text-[#B06000] hover:border-[#FAD2CF] dark:hover:bg-[#332609] dark:hover:text-[#FDD663]'
+                          : 'border-[#CEEAD6] dark:border-[#1E4620] bg-[#E6F4EA] dark:bg-[#132E1C] text-[#137333] dark:text-[#81C995] hover:bg-[#CEEAD6] dark:hover:bg-[#1E4620]'
+                      }`}
+                    >
+                      {mutatingBlueprintId === draft.blueprintId ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : draft.active !== false ? (
+                        <PauseCircle className="w-3.5 h-3.5" />
+                      ) : (
+                        <PlayCircle className="w-3.5 h-3.5" />
+                      )}
+                      {draft.active !== false ? 'Disable' : 'Enable'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={saving || mutatingBlueprintId === draft.blueprintId}
+                      onClick={() =>
+                        setDeleteTarget({
+                          blueprintId: draft.blueprintId,
+                          displayName: draft.displayName,
+                        })
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] hover:border-[#FAD2CF] hover:bg-[#FCE8E6] hover:text-[#C5221F] dark:hover:bg-[#3C1919] dark:hover:text-[#F28B82] dark:hover:border-[#5C2020] px-3 py-2 text-xs font-medium text-[#5F6368] dark:text-[#9AA0A6] transition disabled:opacity-50"
+                      title="Delete workflow"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   disabled={saving}
@@ -855,6 +1316,80 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
               </div>
             </div>
 
+            {/* Inline New Reporting Group Creator (Mode 2) */}
+            {editorAddingGroup && (
+              <div className="rounded-2xl border border-[#C2E7FF] dark:border-[#004A77] bg-[#F0F7FF] dark:bg-[#002844]/40 px-4 py-3 flex flex-wrap items-end gap-3">
+                <div className="flex-1 min-w-[180px]">
+                  <label className="block text-[11px] font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                    New Reporting Group Name
+                  </label>
+                  <input
+                    type="text"
+                    value={editorNewGroupName}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setEditorNewGroupName(val);
+                      if (!editorNewGroupCodeEdited) {
+                        setEditorNewGroupCode(normalizeReportingGroupCode(val));
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleEditorAddReportingGroup();
+                      }
+                    }}
+                    placeholder="e.g. B2B Enterprise"
+                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#131314] px-3 py-1.5 text-xs focus:outline-none focus:border-[#1A73E8]"
+                  />
+                </div>
+                <div className="w-48">
+                  <label className="block text-[11px] font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                    Group Code
+                  </label>
+                  <input
+                    type="text"
+                    value={editorNewGroupCode}
+                    onChange={(e) => {
+                      setEditorNewGroupCodeEdited(true);
+                      setEditorNewGroupCode(normalizeReportingGroupCode(e.target.value));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleEditorAddReportingGroup();
+                      }
+                    }}
+                    placeholder="B2B_ENTERPRISE"
+                    className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#131314] px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditorAddingGroup(false);
+                      setEditorNewGroupName('');
+                      setEditorNewGroupCode('');
+                      setEditorNewGroupCodeEdited(false);
+                    }}
+                    className="rounded-full px-3 py-1.5 text-xs font-medium text-[#5F6368] hover:bg-white/70 dark:text-[#9AA0A6] dark:hover:bg-[#282A2C]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!normalizeReportingGroupCode(editorNewGroupCode || editorNewGroupName)}
+                    onClick={handleEditorAddReportingGroup}
+                    className="inline-flex items-center gap-1 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-3.5 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-40"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add Group
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Linked Companion Order Context Banner (when configured) */}
             {draft.linkedOrderConfig &&
               draft.linkedOrderConfig.workflowRole !== 'PRIMARY_CUSTOMER' && (
@@ -862,7 +1397,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="inline-flex items-center gap-1 font-semibold text-[#1967D2] dark:text-[#8AB4F8]">
                       <Link2 className="w-3.5 h-3.5" />
-                      Linked Companion BPMN
+                      Companion Order
                     </span>
                     <span className="text-[#5F6368] dark:text-[#9AA0A6]">
                       Parent:{' '}
@@ -875,7 +1410,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                     </span>
                     {draft.linkedOrderConfig.bpmnProcessKey && (
                       <span className="rounded-full bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] px-2 py-0.5 text-[10px] font-mono text-[#7627BB] dark:text-[#D7AEFB]">
-                        BPMN: {draft.linkedOrderConfig.bpmnProcessKey}
+                        Flowable: {draft.linkedOrderConfig.bpmnProcessKey}
                       </span>
                     )}
                   </div>
@@ -1072,11 +1607,13 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         </div>
       )}
 
-      {/* Modal 1: Guided Linked & Companion Order Onboarding Wizard */}
+      {/* Modal 1: Guided Companion Order Onboarding Wizard */}
       <OnboardTrackerWizardModal
         open={onboardOpen}
         templates={templates}
         existingOrderTypes={existingOrderTypes}
+        reportingGroups={reportingGroups}
+        onCreateReportingGroup={handleCreateReportingGroup}
         onClose={() => setOnboardOpen(false)}
         onCreateDraft={handleWizardCreateDraft}
       />
@@ -1190,6 +1727,287 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         mode="workflow-dry-run"
         workflowPredicates={workflowPredicates}
       />
+
+      {/* Modal 4: Delete Workflow Confirmation Modal (M3 Expressive) */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-[28px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-2xl overflow-hidden">
+            <div className="p-6 space-y-4">
+              <div className="flex items-start gap-3.5">
+                <div className="w-10 h-10 rounded-2xl bg-[#FCE8E6] dark:bg-[#3C1919] text-[#C5221F] dark:text-[#F28B82] flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div className="space-y-1.5 min-w-0">
+                  <h3 className="font-display text-base font-bold text-[#1F1F1F] dark:text-white">
+                    Delete Workflow?
+                  </h3>
+                  <p className="text-xs text-[#444746] dark:text-[#C4C7C5] leading-relaxed">
+                    Delete workflow{' '}
+                    <strong className="text-[#1F1F1F] dark:text-white">
+                      {deleteTarget.displayName}
+                    </strong>{' '}
+                    (<code className="font-mono text-[11px]">{deleteTarget.blueprintId}</code>)?
+                    Existing tracked orders remain preserved in order history, but new incoming
+                    events will stop matching this workflow immediately after hot-reload.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 bg-[#F8FAFD] dark:bg-[#131314] border-t border-[#E0E6F0] dark:border-[#333639] flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={deletingBlueprint}
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-4 py-2 text-xs font-medium text-[#1F1F1F] dark:text-[#E3E3E3] transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deletingBlueprint}
+                onClick={() => void handleConfirmDeleteBlueprint()}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#C5221F] hover:bg-[#A50E0E] text-white px-5 py-2 text-xs font-semibold shadow-sm transition disabled:opacity-50"
+              >
+                {deletingBlueprint ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                {deletingBlueprint ? 'Deleting...' : 'Delete Workflow'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 5: Reporting Groups Manager Modal */}
+      {groupsModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl max-h-[88vh] flex flex-col rounded-[28px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-2xl overflow-hidden">
+            <div className="px-6 py-5 border-b border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314] flex items-start justify-between gap-4">
+              <div>
+                <div className="inline-flex items-center gap-1.5 rounded-full bg-[#E8F0FE] dark:bg-[#004A77] px-2.5 py-0.5 text-[11px] font-semibold text-[#1967D2] dark:text-[#C2E7FF] mb-1.5">
+                  <Tag className="w-3 h-3" />
+                  Order Family Taxonomy
+                </div>
+                <h3 className="font-display text-lg font-bold text-[#1F1F1F] dark:text-white">
+                  Reporting Groups
+                </h3>
+                <p className="text-xs text-[#5F6368] dark:text-[#9AA0A6] mt-0.5">
+                  Organize Order Types into Reporting Groups for Executive dashboards, sliced analytics, and workflow organization.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setGroupsModalOpen(false)}
+                className="w-8 h-8 rounded-full hover:bg-[#E2E9F4] dark:hover:bg-[#282A2C] flex items-center justify-center text-[#5F6368] dark:text-[#9AA0A6] shrink-0"
+                aria-label="Close reporting groups modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-5">
+              {/* Add New Reporting Group / Order Type Mapping */}
+              <div className="rounded-2xl border border-[#C2E7FF] dark:border-[#004A77] bg-[#F0F7FF] dark:bg-[#002844]/40 p-4 space-y-3">
+                <div className="text-xs font-semibold text-[#1967D2] dark:text-[#8AB4F8] flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5" />
+                  Add Reporting Group or Map an Order Type
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                      Reporting Group Name *
+                    </label>
+                    <input
+                      type="text"
+                      value={groupFormName}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setGroupFormName(val);
+                        if (!groupFormCodeEdited) {
+                          setGroupFormCode(normalizeReportingGroupCode(val));
+                        }
+                      }}
+                      placeholder="e.g. B2B Enterprise"
+                      className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#131314] px-3 py-1.5 text-xs focus:outline-none focus:border-[#1A73E8]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                      Group Code *
+                    </label>
+                    <input
+                      type="text"
+                      value={groupFormCode}
+                      onChange={(e) => {
+                        setGroupFormCodeEdited(true);
+                        setGroupFormCode(normalizeReportingGroupCode(e.target.value));
+                      }}
+                      placeholder="e.g. B2B_ENTERPRISE"
+                      className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#131314] px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                      Order Type Code *
+                    </label>
+                    <input
+                      type="text"
+                      value={groupFormOrderType}
+                      onChange={(e) =>
+                        setGroupFormOrderType(normalizeReportingGroupCode(e.target.value))
+                      }
+                      placeholder="e.g. ENTERPRISE_FIBER"
+                      className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#131314] px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-[#1A73E8]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-[#444746] dark:text-[#C4C7C5] mb-1">
+                      Description (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={groupFormDesc}
+                      onChange={(e) => setGroupFormDesc(e.target.value)}
+                      placeholder="e.g. Enterprise fiber activation orders"
+                      className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#131314] px-3 py-1.5 text-xs focus:outline-none focus:border-[#1A73E8]"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-end">
+                  <button
+                    type="button"
+                    disabled={
+                      groupBusyKey === '__add__' ||
+                      !normalizeReportingGroupCode(groupFormCode || groupFormName) ||
+                      !normalizeReportingGroupCode(groupFormOrderType)
+                    }
+                    onClick={() => void handleAddGroupMapping()}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-4 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-40"
+                  >
+                    {groupBusyKey === '__add__' ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Plus className="w-3.5 h-3.5" />
+                    )}
+                    Save Group Mapping
+                  </button>
+                </div>
+              </div>
+
+              {/* All Reporting Groups & Mapped Order Types */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-[#1F1F1F] dark:text-white">
+                    Active Reporting Groups ({reportingGroups.length})
+                  </span>
+                  <span className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                    {orderFamilies.length} mapped order {orderFamilies.length === 1 ? 'type' : 'types'}
+                  </span>
+                </div>
+
+                {reportingGroups.map((group) => {
+                  const mappedItems = orderFamilies.filter(
+                    (f) => normalizeReportingGroupCode(f.orderFamily) === group.id,
+                  );
+                  return (
+                    <div
+                      key={group.id}
+                      className="rounded-2xl border border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314]/70 p-4 space-y-2.5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-xs text-[#1F1F1F] dark:text-white">
+                            {group.label}
+                          </span>
+                          <span className="rounded-full bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#333639] px-2 py-0.5 text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6]">
+                            {group.id}
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                          {mappedItems.length} {mappedItems.length === 1 ? 'order type' : 'order types'}
+                        </span>
+                      </div>
+
+                      {mappedItems.length === 0 ? (
+                        <div className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] italic">
+                          No order types mapped yet — assign one above or select this group in a workflow.
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {mappedItems.map((fam) => {
+                            const rowBusy = groupBusyKey === fam.orderType;
+                            return (
+                              <div
+                                key={fam.orderType}
+                                className="rounded-xl bg-white dark:bg-[#1E1F20] border border-[#E0E6F0]/80 dark:border-[#333639] px-3 py-2 flex flex-wrap items-center justify-between gap-2"
+                              >
+                                <div className="min-w-0">
+                                  <div className="font-mono text-xs font-semibold text-[#1967D2] dark:text-[#8AB4F8]">
+                                    {fam.orderType}
+                                  </div>
+                                  {fam.description && (
+                                    <div className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] truncate max-w-xs">
+                                      {fam.description}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <select
+                                    value={normalizeReportingGroupCode(fam.orderFamily)}
+                                    disabled={rowBusy}
+                                    onChange={(e) =>
+                                      void handleReassignOrderFamily(fam, e.target.value)
+                                    }
+                                    aria-label={`Reassign ${fam.orderType}`}
+                                    className="rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-2.5 py-1 text-[11px] text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:border-[#1A73E8] disabled:opacity-50"
+                                  >
+                                    {reportingGroups.map((opt) => (
+                                      <option key={opt.id} value={opt.id}>
+                                        {opt.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    disabled={rowBusy}
+                                    onClick={() => void handleDeleteOrderFamily(fam.orderType)}
+                                    className="p-1.5 rounded-full text-[#5F6368] hover:text-[#C5221F] hover:bg-[#FCE8E6] dark:text-[#9AA0A6] dark:hover:text-[#F28B82] dark:hover:bg-[#3C1919] transition disabled:opacity-50"
+                                    title={`Remove ${fam.orderType} mapping`}
+                                    aria-label={`Remove ${fam.orderType} mapping`}
+                                  >
+                                    {rowBusy ? (
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    ) : (
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    )}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314] flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setGroupsModalOpen(false)}
+                className="rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-5 py-2 text-xs font-semibold shadow-sm transition"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -474,6 +474,16 @@ export function getEntityTimeline(
 // Admin Config Studio API
 // ---------------------------------------------------------------------------
 
+export interface BlueprintMutationResponse {
+  blueprintId: string;
+  active: boolean;
+  deleted: boolean;
+  affectedVersions: number;
+  published: boolean;
+  bundleVersion: number | null;
+  blueprint: JourneyBlueprintRecord | null;
+}
+
 export function listOrderFamilies(): Promise<OrderFamilyRecord[]> {
   return fetchJson<OrderFamilyRecord[]>(`${API_BASE}/admin/order-families`);
 }
@@ -487,6 +497,17 @@ export async function upsertOrderFamily(request: {
     method: 'POST',
     body: JSON.stringify(request),
   });
+  invalidateClientReadCaches();
+  return res;
+}
+
+export async function deleteOrderFamily(
+  orderType: string,
+): Promise<{ orderType: string; deleted: boolean }> {
+  const res = await fetchJson<{ orderType: string; deleted: boolean }>(
+    `${API_BASE}/admin/order-families/${encodeURIComponent(orderType)}`,
+    { method: 'DELETE' },
+  );
   invalidateClientReadCaches();
   return res;
 }
@@ -519,8 +540,10 @@ export async function createTemplateVersion(
   return res;
 }
 
-export function listBlueprints(): Promise<JourneyBlueprintRecord[]> {
-  return fetchJson<JourneyBlueprintRecord[]>(`${API_BASE}/admin/blueprints`);
+export function listBlueprints(includeDisabled = false): Promise<JourneyBlueprintRecord[]> {
+  return fetchJson<JourneyBlueprintRecord[]>(
+    `${API_BASE}/admin/blueprints${includeDisabled ? '?includeDisabled=true' : ''}`,
+  );
 }
 
 export async function createBlueprintVersion(
@@ -530,6 +553,34 @@ export async function createBlueprintVersion(
     method: 'POST',
     body: JSON.stringify(request),
   });
+  invalidateClientReadCaches();
+  return res;
+}
+
+export async function setBlueprintStatus(
+  blueprintId: string,
+  active: boolean,
+  publish = true,
+): Promise<BlueprintMutationResponse> {
+  const res = await fetchJson<BlueprintMutationResponse>(
+    `${API_BASE}/admin/blueprints/${encodeURIComponent(blueprintId)}/status`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ active, publish }),
+    },
+  );
+  invalidateClientReadCaches();
+  return res;
+}
+
+export async function deleteBlueprint(
+  blueprintId: string,
+  publish = true,
+): Promise<BlueprintMutationResponse> {
+  const res = await fetchJson<BlueprintMutationResponse>(
+    `${API_BASE}/admin/blueprints/${encodeURIComponent(blueprintId)}?publish=${publish}`,
+    { method: 'DELETE' },
+  );
   invalidateClientReadCaches();
   return res;
 }

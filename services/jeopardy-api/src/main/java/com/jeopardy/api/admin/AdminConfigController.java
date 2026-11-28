@@ -20,7 +20,9 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -57,6 +59,12 @@ public class AdminConfigController {
     @PostMapping("/order-families")
     public OrderFamilyRecord upsertOrderFamily(@Valid @RequestBody OrderFamilyRecord request) {
         return adminConfigService.upsertOrderFamily(request);
+    }
+
+    @DeleteMapping("/order-families/{orderType}")
+    public Map<String, Object> deleteOrderFamily(@PathVariable String orderType) {
+        adminConfigService.deleteOrderFamily(orderType);
+        return Map.of("orderType", orderType, "deleted", true);
     }
 
     // -------------------------------------------------------------------------
@@ -105,8 +113,11 @@ public class AdminConfigController {
     // -------------------------------------------------------------------------
 
     @GetMapping("/blueprints")
-    public List<JourneyBlueprintRecord> listActiveBlueprints() {
-        return adminConfigService.listActiveBlueprints();
+    public List<JourneyBlueprintRecord> listActiveBlueprints(
+            @RequestParam(name = "includeDisabled", required = false, defaultValue = "false") boolean includeDisabled) {
+        return includeDisabled
+                ? adminConfigService.listAllLatestBlueprints()
+                : adminConfigService.listActiveBlueprints();
     }
 
     @PostMapping("/blueprints")
@@ -119,6 +130,26 @@ public class AdminConfigController {
     @GetMapping("/blueprints/{blueprintId}/versions")
     public List<JourneyBlueprintRecord> listBlueprintVersions(@PathVariable String blueprintId) {
         return adminConfigService.listBlueprintVersions(blueprintId);
+    }
+
+    @PatchMapping("/blueprints/{blueprintId}/status")
+    public AdminConfigService.BlueprintMutationResponse setBlueprintStatus(
+            @PathVariable String blueprintId,
+            @RequestBody(required = false) Map<String, Object> body,
+            HttpServletRequest request) {
+        boolean active = parseBoolean(body != null ? body.get("active") : null, false);
+        boolean publish = parseBoolean(body != null ? body.get("publish") : null, true);
+        String actor = resolveActor("admin", request);
+        return adminConfigService.setBlueprintActive(blueprintId, active, publish, actor);
+    }
+
+    @DeleteMapping("/blueprints/{blueprintId}")
+    public AdminConfigService.BlueprintMutationResponse deleteBlueprint(
+            @PathVariable String blueprintId,
+            @RequestParam(name = "publish", required = false, defaultValue = "true") boolean publish,
+            HttpServletRequest request) {
+        String actor = resolveActor("admin", request);
+        return adminConfigService.deleteBlueprint(blueprintId, publish, actor);
     }
 
     // -------------------------------------------------------------------------
@@ -143,12 +174,7 @@ public class AdminConfigController {
     public PublishResponse publishConfigs(
             @RequestParam(name = "publishedBy", required = false, defaultValue = "admin") String publishedBy,
             HttpServletRequest request) {
-        String actor = publishedBy;
-        if (request != null && request.getAttribute(AuthService.AUTH_USER_REQUEST_ATTR) instanceof AuthUser user) {
-            if (actor == null || actor.isBlank() || "admin".equalsIgnoreCase(actor)) {
-                actor = user.username();
-            }
-        }
+        String actor = resolveActor(publishedBy, request);
         return adminConfigService.publishActiveBundle(actor);
     }
 
@@ -163,5 +189,25 @@ public class AdminConfigController {
             @RequestParam(name = "configDir", required = false) String configDir,
             @RequestParam(name = "force", required = false, defaultValue = "false") boolean force) {
         return adminConfigService.seedFromYamlDirectory(configDir, force);
+    }
+
+    private static String resolveActor(String requestedActor, HttpServletRequest request) {
+        String actor = requestedActor;
+        if (request != null && request.getAttribute(AuthService.AUTH_USER_REQUEST_ATTR) instanceof AuthUser user) {
+            if (actor == null || actor.isBlank() || "admin".equalsIgnoreCase(actor)) {
+                actor = user.username();
+            }
+        }
+        return (actor == null || actor.isBlank()) ? "admin" : actor;
+    }
+
+    private static boolean parseBoolean(Object value, boolean defaultValue) {
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        return Boolean.parseBoolean(value.toString().trim());
     }
 }

@@ -17,7 +17,9 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -74,6 +76,14 @@ public class AdminConfigRepository {
                 .addValue("orderFamily", req.orderFamily().trim())
                 .addValue("description", req.description(), Types.VARCHAR);
         return jdbc.queryForObject(sql, params, (rs, rowNum) -> mapOrderFamily(rs));
+    }
+
+    public int deleteOrderFamily(String orderType) {
+        if (orderType == null || orderType.isBlank()) {
+            throw new IllegalArgumentException("orderType is required");
+        }
+        String sql = "DELETE FROM config_order_families WHERE order_type = :orderType";
+        return jdbc.update(sql, new MapSqlParameterSource("orderType", orderType.trim()));
     }
 
     // -------------------------------------------------------------------------
@@ -216,6 +226,91 @@ public class AdminConfigRepository {
                 ORDER BY order_type ASC, blueprint_id ASC
                 """;
         return jdbc.query(sql, (rs, rowNum) -> mapBlueprint(rs));
+    }
+
+    public List<JourneyBlueprintRecord> findAllLatestBlueprints() {
+        String sql = """
+                SELECT DISTINCT ON (blueprint_id)
+                       blueprint_id, version, entity_level, order_type, item_type, is_active,
+                       definition_jsonb::text AS definition_json, created_by, created_at
+                FROM config_journey_blueprints
+                ORDER BY blueprint_id ASC, is_active DESC, version DESC
+                """;
+        List<JourneyBlueprintRecord> rows = new ArrayList<>(jdbc.query(sql, (rs, rowNum) -> mapBlueprint(rs)));
+        rows.sort(Comparator
+                .comparing(
+                        (JourneyBlueprintRecord r) -> r.orderType() == null ? "" : r.orderType(),
+                        String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(
+                        r -> r.blueprintId() == null ? "" : r.blueprintId(),
+                        String.CASE_INSENSITIVE_ORDER));
+        return rows;
+    }
+
+    @Transactional
+    public JourneyBlueprintRecord setBlueprintActive(String blueprintId, boolean active) {
+        if (blueprintId == null || blueprintId.isBlank()) {
+            throw new IllegalArgumentException("blueprintId is required");
+        }
+        String id = blueprintId.trim();
+        Integer latestVersion = jdbc.queryForObject(
+                "SELECT MAX(version) FROM config_journey_blueprints WHERE blueprint_id = :blueprintId",
+                new MapSqlParameterSource("blueprintId", id),
+                Integer.class);
+        if (latestVersion == null) {
+            throw new IllegalArgumentException("Blueprint not found: " + id);
+        }
+
+        jdbc.update(
+                "UPDATE config_journey_blueprints SET is_active = FALSE WHERE blueprint_id = :blueprintId AND is_active = TRUE",
+                new MapSqlParameterSource("blueprintId", id));
+
+        MapSqlParameterSource latestParams = new MapSqlParameterSource()
+                .addValue("blueprintId", id)
+                .addValue("latestVersion", latestVersion)
+                .addValue("active", active, Types.BOOLEAN);
+
+        if (active) {
+            jdbc.update(
+                    """
+                    UPDATE config_journey_blueprints
+                    SET is_active = TRUE,
+                        definition_jsonb = jsonb_set(COALESCE(definition_jsonb, CAST('{}' AS jsonb)), '{active}', to_jsonb(CAST(:active AS boolean)), true)
+                    WHERE blueprint_id = :blueprintId AND version = :latestVersion
+                    """,
+                    latestParams);
+        } else {
+            jdbc.update(
+                    """
+                    UPDATE config_journey_blueprints
+                    SET definition_jsonb = jsonb_set(COALESCE(definition_jsonb, CAST('{}' AS jsonb)), '{active}', to_jsonb(CAST(:active AS boolean)), true)
+                    WHERE blueprint_id = :blueprintId AND version = :latestVersion
+                    """,
+                    latestParams);
+        }
+
+        String selectSql = """
+                SELECT blueprint_id, version, entity_level, order_type, item_type, is_active,
+                       definition_jsonb::text AS definition_json, created_by, created_at
+                FROM config_journey_blueprints
+                WHERE blueprint_id = :blueprintId AND version = :latestVersion
+                """;
+        return jdbc.queryForObject(selectSql, latestParams, (rs, rowNum) -> mapBlueprint(rs));
+    }
+
+    @Transactional
+    public int deleteBlueprint(String blueprintId) {
+        if (blueprintId == null || blueprintId.isBlank()) {
+            throw new IllegalArgumentException("blueprintId is required");
+        }
+        String id = blueprintId.trim();
+        int deleted = jdbc.update(
+                "DELETE FROM config_journey_blueprints WHERE blueprint_id = :blueprintId",
+                new MapSqlParameterSource("blueprintId", id));
+        if (deleted == 0) {
+            throw new IllegalArgumentException("Blueprint not found: " + id);
+        }
+        return deleted;
     }
 
     public List<JourneyBlueprintRecord> findBlueprintVersions(String blueprintId) {

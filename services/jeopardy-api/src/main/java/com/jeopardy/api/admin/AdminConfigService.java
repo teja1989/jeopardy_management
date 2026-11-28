@@ -98,6 +98,17 @@ public class AdminConfigService {
         return repository.upsertOrderFamily(req);
     }
 
+    public void deleteOrderFamily(String orderType) {
+        if (orderType == null || orderType.isBlank()) {
+            throw new IllegalArgumentException("orderType is required");
+        }
+        String trimmed = orderType.trim();
+        int deleted = repository.deleteOrderFamily(trimmed);
+        if (deleted == 0) {
+            throw new IllegalArgumentException("Order family mapping not found: " + trimmed);
+        }
+    }
+
     public List<EventAdapterRecord> listActiveAdapters() {
         return repository.findActiveAdapters();
     }
@@ -126,12 +137,66 @@ public class AdminConfigService {
         return repository.findActiveBlueprints();
     }
 
+    public List<JourneyBlueprintRecord> listAllLatestBlueprints() {
+        return repository.findAllLatestBlueprints();
+    }
+
     public List<JourneyBlueprintRecord> listBlueprintVersions(String blueprintId) {
         return repository.findBlueprintVersions(blueprintId);
     }
 
     public JourneyBlueprintRecord createBlueprintVersion(JourneyBlueprintRequest req) {
         return repository.createNewBlueprintVersion(req);
+    }
+
+    public record BlueprintMutationResponse(
+            String blueprintId,
+            boolean active,
+            boolean deleted,
+            int affectedVersions,
+            boolean published,
+            Integer bundleVersion,
+            JourneyBlueprintRecord blueprint) {
+    }
+
+    public BlueprintMutationResponse setBlueprintActive(
+            String blueprintId, boolean active, boolean publish, String actor) {
+        JourneyBlueprintRecord updated = repository.setBlueprintActive(blueprintId, active);
+        Integer bundleVersion = null;
+        if (publish) {
+            PublishResponse pub = publishActiveBundle(actor);
+            bundleVersion = pub.bundleVersion();
+        }
+        return new BlueprintMutationResponse(
+                updated.blueprintId(),
+                updated.active(),
+                false,
+                1,
+                publish,
+                bundleVersion,
+                updated);
+    }
+
+    public BlueprintMutationResponse deleteBlueprint(
+            String blueprintId, boolean publish, String actor) {
+        if (blueprintId == null || blueprintId.isBlank()) {
+            throw new IllegalArgumentException("blueprintId is required");
+        }
+        String id = blueprintId.trim();
+        int deleted = repository.deleteBlueprint(id);
+        Integer bundleVersion = null;
+        if (publish) {
+            PublishResponse pub = publishActiveBundle(actor);
+            bundleVersion = pub.bundleVersion();
+        }
+        return new BlueprintMutationResponse(
+                id,
+                false,
+                true,
+                deleted,
+                publish,
+                bundleVersion,
+                null);
     }
 
     public List<PublishResponse> listPublishHistory(int limit) {

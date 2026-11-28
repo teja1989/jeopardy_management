@@ -3,6 +3,7 @@ import type {
   CrossOrderPolicyConfig,
   JourneyBlueprintRecord,
   MilestoneTemplateRecord,
+  OrderFamilyRecord,
   SegmentSlaRuleConfig,
   SlaOverrideConfig,
   TriggerRuleConfig,
@@ -46,6 +47,60 @@ export const ORDER_FAMILY_OPTIONS = [
   { id: 'PLAN_PROMO', label: 'Plans, Promos & Perks' },
   { id: 'BROADBAND', label: '5G Home & Fiber Broadband' },
 ] as const;
+
+export interface ReportingGroupOption {
+  id: string;
+  label: string;
+}
+
+export function normalizeReportingGroupCode(input: string): string {
+  return input
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+function titleCaseReportingGroupCode(code: string): string {
+  return code
+    .split('_')
+    .filter(Boolean)
+    .map((segment) => {
+      if (segment.length <= 4 && /\d/.test(segment) && /^[A-Z0-9]+$/.test(segment)) {
+        return segment;
+      }
+      return segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase();
+    })
+    .join(' ');
+}
+
+export function buildReportingGroupOptions(
+  orderFamilies: OrderFamilyRecord[],
+  blueprints: JourneyBlueprintRecord[],
+): ReportingGroupOption[] {
+  const byCode = new Map<string, ReportingGroupOption>();
+  for (const starter of ORDER_FAMILY_OPTIONS) {
+    byCode.set(starter.id, { id: starter.id, label: starter.label });
+  }
+
+  const registerGroup = (raw: unknown) => {
+    if (typeof raw !== 'string') return;
+    const code = normalizeReportingGroupCode(raw);
+    if (!code || byCode.has(code)) return;
+    byCode.set(code, { id: code, label: titleCaseReportingGroupCode(code) });
+  };
+
+  for (const fam of orderFamilies) {
+    registerGroup(fam.orderFamily);
+  }
+  for (const bp of blueprints) {
+    const def = (bp.definition ?? {}) as Record<string, unknown>;
+    registerGroup(def.orderFamily);
+  }
+
+  return Array.from(byCode.values());
+}
 
 export interface EditableMilestoneNode {
   stepId: string;
@@ -94,6 +149,7 @@ export interface EditableWorkflowDraft {
   blueprintId: string;
   version: number;
   isNew: boolean;
+  active?: boolean;
   displayName: string;
   orderFamily: string;
   orderType: string;
@@ -443,6 +499,7 @@ export function blueprintToDraft(
     blueprintId: bp.blueprintId,
     version: bp.version,
     isNew: false,
+    active: bp.active,
     displayName: typeof def.displayName === 'string' ? def.displayName : bp.blueprintId,
     orderFamily: typeof def.orderFamily === 'string' ? def.orderFamily : 'CHANGE_CANCEL',
     orderType: bp.orderType,
@@ -596,6 +653,7 @@ export function createStarterWorkflowDraft(params: {
     blueprintId,
     version: 1,
     isNew: true,
+    active: true,
     displayName: params.displayName,
     orderFamily: params.orderFamily,
     orderType: params.orderType.trim().toUpperCase(),
