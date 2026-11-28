@@ -1,5 +1,6 @@
 package com.jeopardy.api.analytics;
 
+import com.jeopardy.api.common.ClickHouseCircuitBreaker;
 import jakarta.annotation.PreDestroy;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -15,11 +16,12 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -40,7 +42,7 @@ public class SliceExplorerService {
     private static final long FACETS_CACHE_TTL_MS = 30_000L;
     private static final long SLICE_CACHE_TTL_MS = 10_000L;
     private static final int MAX_SLICE_CACHE_ENTRIES = 200;
-    private static final long CH_CIRCUIT_COOLDOWN_MS = 20_000L;
+    private static final long CH_QUERY_TIMEOUT_MS = 2_500L;
     private static final AtomicInteger THREAD_SEQ = new AtomicInteger(1);
 
     /** Strict allowlist of native PostgreSQL/ClickHouse columns safe for dynamic GROUP BY. */
@@ -57,8 +59,8 @@ public class SliceExplorerService {
     private final NamedParameterJdbcTemplate postgresJdbc;
     private final NamedParameterJdbcTemplate clickhouseJdbc;
     private final AnalyticsQueryBuilder queryBuilder;
+    private final ClickHouseCircuitBreaker clickHouseCircuitBreaker;
     private final ExecutorService queryExecutor;
-    private final AtomicLong chCircuitOpenUntilMs = new AtomicLong(0L);
 
     private final AtomicReference<CachedFacets> facetsCache = new AtomicReference<>();
     private final ConcurrentHashMap<String, CachedSlice> sliceCache = new ConcurrentHashMap<>();
@@ -67,18 +69,30 @@ public class SliceExplorerService {
 
     private record CachedSlice(SliceBreakdownResponse value, long expiresAtMs) {}
 
+    @Autowired
     public SliceExplorerService(
             @Qualifier("postgresJdbc") NamedParameterJdbcTemplate postgresJdbc,
             @Qualifier("clickhouseJdbc") NamedParameterJdbcTemplate clickhouseJdbc,
-            AnalyticsQueryBuilder queryBuilder) {
+            AnalyticsQueryBuilder queryBuilder,
+            ClickHouseCircuitBreaker clickHouseCircuitBreaker) {
         this.postgresJdbc = postgresJdbc;
         this.clickhouseJdbc = clickhouseJdbc;
         this.queryBuilder = queryBuilder;
+        this.clickHouseCircuitBreaker = clickHouseCircuitBreaker != null
+                ? clickHouseCircuitBreaker
+                : new ClickHouseCircuitBreaker();
         this.queryExecutor = Executors.newFixedThreadPool(8, r -> {
             Thread t = new Thread(r, "jeopardy-slice-" + THREAD_SEQ.getAndIncrement());
             t.setDaemon(true);
             return t;
         });
+    }
+
+    public SliceExplorerService(
+            @Qualifier("postgresJdbc") NamedParameterJdbcTemplate postgresJdbc,
+            @Qualifier("clickhouseJdbc") NamedParameterJdbcTemplate clickhouseJdbc,
+            AnalyticsQueryBuilder queryBuilder) {
+        this(postgresJdbc, clickhouseJdbc, queryBuilder, new ClickHouseCircuitBreaker());
     }
 
     @PreDestroy
@@ -291,13 +305,14 @@ public class SliceExplorerService {
         // 2. Optional ClickHouse Columnar Latency Enrichment in parallel (P50/P90 — zero extra storage!)
         boolean runClickHouse = !"status".equals(groupBy)
                 && !"entity_level".equals(groupBy)
-                && !isClickHouseCircuitOpen();
+                && !clickHouseCircuitBreaker.isOpen();
         CompletableFuture<Map<String, ChLatencyAgg>> chFuture = runClickHouse
                 ? CompletableFuture.supplyAsync(
-                        () -> queryClickHouseLatencyBySlice(
-                                groupBy, queryFrom, queryTo, orderFamily, orderType, itemType,
-                                accountType, channel, region, dims),
-                        queryExecutor)
+                                () -> queryClickHouseLatencyBySlice(
+                                        groupBy, queryFrom, queryTo, orderFamily, orderType, itemType,
+                                        accountType, channel, region, dims),
+                                queryExecutor)
+                        .orTimeout(CH_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 : null;
 
         List<PgSliceAgg> pgRows = joinUnwrapping(pgFuture);
@@ -315,10 +330,11 @@ public class SliceExplorerService {
                 }
                 chEnriched = true;
             } catch (Exception ex) {
+                chFuture.cancel(true);
                 Throwable cause = ex instanceof CompletionException ce && ce.getCause() != null ? ce.getCause() : ex;
-                tripClickHouseCircuit();
+                clickHouseCircuitBreaker.trip();
                 log.debug("ClickHouse slice latency enrichment skipped (circuit open for {}s): {}",
-                        CH_CIRCUIT_COOLDOWN_MS / 1000L, cause.getMessage());
+                        clickHouseCircuitBreaker.cooldownSeconds(), cause.getMessage());
             }
         }
 
@@ -564,14 +580,6 @@ public class SliceExplorerService {
                 || lower.equals("total_fallout_count")
                 || lower.equals("repeat_fallout_count")
                 || lower.equals("total_fallout_duration_ms");
-    }
-
-    private boolean isClickHouseCircuitOpen() {
-        return System.currentTimeMillis() < chCircuitOpenUntilMs.get();
-    }
-
-    private void tripClickHouseCircuit() {
-        chCircuitOpenUntilMs.set(System.currentTimeMillis() + CH_CIRCUIT_COOLDOWN_MS);
     }
 
     private void putSliceCache(String key, SliceBreakdownResponse value, long nowMs) {

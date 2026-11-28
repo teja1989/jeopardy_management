@@ -80,13 +80,28 @@ public class AnalyticsController {
     @GetMapping("/analytics/exec-summary")
     public ExecSummaryResponse getExecSummary(
             @RequestParam(defaultValue = "24") int hours,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
             @RequestParam(required = false) String orderFamily,
             @RequestParam(required = false) String orderType,
+            @RequestParam(required = false) String itemType,
             @RequestParam(required = false) String accountType,
             @RequestParam(required = false) String channel,
+            @RequestParam(required = false) String region,
+            @RequestParam(required = false) String status,
             @RequestParam Map<String, String> allQueryParams) {
         return analyticsService.getExecSummary(
-                hours, orderFamily, orderType, accountType, channel, allQueryParams);
+                hours,
+                parseInstant(from),
+                parseInstant(to),
+                orderFamily,
+                orderType,
+                itemType,
+                accountType,
+                channel,
+                region,
+                status,
+                allQueryParams);
     }
 
     @GetMapping("/analytics/devops-bottlenecks")

@@ -3,7 +3,9 @@ package com.jeopardy.api.analytics;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
+import com.jeopardy.api.common.ClickHouseCircuitBreaker;
 import java.time.Instant;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
@@ -114,5 +116,40 @@ class SliceExplorerServiceTest {
                 Map.of(),
                 25);
         assertThat(cached).isSameAs(response);
+    }
+
+    @Test
+    void sharedClickHouseCircuitBreakerSkipsClickHouseImmediatelyWhenOpen() {
+        NamedParameterJdbcTemplate pg = mock(NamedParameterJdbcTemplate.class);
+        NamedParameterJdbcTemplate ch = mock(NamedParameterJdbcTemplate.class);
+        ClickHouseCircuitBreaker sharedBreaker = new ClickHouseCircuitBreaker();
+        sharedBreaker.trip();
+
+        SliceExplorerService breakerService = new SliceExplorerService(
+                pg, ch, new AnalyticsQueryBuilder(), sharedBreaker);
+        try {
+            Instant to = Instant.now();
+            Instant from = to.minusSeconds(3600);
+            SliceBreakdownResponse response = breakerService.getSliceBreakdown(
+                    "order_type",
+                    from,
+                    to,
+                    24,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    Map.of(),
+                    25);
+
+            assertThat(response.clickhouseEnriched()).isFalse();
+            assertThat(response.querySource()).isEqualTo("PG_PARTITION_PRUNED");
+            verifyNoInteractions(ch);
+        } finally {
+            breakerService.shutdownExecutor();
+        }
     }
 }

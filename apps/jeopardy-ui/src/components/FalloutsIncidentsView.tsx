@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -24,6 +24,7 @@ import {
   createPresetRange,
   type TimeRangeValue,
 } from './DateRangePicker';
+import { RefreshingOverlay } from './RefreshingOverlay';
 
 export interface FalloutsIncidentsViewProps {
   onInspectOrders: (target: DashboardDrilldownTarget) => void;
@@ -49,41 +50,77 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
   const [errorsOnly, setErrorsOnly] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeIncidents, setActiveIncidents] = useState<IncidentDto[]>([]);
   const [opsData, setOpsData] = useState<DevOpsBottlenecksResponse | null>(null);
   const [busyIncidentId, setBusyIncidentId] = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [incidentsRes, opsRes] = await Promise.all([
-        listIncidents(true, 12).catch(() => []),
-        getDevOpsBottlenecks({
-          hours: windowHours,
-          limit: 60,
-        }),
-      ]);
-      setActiveIncidents(incidentsRes);
-      setOpsData(opsRes);
-      setLastRefreshed(new Date().toISOString());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load fallouts and incidents');
-    } finally {
-      setLoading(false);
-    }
-  }, [windowHours]);
+  const loadSeqRef = useRef(0);
+  const foregroundInFlightRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      loadSeqRef.current += 1;
+      foregroundInFlightRef.current = false;
+    };
+  }, []);
+
+  const loadData = useCallback(
+    async (options?: { background?: boolean }) => {
+      const isBg = Boolean(options?.background);
+      if (isBg && foregroundInFlightRef.current) {
+        return;
+      }
+      const seq = ++loadSeqRef.current;
+      if (!isBg) {
+        foregroundInFlightRef.current = true;
+        setLoading(true);
+        setIsRefreshing(true);
+        setError(null);
+      }
+      try {
+        const [incidentsRes, opsRes] = await Promise.all([
+          listIncidents(true, 12).catch(() => []),
+          getDevOpsBottlenecks({
+            hours: windowHours,
+            limit: 60,
+          }),
+        ]);
+        if (seq !== loadSeqRef.current) {
+          return;
+        }
+        setActiveIncidents(incidentsRes);
+        setOpsData(opsRes);
+        setLastRefreshed(new Date().toISOString());
+      } catch (err) {
+        if (seq !== loadSeqRef.current) {
+          return;
+        }
+        if (!isBg) {
+          setError(err instanceof Error ? err.message : 'Unable to load fallouts and incidents');
+        }
+      } finally {
+        if (seq === loadSeqRef.current && !isBg) {
+          foregroundInFlightRef.current = false;
+          setLoading(false);
+          setIsRefreshing(false);
+        }
+      }
+    },
+    [windowHours],
+  );
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
 
+  // Quiet background refresh every 15s (never shows overlay or disables controls)
   useEffect(() => {
     const id = window.setInterval(() => {
-      void loadData();
+      void loadData({ background: true });
     }, 15000);
     return () => window.clearInterval(id);
   }, [loadData]);
@@ -163,14 +200,15 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
             value={timeRange}
             onChange={setTimeRange}
             allowAllTime={false}
+            loading={isRefreshing}
           />
           <button
             type="button"
             onClick={() => void loadData()}
-            disabled={loading}
+            disabled={isRefreshing}
             className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#333639] bg-white dark:bg-[#1E1F20] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-3.5 py-1.5 text-xs font-medium text-[#444746] dark:text-[#C4C7C5] transition disabled:opacity-50"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
             Refresh
           </button>
         </div>
@@ -182,7 +220,47 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
         </div>
       )}
 
-      {/* Section 1 — Active Incident Clusters */}
+      {opsData === null && loading ? (
+        <div
+          className="space-y-6 animate-pulse"
+          role="status"
+          aria-live="polite"
+          aria-label="Loading fallouts and incidents"
+        >
+          <div className="h-12 rounded-[20px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20]" />
+          <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-6 space-y-5">
+            <div className="space-y-2">
+              <div className="h-5 w-64 rounded-full bg-[#E8EEF7] dark:bg-[#282A2C]" />
+              <div className="h-3 w-96 max-w-full rounded-full bg-[#F0F4F9] dark:bg-[#282A2C]" />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              {Array.from({ length: 5 }).map((_, idx) => (
+                <div
+                  key={idx}
+                  className="rounded-2xl bg-[#F0F4F9] dark:bg-[#282A2C]/80 p-4 space-y-3"
+                >
+                  <div className="h-3 w-24 rounded-full bg-[#E0E6F0] dark:bg-[#333639]" />
+                  <div className="h-7 w-14 rounded-lg bg-[#E0E6F0] dark:bg-[#333639]" />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+            <div className="xl:col-span-7 h-80 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20]" />
+            <div className="xl:col-span-5 space-y-6">
+              <div className="h-44 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20]" />
+              <div className="h-32 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20]" />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <RefreshingOverlay
+          visible={isRefreshing && opsData !== null}
+          title={`Updating fallouts for ${timeRange.label}...`}
+          subtitle="Refreshing bottlenecks, recovery stats, and active queues"
+          className="space-y-6"
+        >
+          {/* Section 1 — Active Incident Clusters */}
       {activeIncidents.length === 0 ? (
         <div className="rounded-[20px] border border-[#CEEAD6] dark:border-[#1E4620] bg-[#E6F4EA]/70 dark:bg-[#132E1C]/60 px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 text-sm font-medium text-[#137333] dark:text-[#81C995]">
@@ -713,6 +791,8 @@ export const FalloutsIncidentsView: React.FC<FalloutsIncidentsViewProps> = ({
           </div>
         </div>
       </div>
+        </RefreshingOverlay>
+      )}
     </div>
   );
 };

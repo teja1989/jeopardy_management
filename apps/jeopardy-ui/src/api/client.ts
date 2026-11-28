@@ -42,10 +42,15 @@ const API_BASE = '/api/v1';
 
 export interface ExecSummaryQuery {
   hours?: number;
+  from?: string;
+  to?: string;
   orderFamily?: string;
   orderType?: string;
+  itemType?: string;
   accountType?: string;
   channel?: string;
+  region?: string;
+  status?: string;
   dimKey?: string;
   dimVal?: string;
 }
@@ -300,10 +305,15 @@ export function sendAssistantUserAction(
 export function getExecSummary(query: ExecSummaryQuery = {}): Promise<ExecSummaryResponse> {
   const params: Record<string, string | number | undefined> = {
     hours: query.hours ?? 24,
+    from: query.from,
+    to: query.to,
     orderFamily: query.orderFamily,
     orderType: query.orderType,
+    itemType: query.itemType,
     accountType: query.accountType,
     channel: query.channel,
+    region: query.region,
+    status: query.status,
   };
   if (query.dimKey && query.dimKey.trim() && query.dimVal && query.dimVal.trim()) {
     params[`dim.${query.dimKey.trim()}`] = query.dimVal.trim();

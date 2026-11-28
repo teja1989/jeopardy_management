@@ -1,5 +1,6 @@
 package com.jeopardy.api.analytics;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -117,26 +118,91 @@ public class AnalyticsQueryBuilder {
             String accountType,
             String channel,
             Map<String, String> dimensions) {
-        StringBuilder sql = new StringBuilder("""
-                SELECT order_family, order_type, account_type,
-                       COUNT(*) AS live_open_count,
-                       COUNT(*) FILTER (
-                           WHERE status IN ('WARNING', 'JEOPARDY', 'BREACHED')
-                              OR jeopardy_severity IN ('WARNING', 'JEOPARDY', 'CRITICAL', 'BREACHED')
-                       ) AS live_jeopardy_count,
-                       COUNT(*) FILTER (
-                           WHERE status = 'IN_FALLOUT' OR has_active_fallout = TRUE
-                       ) AS live_fallout_count,
-                       COUNT(*) FILTER (WHERE status = 'BREACHED') AS live_breached_count
-                FROM tracked_entities
-                WHERE status IN ('IN_PROGRESS', 'WARNING', 'JEOPARDY', 'IN_FALLOUT', 'BREACHED')
-                """);
+        return buildPostgresLiveOpenQuery(
+                null, null, orderFamily, orderType, null, accountType, channel, null, null, dimensions);
+    }
+
+    public SqlWithParams buildPostgresLiveOpenQuery(
+            Instant from,
+            Instant to,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            String status,
+            Map<String, String> dimensions) {
+        Instant safeFrom = from;
+        Instant safeTo = to;
+        if (safeFrom != null && safeTo != null && safeFrom.isAfter(safeTo)) {
+            Instant swap = safeFrom;
+            safeFrom = safeTo;
+            safeTo = swap;
+        }
+
+        String normalizedStatus = isNonBlankFilter(status) ? status.trim().toUpperCase(Locale.ROOT) : null;
+        boolean isTerminalStatus = "COMPLETED".equals(normalizedStatus) || "CANCELLED".equals(normalizedStatus);
+
+        StringBuilder sql = new StringBuilder();
+        if (isTerminalStatus) {
+            sql.append("""
+                    SELECT order_family, order_type, account_type,
+                           COUNT(*) FILTER (
+                               WHERE status IN ('IN_PROGRESS', 'WARNING', 'JEOPARDY', 'IN_FALLOUT', 'BREACHED')
+                           ) AS live_open_count,
+                           COUNT(*) FILTER (
+                               WHERE status IN ('WARNING', 'JEOPARDY', 'BREACHED')
+                                  OR jeopardy_severity IN ('WARNING', 'JEOPARDY', 'CRITICAL', 'BREACHED')
+                           ) AS live_jeopardy_count,
+                           COUNT(*) FILTER (
+                               WHERE status = 'IN_FALLOUT' OR has_active_fallout = TRUE
+                           ) AS live_fallout_count,
+                           COUNT(*) FILTER (WHERE status = 'BREACHED') AS live_breached_count
+                    FROM tracked_entities
+                    WHERE status = :status
+                    """);
+        } else {
+            sql.append("""
+                    SELECT order_family, order_type, account_type,
+                           COUNT(*) AS live_open_count,
+                           COUNT(*) FILTER (
+                               WHERE status IN ('WARNING', 'JEOPARDY', 'BREACHED')
+                                  OR jeopardy_severity IN ('WARNING', 'JEOPARDY', 'CRITICAL', 'BREACHED')
+                           ) AS live_jeopardy_count,
+                           COUNT(*) FILTER (
+                               WHERE status = 'IN_FALLOUT' OR has_active_fallout = TRUE
+                           ) AS live_fallout_count,
+                           COUNT(*) FILTER (WHERE status = 'BREACHED') AS live_breached_count
+                    FROM tracked_entities
+                    WHERE status IN ('IN_PROGRESS', 'WARNING', 'JEOPARDY', 'IN_FALLOUT', 'BREACHED')
+                    """);
+        }
 
         MapSqlParameterSource params = new MapSqlParameterSource();
+        if (safeFrom != null) {
+            sql.append(" AND created_at >= :fromTs");
+            params.addValue("fromTs", Timestamp.from(safeFrom));
+        }
+        if (safeTo != null) {
+            sql.append(" AND created_at <= :toTs");
+            params.addValue("toTs", Timestamp.from(safeTo));
+        }
+        if (isTerminalStatus) {
+            params.addValue("status", normalizedStatus);
+        } else if ("ATTENTION".equals(normalizedStatus)) {
+            sql.append(" AND (status IN ('WARNING', 'JEOPARDY', 'BREACHED', 'IN_FALLOUT') OR has_active_fallout = TRUE)");
+        } else if (normalizedStatus != null) {
+            sql.append(" AND status = :status");
+            params.addValue("status", normalizedStatus);
+        }
+
         appendEq(sql, params, "order_family", "orderFamily", orderFamily);
         appendEq(sql, params, "order_type", "orderType", orderType);
+        appendEq(sql, params, "item_type", "itemType", itemType);
         appendEq(sql, params, "account_type", "accountType", accountType);
         appendEq(sql, params, "channel", "channel", channel);
+        appendEq(sql, params, "region", "region", region);
 
         if (dimensions != null && !dimensions.isEmpty()) {
             int idx = 0;
@@ -161,12 +227,30 @@ public class AnalyticsQueryBuilder {
             String accountType,
             String channel,
             Map<String, String> dimensions) {
-        int safeHours = validateHours(hours);
-        MapSqlParameterSource params = new MapSqlParameterSource().addValue("hours", safeHours);
+        return buildClickHouseExecSlicesQuery(
+                hours, null, null, orderFamily, orderType, null, accountType, channel, null, dimensions);
+    }
+
+    public SqlWithParams buildClickHouseExecSlicesQuery(
+            int hours,
+            Instant from,
+            Instant to,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            Map<String, String> dimensions) {
+        MapSqlParameterSource params = new MapSqlParameterSource();
         boolean hasDims = dimensions != null && !dimensions.isEmpty();
+        boolean hasItemType = isNonBlankFilter(itemType);
+        boolean hasRegion = isNonBlankFilter(region);
+        // exec_summary_hourly_agg does not carry item_type, region, or dynamic Map dimensions
+        boolean useTelemetry = hasDims || hasItemType || hasRegion;
 
         StringBuilder sql = new StringBuilder();
-        if (!hasDims) {
+        if (!useTelemetry) {
             sql.append("""
                     SELECT order_family, order_type, account_type,
                            countMerge(event_count) AS event_count,
@@ -176,8 +260,9 @@ public class AnalyticsQueryBuilder {
                            quantileMerge(0.50)(p50_duration_ms) AS p50_duration_ms,
                            quantileMerge(0.90)(p90_duration_ms) AS p90_duration_ms
                     FROM jeopardy.exec_summary_hourly_agg
-                    WHERE hour >= now() - toIntervalHour(:hours)
                     """);
+            sql.append("WHERE ");
+            appendClickHouseTimeFilter(sql, params, "hour", hours, from, to);
         } else {
             sql.append("""
                     SELECT order_family, order_type, account_type,
@@ -188,23 +273,28 @@ public class AnalyticsQueryBuilder {
                            quantile(0.50)(duration_ms) AS p50_duration_ms,
                            quantile(0.90)(duration_ms) AS p90_duration_ms
                     FROM jeopardy.milestone_telemetry
-                    WHERE event_time >= now() - toIntervalHour(:hours)
                     """);
+            sql.append("WHERE ");
+            appendClickHouseTimeFilter(sql, params, "event_time", hours, from, to);
         }
 
         appendEq(sql, params, "order_family", "orderFamily", orderFamily);
         appendEq(sql, params, "order_type", "orderType", orderType);
         appendEq(sql, params, "account_type", "accountType", accountType);
         appendEq(sql, params, "channel", "channel", channel);
-        if (hasDims) {
-            appendClickHouseDimensions(sql, params, dimensions);
+        if (useTelemetry) {
+            appendEq(sql, params, "item_type", "itemType", itemType);
+            appendEq(sql, params, "region", "region", region);
+            if (hasDims) {
+                appendClickHouseDimensions(sql, params, dimensions);
+            }
         }
         sql.append(" GROUP BY order_family, order_type, account_type ORDER BY event_count DESC");
 
         return new SqlWithParams(
                 sql.toString(),
                 params,
-                hasDims ? "CH_MILESTONE_TELEMETRY_DYNAMIC_DIM" : "CH_MV_EXEC_SUMMARY_HOURLY");
+                useTelemetry ? "CH_MILESTONE_TELEMETRY_DYNAMIC_DIM" : "CH_MV_EXEC_SUMMARY_HOURLY");
     }
 
     public SqlWithParams buildClickHouseExecTrendQuery(
@@ -214,12 +304,30 @@ public class AnalyticsQueryBuilder {
             String accountType,
             String channel,
             Map<String, String> dimensions) {
-        int safeHours = validateHours(hours);
-        MapSqlParameterSource params = new MapSqlParameterSource().addValue("hours", safeHours);
+        return buildClickHouseExecTrendQuery(
+                hours, null, null, orderFamily, orderType, null, accountType, channel, null, dimensions);
+    }
+
+    public SqlWithParams buildClickHouseExecTrendQuery(
+            int hours,
+            Instant from,
+            Instant to,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            Map<String, String> dimensions) {
+        MapSqlParameterSource params = new MapSqlParameterSource();
         boolean hasDims = dimensions != null && !dimensions.isEmpty();
+        boolean hasItemType = isNonBlankFilter(itemType);
+        boolean hasRegion = isNonBlankFilter(region);
+        // exec_summary_hourly_agg does not carry item_type, region, or dynamic Map dimensions
+        boolean useTelemetry = hasDims || hasItemType || hasRegion;
 
         StringBuilder sql = new StringBuilder();
-        if (!hasDims) {
+        if (!useTelemetry) {
             sql.append("""
                     SELECT hour,
                            countMerge(event_count) AS event_count,
@@ -229,8 +337,9 @@ public class AnalyticsQueryBuilder {
                            quantileMerge(0.50)(p50_duration_ms) AS p50_duration_ms,
                            quantileMerge(0.90)(p90_duration_ms) AS p90_duration_ms
                     FROM jeopardy.exec_summary_hourly_agg
-                    WHERE hour >= now() - toIntervalHour(:hours)
                     """);
+            sql.append("WHERE ");
+            appendClickHouseTimeFilter(sql, params, "hour", hours, from, to);
         } else {
             sql.append("""
                     SELECT toStartOfHour(event_time) AS hour,
@@ -241,23 +350,28 @@ public class AnalyticsQueryBuilder {
                            quantile(0.50)(duration_ms) AS p50_duration_ms,
                            quantile(0.90)(duration_ms) AS p90_duration_ms
                     FROM jeopardy.milestone_telemetry
-                    WHERE event_time >= now() - toIntervalHour(:hours)
                     """);
+            sql.append("WHERE ");
+            appendClickHouseTimeFilter(sql, params, "event_time", hours, from, to);
         }
 
         appendEq(sql, params, "order_family", "orderFamily", orderFamily);
         appendEq(sql, params, "order_type", "orderType", orderType);
         appendEq(sql, params, "account_type", "accountType", accountType);
         appendEq(sql, params, "channel", "channel", channel);
-        if (hasDims) {
-            appendClickHouseDimensions(sql, params, dimensions);
+        if (useTelemetry) {
+            appendEq(sql, params, "item_type", "itemType", itemType);
+            appendEq(sql, params, "region", "region", region);
+            if (hasDims) {
+                appendClickHouseDimensions(sql, params, dimensions);
+            }
         }
         sql.append(" GROUP BY hour ORDER BY hour ASC");
 
         return new SqlWithParams(
                 sql.toString(),
                 params,
-                hasDims ? "CH_MILESTONE_TELEMETRY_DYNAMIC_DIM" : "CH_MV_EXEC_SUMMARY_HOURLY");
+                useTelemetry ? "CH_MILESTONE_TELEMETRY_DYNAMIC_DIM" : "CH_MV_EXEC_SUMMARY_HOURLY");
     }
 
     public SqlWithParams buildClickHouseBottlenecksQuery(
@@ -600,13 +714,52 @@ public class AnalyticsQueryBuilder {
         return Double.isFinite(val) ? Math.round(val * 100.0) / 100.0 : 0.0;
     }
 
+    private static boolean isNonBlankFilter(String value) {
+        return value != null && !value.isBlank() && !"ALL".equalsIgnoreCase(value.trim());
+    }
+
+    private void appendClickHouseTimeFilter(
+            StringBuilder sql,
+            MapSqlParameterSource params,
+            String timeColumn,
+            int hours,
+            Instant from,
+            Instant to) {
+        if (from != null && to != null) {
+            Instant safeFrom = from.isAfter(to) ? to : from;
+            Instant safeTo = from.isAfter(to) ? from : to;
+            sql.append(timeColumn)
+                    .append(" >= toDateTime(:fromEpoch) AND ")
+                    .append(timeColumn)
+                    .append(" <= toDateTime(:toEpoch)");
+            params.addValue("fromEpoch", safeFrom.getEpochSecond());
+            params.addValue("toEpoch", safeTo.getEpochSecond());
+        } else if (from != null) {
+            sql.append(timeColumn).append(" >= toDateTime(:fromEpoch)");
+            params.addValue("fromEpoch", from.getEpochSecond());
+        } else if (to != null) {
+            int safeHours = validateHours(hours);
+            Instant derivedFrom = to.minusSeconds(safeHours * 3600L);
+            sql.append(timeColumn)
+                    .append(" >= toDateTime(:fromEpoch) AND ")
+                    .append(timeColumn)
+                    .append(" <= toDateTime(:toEpoch)");
+            params.addValue("fromEpoch", derivedFrom.getEpochSecond());
+            params.addValue("toEpoch", to.getEpochSecond());
+        } else {
+            int safeHours = validateHours(hours);
+            sql.append(timeColumn).append(" >= now() - toIntervalHour(:hours)");
+            params.addValue("hours", safeHours);
+        }
+    }
+
     private void appendEq(
             StringBuilder sql,
             MapSqlParameterSource params,
             String column,
             String paramName,
             String value) {
-        if (value != null && !value.isBlank()) {
+        if (isNonBlankFilter(value)) {
             sql.append(" AND ").append(column).append(" = :").append(paramName);
             params.addValue(paramName, value.trim());
         }

@@ -61,11 +61,12 @@ public class DataSourceConfig implements WebMvcConfigurer {
             @Value("${jeopardy.datasources.clickhouse.username}") String username,
             @Value("${jeopardy.datasources.clickhouse.password}") String password,
             @Value("${jeopardy.datasources.clickhouse.maximum-pool-size:10}") int maxPool) {
-        String effectiveUrl = url != null ? url : "";
-        if (!effectiveUrl.contains("socket_timeout")) {
-            String separator = effectiveUrl.contains("?") ? "&" : "?";
-            effectiveUrl = effectiveUrl + separator + "socket_timeout=4000&connect_timeout=2000&max_execution_time=4";
-        }
+        String effectiveUrl = url != null ? url.trim() : "";
+        effectiveUrl = appendQueryParamIfAbsent(effectiveUrl, "retry", "0");
+        effectiveUrl = appendQueryParamIfAbsent(effectiveUrl, "failover", "0");
+        effectiveUrl = appendQueryParamIfAbsent(effectiveUrl, "socket_timeout", "2500");
+        effectiveUrl = appendQueryParamIfAbsent(effectiveUrl, "connect_timeout", "1500");
+        effectiveUrl = appendQueryParamIfAbsent(effectiveUrl, "max_execution_time", "3");
         HikariConfig cfg = new HikariConfig();
         cfg.setPoolName("jeopardy-clickhouse-pool");
         cfg.setJdbcUrl(effectiveUrl);
@@ -73,13 +74,21 @@ public class DataSourceConfig implements WebMvcConfigurer {
         cfg.setPassword(password);
         cfg.setMaximumPoolSize(maxPool);
         cfg.setMinimumIdle(1);
-        cfg.setConnectionTimeout(3000L);
+        cfg.setConnectionTimeout(1500L);
         cfg.setMaxLifetime(180_000L);
         cfg.setIdleTimeout(60_000L);
         cfg.setKeepaliveTime(45_000L);
         cfg.setInitializationFailTimeout(-1L);
         cfg.setConnectionTestQuery("SELECT 1");
         return new HikariDataSource(cfg);
+    }
+
+    private static String appendQueryParamIfAbsent(String url, String key, String value) {
+        if (url.contains(key + "=")) {
+            return url;
+        }
+        String separator = url.contains("?") ? "&" : "?";
+        return url + separator + key + "=" + value;
     }
 
     @Bean(name = "clickhouseJdbc")

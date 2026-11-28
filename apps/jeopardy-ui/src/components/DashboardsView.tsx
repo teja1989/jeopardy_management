@@ -33,6 +33,7 @@ import {
   createPresetRange,
   type TimeRangeValue,
 } from './DateRangePicker';
+import { OverviewInitialSkeleton, RefreshingOverlay } from './RefreshingOverlay';
 
 export interface DashboardDrilldownTarget {
   orderFamily?: string;
@@ -101,7 +102,8 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
   const [dimKey, setDimKey] = useState('');
   const [dimVal, setDimVal] = useState('');
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summaryData, setSummaryData] = useState<ExecSummaryResponse | null>(null);
   const [sliceData, setSliceData] = useState<SliceBreakdownResponse | null>(null);
@@ -188,96 +190,118 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
   ]);
 
   const loadSeqRef = useRef(0);
+  const foregroundInFlightRef = useRef(false);
 
   useEffect(() => {
     return () => {
       loadSeqRef.current += 1;
+      foregroundInFlightRef.current = false;
     };
   }, []);
 
-  const loadData = useCallback(async () => {
-    const seq = ++loadSeqRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const [summaryRes, sliceRes, histRes] = await Promise.all([
-        getExecSummary({
-          hours: windowHours,
-          orderFamily: orderFamily === 'ALL' ? undefined : orderFamily,
-          orderType: orderTypeFilter === 'ALL' ? undefined : orderTypeFilter,
-          accountType: accountType === 'ALL' ? undefined : accountType,
-          channel: channel === 'ALL' ? undefined : channel,
-          dimKey,
-          dimVal,
-        }),
-        getSliceBreakdown({
-          groupBy: sliceBy,
-          from: timeRange.from,
-          to: timeRange.to,
-          hours: windowHours,
-          orderFamily: orderFamily === 'ALL' ? undefined : orderFamily,
-          orderType: orderTypeFilter === 'ALL' ? undefined : orderTypeFilter,
-          itemType: itemTypeFilter === 'ALL' ? undefined : itemTypeFilter,
-          accountType: accountType === 'ALL' ? undefined : accountType,
-          channel: channel === 'ALL' ? undefined : channel,
-          region: regionFilter === 'ALL' ? undefined : regionFilter,
-          status: statusFilter === 'ALL' ? undefined : statusFilter,
-          dimKey,
-          dimVal,
-          limit: 50,
-        }),
-        getTimelineHistogram({
-          orderFamily: orderFamily === 'ALL' ? undefined : orderFamily,
-          orderType: orderTypeFilter === 'ALL' ? undefined : orderTypeFilter,
-          itemType: itemTypeFilter === 'ALL' ? undefined : itemTypeFilter,
-          accountType: accountType === 'ALL' ? undefined : accountType,
-          channel: channel === 'ALL' ? undefined : channel,
-          region: regionFilter === 'ALL' ? undefined : regionFilter,
-          from: timeRange.from,
-          to: timeRange.to,
-        }).catch(() => null),
-      ]);
-      if (seq !== loadSeqRef.current) {
+  const loadData = useCallback(
+    async (options?: { background?: boolean }) => {
+      const isBg = Boolean(options?.background);
+      if (isBg && foregroundInFlightRef.current) {
         return;
       }
-      setSummaryData(summaryRes);
-      setSliceData(sliceRes);
-      setTrendHistogram(histRes);
-      setLastRefreshed(new Date().toISOString());
-    } catch (err) {
-      if (seq !== loadSeqRef.current) {
-        return;
+      const seq = ++loadSeqRef.current;
+      if (!isBg) {
+        foregroundInFlightRef.current = true;
+        setLoading(true);
+        setIsRefreshing(true);
+        setError(null);
       }
-      setError(err instanceof Error ? err.message : 'Unable to load overview metrics');
-    } finally {
-      if (seq === loadSeqRef.current) {
-        setLoading(false);
+      try {
+        const [summaryRes, sliceRes, histRes] = await Promise.all([
+          getExecSummary({
+            hours: windowHours,
+            from: timeRange.from,
+            to: timeRange.to,
+            orderFamily: orderFamily === 'ALL' ? undefined : orderFamily,
+            orderType: orderTypeFilter === 'ALL' ? undefined : orderTypeFilter,
+            itemType: itemTypeFilter === 'ALL' ? undefined : itemTypeFilter,
+            accountType: accountType === 'ALL' ? undefined : accountType,
+            channel: channel === 'ALL' ? undefined : channel,
+            region: regionFilter === 'ALL' ? undefined : regionFilter,
+            status: statusFilter === 'ALL' ? undefined : statusFilter,
+            dimKey,
+            dimVal,
+          }),
+          getSliceBreakdown({
+            groupBy: sliceBy,
+            from: timeRange.from,
+            to: timeRange.to,
+            hours: windowHours,
+            orderFamily: orderFamily === 'ALL' ? undefined : orderFamily,
+            orderType: orderTypeFilter === 'ALL' ? undefined : orderTypeFilter,
+            itemType: itemTypeFilter === 'ALL' ? undefined : itemTypeFilter,
+            accountType: accountType === 'ALL' ? undefined : accountType,
+            channel: channel === 'ALL' ? undefined : channel,
+            region: regionFilter === 'ALL' ? undefined : regionFilter,
+            status: statusFilter === 'ALL' ? undefined : statusFilter,
+            dimKey,
+            dimVal,
+            limit: 50,
+          }),
+          getTimelineHistogram({
+            orderFamily: orderFamily === 'ALL' ? undefined : orderFamily,
+            orderType: orderTypeFilter === 'ALL' ? undefined : orderTypeFilter,
+            itemType: itemTypeFilter === 'ALL' ? undefined : itemTypeFilter,
+            accountType: accountType === 'ALL' ? undefined : accountType,
+            channel: channel === 'ALL' ? undefined : channel,
+            region: regionFilter === 'ALL' ? undefined : regionFilter,
+            from: timeRange.from,
+            to: timeRange.to,
+          }).catch(() => null),
+        ]);
+        if (seq !== loadSeqRef.current) {
+          return;
+        }
+        setSummaryData(summaryRes);
+        setSliceData(sliceRes);
+        setTrendHistogram(histRes);
+        setLastRefreshed(new Date().toISOString());
+      } catch (err) {
+        if (seq !== loadSeqRef.current) {
+          return;
+        }
+        if (!isBg) {
+          setError(err instanceof Error ? err.message : 'Unable to load overview metrics');
+        }
+      } finally {
+        if (seq === loadSeqRef.current && !isBg) {
+          foregroundInFlightRef.current = false;
+          setLoading(false);
+          setIsRefreshing(false);
+        }
       }
-    }
-  }, [
-    windowHours,
-    timeRange.from,
-    timeRange.to,
-    sliceBy,
-    orderFamily,
-    orderTypeFilter,
-    itemTypeFilter,
-    accountType,
-    channel,
-    regionFilter,
-    statusFilter,
-    dimKey,
-    dimVal,
-  ]);
+    },
+    [
+      windowHours,
+      timeRange.from,
+      timeRange.to,
+      sliceBy,
+      orderFamily,
+      orderTypeFilter,
+      itemTypeFilter,
+      accountType,
+      channel,
+      regionFilter,
+      statusFilter,
+      dimKey,
+      dimVal,
+    ],
+  );
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
 
-  // Quiet background refresh every 15s
+  // Quiet background refresh every 15s (never shows overlay or disables controls)
   useEffect(() => {
     const id = window.setInterval(() => {
-      void loadData();
+      void loadData({ background: true });
     }, 15000);
     return () => window.clearInterval(id);
   }, [loadData]);
@@ -309,6 +333,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
     dimVal,
   });
 
+  const hasLoadedOnce = summaryData !== null || sliceData !== null;
   const totals = summaryData?.totals;
   const attentionCount = (totals?.liveJeopardyCount ?? 0) + (totals?.liveBreachedCount ?? 0);
 
@@ -351,6 +376,7 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
             value={timeRange}
             onChange={setTimeRange}
             allowAllTime={false}
+            loading={isRefreshing}
           />
 
           <button
@@ -391,10 +417,10 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
                     setMenuOpen(false);
                     void loadData();
                   }}
-                  disabled={loading}
+                  disabled={isRefreshing}
                   className="w-full px-3.5 py-2 text-left text-xs font-medium text-[#1F1F1F] dark:text-[#E3E3E3] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] flex items-center gap-2.5 transition disabled:opacity-50"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 text-[#5F6368] dark:text-[#9AA0A6] ${loading ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`w-3.5 h-3.5 text-[#5F6368] dark:text-[#9AA0A6] ${isRefreshing ? 'animate-spin' : ''}`} />
                   Refresh metrics
                 </button>
                 <a
@@ -628,8 +654,17 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
         </div>
       )}
 
-      {/* Section 2: 4 Calm Hero KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+      {!hasLoadedOnce && loading ? (
+        <OverviewInitialSkeleton />
+      ) : (
+        <RefreshingOverlay
+          visible={isRefreshing && hasLoadedOnce}
+          title={`Updating metrics for ${timeRange.label}...`}
+          subtitle="Refreshing live order counts, breakdown, and trend"
+          className="space-y-6"
+        >
+          {/* Section 2: 4 Calm Hero KPI Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
         {/* In-Flight Orders */}
         <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] p-6 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
           <div className="flex items-center justify-between gap-2">
@@ -1052,6 +1087,8 @@ export const DashboardsView: React.FC<DashboardsViewProps> = ({
           )}
         </div>
       </div>
+        </RefreshingOverlay>
+      )}
     </div>
   );
 };

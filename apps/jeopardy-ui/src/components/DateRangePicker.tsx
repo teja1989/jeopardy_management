@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Calendar, ChevronDown, Clock } from 'lucide-react';
+import { Calendar, ChevronDown, Clock, Loader2 } from 'lucide-react';
 
 export type TimePreset = '1h' | '6h' | '24h' | '7d' | '30d' | 'all' | 'custom';
 
@@ -59,12 +59,14 @@ interface DateRangePickerProps {
   value: TimeRangeValue;
   onChange: (next: TimeRangeValue) => void;
   allowAllTime?: boolean;
+  loading?: boolean;
 }
 
 export const DateRangePicker: React.FC<DateRangePickerProps> = ({
   value,
   onChange,
   allowAllTime = true,
+  loading = false,
 }) => {
   const [open, setOpen] = useState(false);
   const [fromLocal, setFromLocal] = useState(() =>
@@ -72,6 +74,12 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
   );
   const [toLocal, setToLocal] = useState(() => toLocalDateTimeInput(value.to));
   const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (loading && open) {
+      setOpen(false);
+    }
+  }, [loading, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -159,22 +167,35 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
     <div ref={rootRef} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
-          value.preset === 'custom'
-            ? 'border-blue-500/50 bg-blue-50/70 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
-            : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+        disabled={loading}
+        aria-busy={loading}
+        title={loading ? 'Updating...' : value.label}
+        onClick={() => {
+          if (!loading) setOpen((v) => !v);
+        }}
+        className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-medium transition ${
+          loading
+            ? 'border-[#1A73E8]/50 bg-[#E8F0FE]/70 dark:bg-[#004A77]/50 text-[#1967D2] dark:text-[#C2E7FF] cursor-wait'
+            : value.preset === 'custom'
+              ? 'border-[#1A73E8]/40 bg-[#D3E3FD]/80 dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold'
+              : 'border-[#DDE3EA] dark:border-[#333639] bg-white dark:bg-[#1E1F20] text-[#444746] dark:text-[#C4C7C5] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]'
         }`}
       >
-        <Calendar className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+        {loading ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-[#1A73E8] dark:text-[#8AB4F8] shrink-0" />
+        ) : (
+          <Calendar className="w-3.5 h-3.5 text-[#1A73E8] dark:text-[#8AB4F8] shrink-0" />
+        )}
         <span className="max-w-[200px] truncate">{value.label}</span>
-        <ChevronDown className="w-3.5 h-3.5 opacity-60 shrink-0" />
+        <ChevronDown
+          className={`w-3.5 h-3.5 shrink-0 transition-opacity ${loading ? 'opacity-35' : 'opacity-60'}`}
+        />
       </button>
 
-      {open && (
-        <div className="absolute right-0 mt-1.5 w-80 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl z-40 p-3.5 space-y-3">
-          <div className="space-y-1.5">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+      {open && !loading && (
+        <div className="absolute right-0 mt-1.5 w-80 rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-xl z-40 p-4 space-y-3">
+          <div className="space-y-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6] flex items-center gap-1">
               <Clock className="w-3 h-3" />
               Quick Time Ranges
             </div>
@@ -184,10 +205,10 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
                   key={p.id}
                   type="button"
                   onClick={() => selectPreset(p.id)}
-                  className={`rounded-lg py-1.5 px-2 text-[11px] font-medium transition ${
+                  className={`rounded-full py-1.5 px-2 text-[11px] font-medium transition ${
                     value.preset === p.id
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                      ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold shadow-sm'
+                      : 'bg-[#F0F4F9] dark:bg-[#282A2C] text-[#444746] dark:text-[#C4C7C5] hover:bg-[#E2E9F4] dark:hover:bg-[#333639]'
                   }`}
                 >
                   {p.label}
@@ -196,14 +217,14 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
               <button
                 type="button"
                 onClick={selectToday}
-                className="rounded-lg py-1.5 px-2 text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+                className="rounded-full py-1.5 px-2 text-[11px] font-medium bg-[#F0F4F9] dark:bg-[#282A2C] text-[#444746] dark:text-[#C4C7C5] hover:bg-[#E2E9F4] dark:hover:bg-[#333639] transition"
               >
                 Today
               </button>
               <button
                 type="button"
                 onClick={selectYesterday}
-                className="rounded-lg py-1.5 px-2 text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+                className="rounded-full py-1.5 px-2 text-[11px] font-medium bg-[#F0F4F9] dark:bg-[#282A2C] text-[#444746] dark:text-[#C4C7C5] hover:bg-[#E2E9F4] dark:hover:bg-[#333639] transition"
               >
                 Yesterday
               </button>
@@ -212,34 +233,34 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
 
           <form
             onSubmit={applyCustom}
-            className="pt-2.5 border-t border-slate-100 dark:border-slate-800 space-y-2"
+            className="pt-3 border-t border-[#EEF2F7] dark:border-[#2C2F33] space-y-2.5"
           >
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
               Custom Calendar Range
             </div>
             <div className="space-y-1.5">
               <label className="block">
-                <span className="text-[11px] text-slate-500">From</span>
+                <span className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">From</span>
                 <input
                   type="datetime-local"
                   value={fromLocal}
                   onChange={(e) => setFromLocal(e.target.value)}
-                  className="mt-0.5 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                  className="mt-0.5 w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-2.5 py-1.5 text-xs text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:ring-2 focus:ring-[#1A73E8]/30 focus:border-[#1A73E8]"
                 />
               </label>
               <label className="block">
-                <span className="text-[11px] text-slate-500">To</span>
+                <span className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">To</span>
                 <input
                   type="datetime-local"
                   value={toLocal}
                   onChange={(e) => setToLocal(e.target.value)}
-                  className="mt-0.5 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                  className="mt-0.5 w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-2.5 py-1.5 text-xs text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:ring-2 focus:ring-[#1A73E8]/30 focus:border-[#1A73E8]"
                 />
               </label>
             </div>
             <button
               type="submit"
-              className="w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white py-1.5 text-xs font-semibold shadow-sm transition"
+              className="w-full rounded-full bg-[#1A73E8] hover:bg-[#1557B0] dark:bg-[#8AB4F8] dark:hover:bg-[#AECBFA] text-white dark:text-[#041E49] py-2 text-xs font-semibold shadow-sm transition"
             >
               Apply Calendar Range
             </button>

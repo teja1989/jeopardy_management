@@ -3,6 +3,7 @@ package com.jeopardy.api.analytics;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -153,5 +154,78 @@ class AnalyticsQueryBuilderTest {
         assertThat(merged.get(1).assignedQueue()).isEqualTo("PORT_OPS");
         assertThat(merged.get(1).liveOpenFallouts()).isZero();
         assertThat(merged.get(1).avgMttrMs()).isEqualTo(0.0);
+    }
+
+    @Test
+    void postgresLiveOpenQuerySupportsExplicitTimeRangeItemTypeRegionAndStatus() {
+        Instant from = Instant.parse("2026-11-20T00:00:00Z");
+        Instant to = Instant.parse("2026-11-27T23:59:59Z");
+
+        AnalyticsQueryBuilder.SqlWithParams attentionQuery = builder.buildPostgresLiveOpenQuery(
+                from, to, "SALES", "SALES_UPGRADE", "IPHONE_18", "RESIDENTIAL", "WEB", "US-WEST", "ATTENTION",
+                Map.of("donor_carrier", "VERIZON"));
+
+        assertThat(attentionQuery.querySource()).isEqualTo("PG_LIVE_PARTIAL_INDEX");
+        assertThat(attentionQuery.sql())
+                .contains("WHERE status IN ('IN_PROGRESS', 'WARNING', 'JEOPARDY', 'IN_FALLOUT', 'BREACHED')")
+                .contains("AND created_at >= :fromTs")
+                .contains("AND created_at <= :toTs")
+                .contains("AND item_type = :itemType")
+                .contains("AND region = :region")
+                .contains("AND (status IN ('WARNING', 'JEOPARDY', 'BREACHED', 'IN_FALLOUT') OR has_active_fallout = TRUE)")
+                .contains("AND attributes_jsonb ->> :dimKey_0 = :dimVal_0");
+        assertThat(attentionQuery.params().getValue("fromTs")).isEqualTo(Timestamp.from(from));
+        assertThat(attentionQuery.params().getValue("toTs")).isEqualTo(Timestamp.from(to));
+        assertThat(attentionQuery.params().getValue("itemType")).isEqualTo("IPHONE_18");
+        assertThat(attentionQuery.params().getValue("region")).isEqualTo("US-WEST");
+
+        AnalyticsQueryBuilder.SqlWithParams completedQuery = builder.buildPostgresLiveOpenQuery(
+                from, to, null, null, null, null, null, null, "COMPLETED", Map.of());
+        assertThat(completedQuery.sql())
+                .contains("FROM tracked_entities\nWHERE status = :status")
+                .doesNotContain("FROM tracked_entities\nWHERE status IN ('IN_PROGRESS'");
+        assertThat(completedQuery.params().getValue("status")).isEqualTo("COMPLETED");
+    }
+
+    @Test
+    void clickHouseExecQueriesSupportExplicitTimeRangeAndFallBackToTelemetryForItemTypeOrRegion() {
+        Instant from = Instant.parse("2026-11-20T00:00:00Z");
+        Instant to = Instant.parse("2026-11-27T00:00:00Z");
+
+        AnalyticsQueryBuilder.SqlWithParams mvRangeSlices = builder.buildClickHouseExecSlicesQuery(
+                24, from, to, "SALES", "SALES_UPGRADE", null, "RESIDENTIAL", "WEB", null, Map.of());
+        assertThat(mvRangeSlices.querySource()).isEqualTo("CH_MV_EXEC_SUMMARY_HOURLY");
+        assertThat(mvRangeSlices.sql())
+                .contains("FROM jeopardy.exec_summary_hourly_agg")
+                .contains("WHERE hour >= toDateTime(:fromEpoch) AND hour <= toDateTime(:toEpoch)");
+        assertThat(mvRangeSlices.params().getValue("fromEpoch")).isEqualTo(from.getEpochSecond());
+        assertThat(mvRangeSlices.params().getValue("toEpoch")).isEqualTo(to.getEpochSecond());
+
+        AnalyticsQueryBuilder.SqlWithParams mvRangeTrend = builder.buildClickHouseExecTrendQuery(
+                24, from, to, "SALES", null, null, null, null, null, Map.of());
+        assertThat(mvRangeTrend.querySource()).isEqualTo("CH_MV_EXEC_SUMMARY_HOURLY");
+        assertThat(mvRangeTrend.sql())
+                .contains("FROM jeopardy.exec_summary_hourly_agg")
+                .contains("WHERE hour >= toDateTime(:fromEpoch) AND hour <= toDateTime(:toEpoch)");
+
+        AnalyticsQueryBuilder.SqlWithParams itemRegionSlices = builder.buildClickHouseExecSlicesQuery(
+                24, from, to, "SALES", "SALES_UPGRADE", "IPHONE_18", "RESIDENTIAL", "WEB", "US-EAST", Map.of());
+        assertThat(itemRegionSlices.querySource()).isEqualTo("CH_MILESTONE_TELEMETRY_DYNAMIC_DIM");
+        assertThat(itemRegionSlices.sql())
+                .contains("FROM jeopardy.milestone_telemetry")
+                .contains("WHERE event_time >= toDateTime(:fromEpoch) AND event_time <= toDateTime(:toEpoch)")
+                .contains("AND item_type = :itemType")
+                .contains("AND region = :region");
+        assertThat(itemRegionSlices.params().getValue("itemType")).isEqualTo("IPHONE_18");
+        assertThat(itemRegionSlices.params().getValue("region")).isEqualTo("US-EAST");
+
+        AnalyticsQueryBuilder.SqlWithParams regionTrend = builder.buildClickHouseExecTrendQuery(
+                24, from, to, null, null, null, null, null, "US-WEST", Map.of());
+        assertThat(regionTrend.querySource()).isEqualTo("CH_MILESTONE_TELEMETRY_DYNAMIC_DIM");
+        assertThat(regionTrend.sql())
+                .contains("FROM jeopardy.milestone_telemetry")
+                .contains("WHERE event_time >= toDateTime(:fromEpoch) AND event_time <= toDateTime(:toEpoch)")
+                .contains("AND region = :region");
+        assertThat(regionTrend.params().getValue("region")).isEqualTo("US-WEST");
     }
 }

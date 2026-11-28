@@ -1,6 +1,8 @@
 package com.jeopardy.api.analytics;
 
+import com.jeopardy.api.common.ClickHouseCircuitBreaker;
 import jakarta.annotation.PreDestroy;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,10 +13,11 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -23,26 +26,37 @@ public class AnalyticsService {
     private static final Logger log = LoggerFactory.getLogger(AnalyticsService.class);
     private static final long RESPONSE_CACHE_TTL_MS = 10_000L;
     private static final int MAX_CACHE_ENTRIES = 200;
-    private static final long CH_CIRCUIT_COOLDOWN_MS = 20_000L;
+    private static final long CH_QUERY_TIMEOUT_MS = 2_500L;
     private static final AtomicInteger THREAD_SEQ = new AtomicInteger(1);
 
     private final AnalyticsRepository repository;
     private final AnalyticsQueryBuilder queryBuilder;
+    private final ClickHouseCircuitBreaker clickHouseCircuitBreaker;
     private final ExecutorService queryExecutor;
-    private final AtomicLong chCircuitOpenUntilMs = new AtomicLong(0L);
     private final ConcurrentHashMap<String, CachedValue<ExecSummaryResponse>> execSummaryCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CachedValue<DevOpsBottlenecksResponse>> devOpsCache = new ConcurrentHashMap<>();
 
     private record CachedValue<T>(T value, long expiresAtMs) {}
 
-    public AnalyticsService(AnalyticsRepository repository, AnalyticsQueryBuilder queryBuilder) {
+    @Autowired
+    public AnalyticsService(
+            AnalyticsRepository repository,
+            AnalyticsQueryBuilder queryBuilder,
+            ClickHouseCircuitBreaker clickHouseCircuitBreaker) {
         this.repository = repository;
         this.queryBuilder = queryBuilder;
+        this.clickHouseCircuitBreaker = clickHouseCircuitBreaker != null
+                ? clickHouseCircuitBreaker
+                : new ClickHouseCircuitBreaker();
         this.queryExecutor = Executors.newFixedThreadPool(8, r -> {
             Thread t = new Thread(r, "jeopardy-analytics-" + THREAD_SEQ.getAndIncrement());
             t.setDaemon(true);
             return t;
         });
+    }
+
+    public AnalyticsService(AnalyticsRepository repository, AnalyticsQueryBuilder queryBuilder) {
+        this(repository, queryBuilder, new ClickHouseCircuitBreaker());
     }
 
     @PreDestroy
@@ -57,11 +71,46 @@ public class AnalyticsService {
             String accountType,
             String channel,
             Map<String, String> allQueryParams) {
+        return getExecSummary(
+                hours,
+                null,
+                null,
+                orderFamily,
+                orderType,
+                null,
+                accountType,
+                channel,
+                null,
+                null,
+                allQueryParams);
+    }
+
+    public ExecSummaryResponse getExecSummary(
+            int hours,
+            Instant from,
+            Instant to,
+            String orderFamily,
+            String orderType,
+            String itemType,
+            String accountType,
+            String channel,
+            String region,
+            String status,
+            Map<String, String> allQueryParams) {
         int safeHours = queryBuilder.validateHours(hours);
+        Instant safeFrom = from;
+        Instant safeTo = to;
+        if (safeFrom != null && safeTo != null && safeFrom.isAfter(safeTo)) {
+            Instant swap = safeFrom;
+            safeFrom = safeTo;
+            safeTo = swap;
+        }
         Map<String, String> dimensions = queryBuilder.extractAndValidateDimensions(allQueryParams);
 
         long nowMs = System.currentTimeMillis();
-        String cacheKey = buildExecCacheKey(safeHours, orderFamily, orderType, accountType, channel, dimensions);
+        String cacheKey = buildExecCacheKey(
+                safeHours, safeFrom, safeTo, orderFamily, orderType, itemType,
+                accountType, channel, region, status, dimensions);
         CachedValue<ExecSummaryResponse> cached = execSummaryCache.get(cacheKey);
         if (cached != null && cached.expiresAtMs() > nowMs) {
             return cached.value();
@@ -69,13 +118,16 @@ public class AnalyticsService {
 
         // ADR-007 Part 1: Exact Live Open Counts from PostgreSQL partial index (<5ms ACID)
         AnalyticsQueryBuilder.SqlWithParams liveQuery = queryBuilder.buildPostgresLiveOpenQuery(
-                orderFamily, orderType, accountType, channel, dimensions);
+                safeFrom, safeTo, orderFamily, orderType, itemType,
+                accountType, channel, region, status, dimensions);
 
         // ADR-007 Part 2: Historical Trends, SLA Compliance & Percentiles from ClickHouse MVs (<30ms)
         AnalyticsQueryBuilder.SqlWithParams histSliceQuery = queryBuilder.buildClickHouseExecSlicesQuery(
-                safeHours, orderFamily, orderType, accountType, channel, dimensions);
+                safeHours, safeFrom, safeTo, orderFamily, orderType, itemType,
+                accountType, channel, region, dimensions);
         AnalyticsQueryBuilder.SqlWithParams histTrendQuery = queryBuilder.buildClickHouseExecTrendQuery(
-                safeHours, orderFamily, orderType, accountType, channel, dimensions);
+                safeHours, safeFrom, safeTo, orderFamily, orderType, itemType,
+                accountType, channel, region, dimensions);
 
         CompletableFuture<List<AnalyticsQueryBuilder.LiveSliceRow>> liveFuture =
                 CompletableFuture.supplyAsync(() -> repository.queryPostgresLiveOpenSlices(liveQuery), queryExecutor);
@@ -85,14 +137,16 @@ public class AnalyticsService {
         boolean clickhouseAvailable = true;
         String clickhouseWarning = null;
 
-        boolean circuitOpen = isClickHouseCircuitOpen();
+        boolean circuitOpen = clickHouseCircuitBreaker.isOpen();
         CompletableFuture<List<AnalyticsQueryBuilder.HistoricalSliceRow>> histSliceFuture = null;
         CompletableFuture<List<ExecSummaryResponse.HourlyTrendPoint>> histTrendFuture = null;
         if (!circuitOpen) {
             histSliceFuture = CompletableFuture.supplyAsync(
-                    () -> repository.queryClickHouseExecSlices(histSliceQuery), queryExecutor);
+                            () -> repository.queryClickHouseExecSlices(histSliceQuery), queryExecutor)
+                    .orTimeout(CH_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             histTrendFuture = CompletableFuture.supplyAsync(
-                    () -> repository.queryClickHouseExecTrend(histTrendQuery), queryExecutor);
+                            () -> repository.queryClickHouseExecTrend(histTrendQuery), queryExecutor)
+                    .orTimeout(CH_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         }
 
         List<AnalyticsQueryBuilder.LiveSliceRow> liveRows = joinUnwrapping(liveFuture);
@@ -105,12 +159,14 @@ public class AnalyticsService {
                 historicalRows = histSliceFuture.join();
                 hourlyTrend = histTrendFuture.join();
             } catch (Exception ex) {
+                if (histSliceFuture != null) histSliceFuture.cancel(true);
+                if (histTrendFuture != null) histTrendFuture.cancel(true);
                 Throwable cause = unwrapCause(ex);
-                tripClickHouseCircuit();
+                clickHouseCircuitBreaker.trip();
                 clickhouseAvailable = false;
                 clickhouseWarning = "ClickHouse historical analytics temporarily unavailable; serving exact PostgreSQL live counts only";
                 log.warn("ClickHouse exec-summary query failed (circuit open for {}s): {}",
-                        CH_CIRCUIT_COOLDOWN_MS / 1000L, cause.getMessage());
+                        clickHouseCircuitBreaker.cooldownSeconds(), cause.getMessage());
             }
         }
 
@@ -129,11 +185,18 @@ public class AnalyticsService {
         double overallSla = queryBuilder.computeSlaCompliancePct(totalEvents, totalCompleted, totalBreached);
 
         Map<String, String> appliedFilters = collectAppliedFilters(
-                orderFamily, orderType, accountType, channel, null, null, null, null, dimensions);
+                safeFrom, safeTo, orderFamily, orderType, itemType, accountType, channel, region, status,
+                null, null, null, null, dimensions);
+
+        int effectiveWindowHours = (safeFrom != null && safeTo != null)
+                ? (int) Math.max(1L, Math.min(
+                        AnalyticsQueryBuilder.MAX_WINDOW_HOURS,
+                        (Duration.between(safeFrom, safeTo).toSeconds() + 3599L) / 3600L))
+                : safeHours;
 
         ExecSummaryResponse response = new ExecSummaryResponse(
                 Instant.now(),
-                safeHours,
+                effectiveWindowHours,
                 histSliceQuery.querySource(),
                 clickhouseAvailable,
                 clickhouseWarning,
@@ -212,17 +275,20 @@ public class AnalyticsService {
         boolean clickhouseAvailable = true;
         String clickhouseWarning = null;
 
-        boolean circuitOpen = isClickHouseCircuitOpen();
+        boolean circuitOpen = clickHouseCircuitBreaker.isOpen();
         CompletableFuture<List<DevOpsBottlenecksResponse.BottleneckItem>> bottlenecksFuture = null;
         CompletableFuture<List<DevOpsBottlenecksResponse.ErrorStormPoint>> stormFuture = null;
         CompletableFuture<List<AnalyticsQueryBuilder.HistoricalFalloutQueueRow>> chFalloutFuture = null;
         if (!circuitOpen) {
             bottlenecksFuture = CompletableFuture.supplyAsync(
-                    () -> repository.queryClickHouseBottlenecks(bottlenecksQuery), queryExecutor);
+                            () -> repository.queryClickHouseBottlenecks(bottlenecksQuery), queryExecutor)
+                    .orTimeout(CH_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             stormFuture = CompletableFuture.supplyAsync(
-                    () -> repository.queryClickHouseErrorStorm5m(stormQuery), queryExecutor);
+                            () -> repository.queryClickHouseErrorStorm5m(stormQuery), queryExecutor)
+                    .orTimeout(CH_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             chFalloutFuture = CompletableFuture.supplyAsync(
-                    () -> repository.queryClickHouseFalloutQueues(chFalloutQuery), queryExecutor);
+                            () -> repository.queryClickHouseFalloutQueues(chFalloutQuery), queryExecutor)
+                    .orTimeout(CH_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         }
 
         List<AnalyticsQueryBuilder.LiveFalloutQueueRow> liveFallouts = joinUnwrapping(liveFalloutFuture);
@@ -237,12 +303,15 @@ public class AnalyticsService {
                 errorStorm = stormFuture.join();
                 histFallouts = chFalloutFuture.join();
             } catch (Exception ex) {
+                if (bottlenecksFuture != null) bottlenecksFuture.cancel(true);
+                if (stormFuture != null) stormFuture.cancel(true);
+                if (chFalloutFuture != null) chFalloutFuture.cancel(true);
                 Throwable cause = unwrapCause(ex);
-                tripClickHouseCircuit();
+                clickHouseCircuitBreaker.trip();
                 clickhouseAvailable = false;
                 clickhouseWarning = "ClickHouse DevOps metrics temporarily unavailable; serving exact PostgreSQL active Fallout queues only";
                 log.warn("ClickHouse devops-bottlenecks query failed (circuit open for {}s): {}",
-                        CH_CIRCUIT_COOLDOWN_MS / 1000L, cause.getMessage());
+                        clickHouseCircuitBreaker.cooldownSeconds(), cause.getMessage());
             }
         }
 
@@ -250,7 +319,8 @@ public class AnalyticsService {
                 queryBuilder.mergeLiveAndHistoricalFalloutQueues(liveFallouts, histFallouts);
 
         Map<String, String> appliedFilters = collectAppliedFilters(
-                null, orderType, accountType, null, domain, templateId, errorCode, assignedQueue, dimensions);
+                null, null, null, orderType, null, accountType, null, null, null,
+                domain, templateId, errorCode, assignedQueue, dimensions);
 
         DevOpsBottlenecksResponse response = new DevOpsBottlenecksResponse(
                 Instant.now(),
@@ -266,14 +336,6 @@ public class AnalyticsService {
         );
         putBounded(devOpsCache, cacheKey, response, System.currentTimeMillis());
         return response;
-    }
-
-    private boolean isClickHouseCircuitOpen() {
-        return System.currentTimeMillis() < chCircuitOpenUntilMs.get();
-    }
-
-    private void tripClickHouseCircuit() {
-        chCircuitOpenUntilMs.set(System.currentTimeMillis() + CH_CIRCUIT_COOLDOWN_MS);
     }
 
     private <T> void putBounded(ConcurrentHashMap<String, CachedValue<T>> cache, String key, T value, long nowMs) {
@@ -306,13 +368,22 @@ public class AnalyticsService {
 
     private static String buildExecCacheKey(
             int hours,
+            Instant from,
+            Instant to,
             String orderFamily,
             String orderType,
+            String itemType,
             String accountType,
             String channel,
+            String region,
+            String status,
             Map<String, String> dimensions) {
-        return "exec|" + hours + "|" + norm(orderFamily) + "|" + norm(orderType)
-                + "|" + norm(accountType) + "|" + norm(channel) + "|" + sortedDimsKey(dimensions);
+        String timeKey = (from == null && to == null)
+                ? "hrs=" + hours
+                : "range=" + (from != null ? from.getEpochSecond() : "") + ".." + (to != null ? to.getEpochSecond() : "");
+        return "exec|" + timeKey + "|" + norm(orderFamily) + "|" + norm(orderType)
+                + "|" + norm(itemType) + "|" + norm(accountType) + "|" + norm(channel)
+                + "|" + norm(region) + "|" + norm(status) + "|" + sortedDimsKey(dimensions);
     }
 
     private static String buildDevOpsCacheKey(
@@ -348,20 +419,30 @@ public class AnalyticsService {
     }
 
     private Map<String, String> collectAppliedFilters(
+            Instant from,
+            Instant to,
             String orderFamily,
             String orderType,
+            String itemType,
             String accountType,
             String channel,
+            String region,
+            String status,
             String domain,
             String templateId,
             String errorCode,
             String assignedQueue,
             Map<String, String> dimensions) {
         Map<String, String> filters = new LinkedHashMap<>();
+        if (from != null) filters.put("from", from.toString());
+        if (to != null) filters.put("to", to.toString());
         putIfPresent(filters, "orderFamily", orderFamily);
         putIfPresent(filters, "orderType", orderType);
+        putIfPresent(filters, "itemType", itemType);
         putIfPresent(filters, "accountType", accountType);
         putIfPresent(filters, "channel", channel);
+        putIfPresent(filters, "region", region);
+        putIfPresent(filters, "status", status);
         putIfPresent(filters, "domain", domain);
         putIfPresent(filters, "templateId", templateId);
         putIfPresent(filters, "errorCode", errorCode);
@@ -373,7 +454,7 @@ public class AnalyticsService {
     }
 
     private void putIfPresent(Map<String, String> map, String key, String value) {
-        if (value != null && !value.isBlank()) {
+        if (value != null && !value.isBlank() && !"ALL".equalsIgnoreCase(value.trim())) {
             map.put(key, value.trim());
         }
     }

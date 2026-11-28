@@ -68,6 +68,7 @@ import {
   createPresetRange,
   type TimeRangeValue,
 } from './DateRangePicker';
+import { RefreshingOverlay } from './RefreshingOverlay';
 
 interface TrackerViewProps {
   initialFilter: DashboardDrilldownTarget | null;
@@ -475,6 +476,9 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
   const [queueItems, setQueueItems] = useState<EntitySummaryDto[]>([]);
   const [queueTotalCount, setQueueTotalCount] = useState(0);
   const [queueLoading, setQueueLoading] = useState(false);
+  const [isQueueRefreshing, setIsQueueRefreshing] = useState(false);
+  const queueReqSeqRef = useRef(0);
+  const queueForegroundInFlightRef = useRef(false);
   const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
   const [blueprintsById, setBlueprintsById] = useState<Map<string, JourneyBlueprintRecord>>(
     new Map(),
@@ -609,79 +613,114 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
     }
   }, [initialFilter]);
 
-  const loadQueue = useCallback(async () => {
-    setQueueLoading(true);
-    try {
-      const apiStatus =
-        statusQuickFilter === 'ACTIVE'
-          ? 'IN_PROGRESS'
-          : statusQuickFilter === 'ATTENTION'
-            ? 'ATTENTION'
-            : statusQuickFilter === 'COMPLETED'
-              ? 'COMPLETED'
-              : statusQuickFilter === 'ALL'
-                ? extraStatusFilter
-                : undefined;
+  const loadQueue = useCallback(
+    async (options?: { background?: boolean }) => {
+      const isBg = Boolean(options?.background);
+      if (isBg && queueForegroundInFlightRef.current) {
+        return;
+      }
+      const reqSeq = ++queueReqSeqRef.current;
+      if (!isBg) {
+        queueForegroundInFlightRef.current = true;
+        setQueueLoading(true);
+        setIsQueueRefreshing(true);
+      }
+      try {
+        const apiStatus =
+          statusQuickFilter === 'ACTIVE'
+            ? 'IN_PROGRESS'
+            : statusQuickFilter === 'ATTENTION'
+              ? 'ATTENTION'
+              : statusQuickFilter === 'COMPLETED'
+                ? 'COMPLETED'
+                : statusQuickFilter === 'ALL'
+                  ? extraStatusFilter
+                  : undefined;
 
-      const res = await searchTrackerQueue({
-        q: searchText || undefined,
-        orderFamily: orderFamilyFilter,
-        orderType: orderTypeFilter,
-        itemType: itemTypeFilter,
-        channel: channelFilter,
-        region: regionFilter,
-        accountType: accountTypeFilter,
-        errorCode: errorCodeFilter,
-        assignedQueue: assignedQueueFilter,
-        customerId: accountIdFilter,
-        dimKey: dimKeyFilter,
-        dimVal: dimValFilter,
-        from: timeRange.from,
-        to: timeRange.to,
-        sortBy,
-        hasActiveFallout: statusQuickFilter === 'FALLOUT' ? true : undefined,
-        status: apiStatus,
-        limit: 80,
-      });
+        const res = await searchTrackerQueue({
+          q: searchText || undefined,
+          orderFamily: orderFamilyFilter,
+          orderType: orderTypeFilter,
+          itemType: itemTypeFilter,
+          channel: channelFilter,
+          region: regionFilter,
+          accountType: accountTypeFilter,
+          errorCode: errorCodeFilter,
+          assignedQueue: assignedQueueFilter,
+          customerId: accountIdFilter,
+          dimKey: dimKeyFilter,
+          dimVal: dimValFilter,
+          from: timeRange.from,
+          to: timeRange.to,
+          sortBy,
+          hasActiveFallout: statusQuickFilter === 'FALLOUT' ? true : undefined,
+          status: apiStatus,
+          limit: 80,
+        });
 
-      const seen = new Set<string>();
-      const unique = res.items.filter((it) => {
-        if (seen.has(it.entityKey)) return false;
-        seen.add(it.entityKey);
-        return true;
-      });
-      setQueueItems(unique);
-      setQueueTotalCount(res.totalCount);
-    } catch {
-      // handled silently
-    } finally {
-      setQueueLoading(false);
-    }
-  }, [
-    searchText,
-    orderFamilyFilter,
-    orderTypeFilter,
-    itemTypeFilter,
-    channelFilter,
-    regionFilter,
-    accountTypeFilter,
-    errorCodeFilter,
-    assignedQueueFilter,
-    accountIdFilter,
-    dimKeyFilter,
-    dimValFilter,
-    timeRange.from,
-    timeRange.to,
-    sortBy,
-    statusQuickFilter,
-    extraStatusFilter,
-  ]);
+        if (reqSeq !== queueReqSeqRef.current) {
+          return;
+        }
+
+        const seen = new Set<string>();
+        const unique = res.items.filter((it) => {
+          if (seen.has(it.entityKey)) return false;
+          seen.add(it.entityKey);
+          return true;
+        });
+        setQueueItems(unique);
+        setQueueTotalCount(res.totalCount);
+      } catch {
+        // handled silently
+      } finally {
+        if (reqSeq === queueReqSeqRef.current && !isBg) {
+          queueForegroundInFlightRef.current = false;
+          setQueueLoading(false);
+          setIsQueueRefreshing(false);
+        }
+      }
+    },
+    [
+      searchText,
+      orderFamilyFilter,
+      orderTypeFilter,
+      itemTypeFilter,
+      channelFilter,
+      regionFilter,
+      accountTypeFilter,
+      errorCodeFilter,
+      assignedQueueFilter,
+      accountIdFilter,
+      dimKeyFilter,
+      dimValFilter,
+      timeRange.from,
+      timeRange.to,
+      sortBy,
+      statusQuickFilter,
+      extraStatusFilter,
+    ],
+  );
 
   // Fetch queue only when in Mode 1 (Full-Width Orders List)
   useEffect(() => {
-    if (selectedEntityKey !== null) return;
+    if (selectedEntityKey !== null) {
+      queueReqSeqRef.current += 1;
+      queueForegroundInFlightRef.current = false;
+      setQueueLoading(false);
+      setIsQueueRefreshing(false);
+      return;
+    }
     const id = window.setTimeout(() => void loadQueue(), 160);
     return () => window.clearTimeout(id);
+  }, [loadQueue, selectedEntityKey]);
+
+  // Quiet background refresh every 15s while viewing Orders directory
+  useEffect(() => {
+    if (selectedEntityKey !== null) return;
+    const id = window.setInterval(() => {
+      void loadQueue({ background: true });
+    }, 15000);
+    return () => window.clearInterval(id);
   }, [loadQueue, selectedEntityKey]);
 
   // Optional Order Volume Timeline histogram (only when Timeline toggle is ON in Mode 1)
@@ -1532,6 +1571,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
               value={timeRange}
               onChange={setTimeRange}
               allowAllTime
+              loading={isQueueRefreshing}
             />
 
             <button
@@ -1728,11 +1768,12 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                 <button
                   type="button"
                   onClick={() => void loadQueue()}
-                  className="ml-1 w-8 h-8 rounded-full hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] flex items-center justify-center text-[#5F6368] dark:text-[#9AA0A6] hover:text-[#1F1F1F] dark:hover:text-white transition"
+                  disabled={isQueueRefreshing}
+                  className="ml-1 w-8 h-8 rounded-full hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] flex items-center justify-center text-[#5F6368] dark:text-[#9AA0A6] hover:text-[#1F1F1F] dark:hover:text-white transition disabled:opacity-50"
                   title="Refresh orders"
                   aria-label="Refresh orders"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${queueLoading ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`w-3.5 h-3.5 ${isQueueRefreshing ? 'animate-spin' : ''}`} />
                 </button>
               </div>
             </div>
@@ -1908,8 +1949,15 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
           </div>
 
           {/* Breathable Full-Width Orders Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+          <RefreshingOverlay
+            visible={isQueueRefreshing && queueItems.length > 0}
+            title={`Refreshing orders (${timeRange.label})...`}
+            subtitle="Updating filtered order directory"
+            overlayRadiusClass="rounded-none"
+            cardTopPaddingClass="pt-12 sm:pt-16"
+          >
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-[#E0E6F0]/80 dark:border-[#333639] bg-[#F8FAFD]/70 dark:bg-[#131314]/40 text-[11px] font-semibold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
                   <th className="py-3 px-5">Order #</th>
@@ -2135,7 +2183,8 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                 )}
               </tbody>
             </table>
-          </div>
+            </div>
+          </RefreshingOverlay>
 
           {/* Clean Table Footer */}
           <div className="px-5 py-3 border-t border-[#E0E6F0]/80 dark:border-[#333639] bg-[#F8FAFD]/50 dark:bg-[#131314]/30 flex flex-wrap items-center justify-between gap-2 text-xs text-[#5F6368] dark:text-[#9AA0A6]">
