@@ -282,13 +282,13 @@ run_k8s() {
 run_db_init() {
   check_cmd kubectl
   if [[ "$DRY_RUN" == "true" ]]; then
-    log "Dry-run: would apply db/postgres/init.sql and db/clickhouse/init.sql to ${NAMESPACE}"
+    log "Dry-run: would apply db/clickhouse/init.sql to ${NAMESPACE} (PostgreSQL is migrated by the API via Flyway)"
     return
   fi
 
-  log "Applying PostgreSQL 16 schema (db/postgres/init.sql)..."
-  kubectl "${KUBECTL_ARGS[@]}" -n "$NAMESPACE" exec -i jeopardy-pg-1 -- \
-    psql -U jeopardy -d jeopardy < "${ROOT_DIR}/db/postgres/init.sql"
+  # PostgreSQL schema is owned by Flyway and applied by jeopardy-api on startup
+  # (services/jeopardy-api/src/main/resources/db/migration). Deploy the API before Flink.
+  log "PostgreSQL schema: applied by jeopardy-api (Flyway) on startup; nothing to do here."
 
   log "Applying ClickHouse 24.8 schema & MVs (db/clickhouse/init.sql)..."
   local ch_pod

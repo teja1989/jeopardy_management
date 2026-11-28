@@ -53,6 +53,9 @@ public class Stage3MilestoneEngineFunction
     public static final String EVENT_CROSS_ORDER_RESUME = "CROSS_ORDER_RESUME_SLA";
     public static final String EVENT_CROSS_ORDER_CANCEL = "CROSS_ORDER_CANCEL_ENTITY";
     public static final long DEFAULT_POST_FALLOUT_GRACE_MS = 15L * 60L * 1000L;
+    /** Alerts detected later than this after the fact are recorded but not paged (see constructor). */
+    public static final long DEFAULT_STALE_ALERT_THRESHOLD_MS = 30L * 60L * 1000L;
+    public static final String ATTR_ALERT_PAGING_SUPPRESSED = "alert_paging_suppressed";
 
     private static final Set<String> PARENT_LINK_TYPES = Set.of(
             "TRIGGERED_BY_ORDER",
@@ -66,6 +69,7 @@ public class Stage3MilestoneEngineFunction
     private final String initialBundleJson;
     private final String onnxModelDir;
     private final long postFalloutGraceMs;
+    private final long staleAlertThresholdMs;
 
     private transient ValueState<EntityState> entityState;
     private transient MapState<Long, String> activeTimersState;
@@ -85,9 +89,24 @@ public class Stage3MilestoneEngineFunction
             String initialBundleJson,
             String onnxModelDir,
             long postFalloutGraceMs) {
+        this(initialBundleJson, onnxModelDir, postFalloutGraceMs, DEFAULT_STALE_ALERT_THRESHOLD_MS);
+    }
+
+    /**
+     * @param staleAlertThresholdMs alerts whose triggering moment (SLA deadline or failure event time) is older
+     *        than this, relative to wall-clock time, are still recorded (status, case, telemetry) but are NOT paged
+     *        to Teams. This prevents alert storms when the job catches up on a backlog or replays after an outage.
+     *        Use {@link Long#MAX_VALUE} to always page.
+     */
+    public Stage3MilestoneEngineFunction(
+            String initialBundleJson,
+            String onnxModelDir,
+            long postFalloutGraceMs,
+            long staleAlertThresholdMs) {
         this.initialBundleJson = initialBundleJson;
         this.onnxModelDir = onnxModelDir;
         this.postFalloutGraceMs = postFalloutGraceMs > 0 ? postFalloutGraceMs : DEFAULT_POST_FALLOUT_GRACE_MS;
+        this.staleAlertThresholdMs = staleAlertThresholdMs > 0 ? staleAlertThresholdMs : DEFAULT_STALE_ALERT_THRESHOLD_MS;
     }
 
     @Override
@@ -142,12 +161,17 @@ public class Stage3MilestoneEngineFunction
         }
 
         CompiledBlueprintRegistry registry = currentRegistry(ctx);
+        // Wall clock is used ONLY to decide whether an alert is too stale to page.
+        // All SLA deadlines and durations are computed in event time.
         long nowProcTime = ctx.timerService().currentProcessingTime();
-        long eventTimeMs = event.getEventTimeMs() > 0 ? event.getEventTimeMs() : nowProcTime;
+        long eventTimeMs = event.getEventTimeMs() > 0
+                ? event.getEventTimeMs()
+                : (event.getIngestTimeMs() > 0 ? event.getIngestTimeMs() : nowProcTime);
+        out = new PagingPolicyCollector(out, eventTimeMs, nowProcTime, staleAlertThresholdMs);
 
         // 1. Handle incoming Cross-Order SLA Clock Signals first
         if (isCrossOrderEvent(event.getEventType())) {
-            handleCrossOrderSignalEvent(event, eventTimeMs, nowProcTime, ctx.timerService(), out);
+            handleCrossOrderSignalEvent(event, eventTimeMs, ctx.timerService(), out);
             return;
         }
 
@@ -162,7 +186,7 @@ public class Stage3MilestoneEngineFunction
 
         // 3. Branch A: First-Class Fallout Management BPMN Overlay
         if (event.isFalloutOverlay()) {
-            handleFalloutOverlay(state, event, registry, eventTimeMs, nowProcTime, ctx.timerService(), out);
+            handleFalloutOverlay(state, event, registry, eventTimeMs, ctx.timerService(), out);
             entityState.update(state);
             return;
         }
@@ -227,24 +251,35 @@ public class Stage3MilestoneEngineFunction
                             step.getEffectiveSla(),
                             state.getAttributes(),
                             ms.getRetryCount(),
-                            nowProcTime);
+                            eventTimeMs);
                     ms.setHardMinMs(step.getEffectiveSla().getHardMinMs());
                     ms.setHardMaxMs(step.getEffectiveSla().getHardMaxMs());
                     ms.setPredictedP50AtMs(eventTimeMs + prediction.getP50Ms());
                     ms.setPredictedP90AtMs(eventTimeMs + prediction.getP90Ms());
-                    ms.setSlaWarningAtMs(nowProcTime + prediction.getWarningMs());
-                    ms.setSlaJeopardyAtMs(nowProcTime + prediction.getJeopardyMs());
-                    ms.setSlaBreachAtMs(nowProcTime + prediction.getBreachMs());
                     ms.setBreachProbability(Math.max(ms.getBreachProbability(), prediction.getBreachProb()));
 
                     state.setPredictedP50AtMs(ms.getPredictedP50AtMs());
                     state.setPredictedP90AtMs(ms.getPredictedP90AtMs());
 
-                    // Register Processing-Time SLA timers only if this same event isn't also completing the milestone
+                    // Event-time SLA deadlines anchored at the business start time (not when Flink saw it),
+                    // so consumer lag, backlog catch-up and replays never shift a deadline.
+                    // Skip timers if this same event also completes the milestone.
                     if (!matchedComplete) {
-                        registerMilestoneTimers(ms, nowProcTime, prediction, ctx.timerService());
+                        registerMilestoneTimers(ms, eventTimeMs, prediction, ctx.timerService());
+                    } else {
+                        setDeadlines(ms, eventTimeMs, prediction);
                     }
                     markForwardProgressAfterFallout(state, eventTimeMs, ctx.timerService());
+                    changed = true;
+                } else if (matchedStart
+                        && ms.getStartedAtMs() != null
+                        && eventTimeMs < ms.getStartedAtMs()
+                        && !"CANCELLED".equals(ms.getStatus())
+                        && !"SKIPPED".equals(ms.getStatus())) {
+                    // Out-of-order: the real start arrived after a later event (complete or fail) already
+                    // anchored the milestone. Move the start back and recompute duration / deadlines.
+                    rebaseStartTime(ms, step, state, eventTimeMs, ctx.timerService());
+                    emitTelemetry = "COMPLETED".equals(ms.getStatus());
                     changed = true;
                 }
 
@@ -330,6 +365,9 @@ public class Stage3MilestoneEngineFunction
             long timestamp,
             OnTimerContext ctx,
             Collector<EntityMutation> out) throws Exception {
+        // `timestamp` is the event-time SLA deadline; page only if we are detecting it reasonably close to real time.
+        out = new PagingPolicyCollector(
+                out, timestamp, ctx.timerService().currentProcessingTime(), staleAlertThresholdMs);
         String rawEntries = activeTimersState.get(timestamp);
         if (rawEntries == null || rawEntries.isBlank()) {
             return;
@@ -601,7 +639,6 @@ public class Stage3MilestoneEngineFunction
             CanonicalEvent event,
             CompiledBlueprintRegistry registry,
             long eventTimeMs,
-            long nowProcTime,
             TimerService timerService,
             Collector<EntityMutation> out) throws Exception {
         String falloutId = firstNonBlank(
@@ -880,7 +917,8 @@ public class Stage3MilestoneEngineFunction
                                         "POST_FALLOUT:" + targetMs.getMilestoneId(),
                                         timerService);
                             }
-                            long watchdogTs = nowProcTime + postFalloutGraceMs;
+                            // Event time: grace window measured from when the fallout was resolved.
+                            long watchdogTs = eventTimeMs + postFalloutGraceMs;
                             registerSingleTimer(watchdogTs, "POST_FALLOUT:" + targetMs.getMilestoneId(), timerService);
                             targetMs.setPostFalloutWatchdogTs(watchdogTs);
                         }
@@ -996,7 +1034,6 @@ public class Stage3MilestoneEngineFunction
     private void handleCrossOrderSignalEvent(
             CanonicalEvent event,
             long eventTimeMs,
-            long nowProcTime,
             TimerService timerService,
             Collector<EntityMutation> out) throws Exception {
         EntityState state = entityState.value();
@@ -1015,15 +1052,16 @@ public class Stage3MilestoneEngineFunction
                 target.setStatusBeforePause(target.getStatus());
                 target.setPausedAtMs(eventTimeMs);
 
-                // Save remaining Processing-Time budgets and cancel active timers in O(1)
+                // Save remaining event-time SLA budgets (deadline - pause time) and cancel active timers.
+                // A deadline that had already passed at pause time keeps a minimal budget so it fires on resume.
                 if (target.getWarningTimerTs() != null) {
-                    target.setRemainingWarningMs(Math.max(50L, target.getWarningTimerTs() - nowProcTime));
+                    target.setRemainingWarningMs(Math.max(1L, target.getWarningTimerTs() - eventTimeMs));
                 }
                 if (target.getJeopardyTimerTs() != null) {
-                    target.setRemainingJeopardyMs(Math.max(50L, target.getJeopardyTimerTs() - nowProcTime));
+                    target.setRemainingJeopardyMs(Math.max(1L, target.getJeopardyTimerTs() - eventTimeMs));
                 }
                 if (target.getBreachTimerTs() != null) {
-                    target.setRemainingBreachMs(Math.max(50L, target.getBreachTimerTs() - nowProcTime));
+                    target.setRemainingBreachMs(Math.max(1L, target.getBreachTimerTs() - eventTimeMs));
                 }
                 cancelMilestoneTimers(target, timerService);
 
@@ -1049,23 +1087,23 @@ public class Stage3MilestoneEngineFunction
                 target.setStatusBeforePause(null);
                 target.setLastEventTimeMs(Math.max(target.getLastEventTimeMs(), eventTimeMs));
 
-                // Re-arm remaining Processing-Time SLA timers
+                // Re-arm remaining event-time SLA budgets from the resume time
                 if (target.getRemainingWarningMs() != null && target.getRemainingWarningMs() > 0) {
-                    long ts = nowProcTime + target.getRemainingWarningMs();
+                    long ts = eventTimeMs + target.getRemainingWarningMs();
                     target.setSlaWarningAtMs(ts);
                     registerSingleTimer(ts, "WARN:" + target.getMilestoneId(), timerService);
                     target.setWarningTimerTs(ts);
                     target.setRemainingWarningMs(null);
                 }
                 if (target.getRemainingJeopardyMs() != null && target.getRemainingJeopardyMs() > 0) {
-                    long ts = nowProcTime + target.getRemainingJeopardyMs();
+                    long ts = eventTimeMs + target.getRemainingJeopardyMs();
                     target.setSlaJeopardyAtMs(ts);
                     registerSingleTimer(ts, "JEOPARDY:" + target.getMilestoneId(), timerService);
                     target.setJeopardyTimerTs(ts);
                     target.setRemainingJeopardyMs(null);
                 }
                 if (target.getRemainingBreachMs() != null && target.getRemainingBreachMs() > 0) {
-                    long ts = nowProcTime + target.getRemainingBreachMs();
+                    long ts = eventTimeMs + target.getRemainingBreachMs();
                     target.setSlaBreachAtMs(ts);
                     registerSingleTimer(ts, "BREACH:" + target.getMilestoneId(), timerService);
                     target.setBreachTimerTs(ts);
@@ -1211,21 +1249,67 @@ public class Stage3MilestoneEngineFunction
     }
 
     // =========================================================================
-    // Processing-Time Timer Management (O(1) Registration & Cancellation)
+    // Event-Time SLA Timer Management (O(1) Registration & Cancellation)
+    //
+    // Deadlines are startedAt (business event time) + SLA budget. Timers fire when the watermark passes the
+    // deadline, i.e. once every event up to that time (minus the bounded out-of-orderness) has been processed.
+    // Consequences: (1) consumer lag or a replay never shifts a deadline; (2) a completion that is merely
+    // delayed in Kafka cannot be overtaken by a false breach; (3) if ALL upstream topics go silent the
+    // watermark stalls and no SLA fires -> covered by the watermark-lag alert (deploy/k8s/flink/prometheus-rules.yaml).
     // =========================================================================
+
+    private static void setDeadlines(MilestoneState ms, long startMs, EtaPrediction pred) {
+        ms.setSlaWarningAtMs(pred.getWarningMs() > 0 ? startMs + pred.getWarningMs() : null);
+        ms.setSlaJeopardyAtMs(pred.getJeopardyMs() > 0 ? startMs + pred.getJeopardyMs() : null);
+        ms.setSlaBreachAtMs(pred.getBreachMs() > 0 ? startMs + pred.getBreachMs() : null);
+    }
+
+    /**
+     * Moves a milestone's start time earlier when its real start event arrives out of order, then recomputes
+     * the completed duration, or re-anchors the SLA deadlines if the milestone is still open.
+     */
+    private void rebaseStartTime(
+            MilestoneState ms,
+            StepSpec step,
+            EntityState state,
+            long newStartMs,
+            TimerService timerService) throws Exception {
+        ms.setStartedAtMs(newStartMs);
+        if ("COMPLETED".equals(ms.getStatus()) && ms.getCompletedAtMs() != null) {
+            ms.setDurationMs(Math.max(0L, ms.getCompletedAtMs() - newStartMs - ms.getPausedDurationMs()));
+            return;
+        }
+        if ("PAUSED".equals(ms.getStatus())) {
+            return; // budgets are re-armed from the resume event
+        }
+        EtaPrediction prediction = etaPredictor.predict(
+                step.getEffectiveSla(), state.getAttributes(), ms.getRetryCount(), newStartMs);
+        ms.setHardMinMs(step.getEffectiveSla().getHardMinMs());
+        ms.setHardMaxMs(step.getEffectiveSla().getHardMaxMs());
+        ms.setPredictedP50AtMs(newStartMs + prediction.getP50Ms());
+        ms.setPredictedP90AtMs(newStartMs + prediction.getP90Ms());
+        removeSingleTimer(ms.getWarningTimerTs(), "WARN:" + ms.getMilestoneId(), timerService);
+        removeSingleTimer(ms.getJeopardyTimerTs(), "JEOPARDY:" + ms.getMilestoneId(), timerService);
+        removeSingleTimer(ms.getBreachTimerTs(), "BREACH:" + ms.getMilestoneId(), timerService);
+        ms.setWarningTimerTs(null);
+        ms.setJeopardyTimerTs(null);
+        ms.setBreachTimerTs(null);
+        registerMilestoneTimers(ms, newStartMs, prediction, timerService);
+    }
 
     private void registerMilestoneTimers(
             MilestoneState ms,
-            long nowProcTime,
+            long startMs,
             EtaPrediction pred,
             TimerService timerService) throws Exception {
+        setDeadlines(ms, startMs, pred);
         if (pred.getWarningMs() > 0) {
-            long warnTs = nowProcTime + pred.getWarningMs();
+            long warnTs = startMs + pred.getWarningMs();
             registerSingleTimer(warnTs, "WARN:" + ms.getMilestoneId(), timerService);
             ms.setWarningTimerTs(warnTs);
         }
         if (pred.getJeopardyMs() > 0) {
-            long jeopTs = nowProcTime + pred.getJeopardyMs();
+            long jeopTs = startMs + pred.getJeopardyMs();
             if (ms.getWarningTimerTs() != null && jeopTs <= ms.getWarningTimerTs()) {
                 jeopTs = ms.getWarningTimerTs() + 1L;
             }
@@ -1233,7 +1317,7 @@ public class Stage3MilestoneEngineFunction
             ms.setJeopardyTimerTs(jeopTs);
         }
         if (pred.getBreachMs() > 0) {
-            long breachTs = nowProcTime + pred.getBreachMs();
+            long breachTs = startMs + pred.getBreachMs();
             if (ms.getJeopardyTimerTs() != null && breachTs <= ms.getJeopardyTimerTs()) {
                 breachTs = ms.getJeopardyTimerTs() + 1L;
             }
@@ -1246,7 +1330,7 @@ public class Stage3MilestoneEngineFunction
         String existing = activeTimersState.get(ts);
         if (existing == null || existing.isBlank()) {
             activeTimersState.put(ts, entry);
-            timerService.registerProcessingTimeTimer(ts);
+            timerService.registerEventTimeTimer(ts);
         } else {
             Set<String> set = new LinkedHashSet<>(Arrays.asList(existing.split(",")));
             set.add(entry);
@@ -1298,14 +1382,14 @@ public class Stage3MilestoneEngineFunction
         }
         String existing = activeTimersState.get(ts);
         if (existing == null) {
-            timerService.deleteProcessingTimeTimer(ts);
+            timerService.deleteEventTimeTimer(ts);
             return;
         }
         Set<String> set = new LinkedHashSet<>(Arrays.asList(existing.split(",")));
         set.remove(entry);
         if (set.isEmpty()) {
             activeTimersState.remove(ts);
-            timerService.deleteProcessingTimeTimer(ts);
+            timerService.deleteEventTimeTimer(ts);
         } else {
             activeTimersState.put(ts, String.join(",", set));
         }
@@ -1623,5 +1707,50 @@ public class Stage3MilestoneEngineFunction
             }
         }
         return null;
+    }
+
+    /**
+     * Applies the stale-alert paging policy to every mutation emitted for one input (event or timer).
+     *
+     * <p>An alert is still fully recorded (status, jeopardy case, telemetry, UI delta). It is only marked
+     * {@code alertPagingSuppressed} when the moment that triggered it ({@code alertMomentMs}: the SLA deadline or
+     * the failure event's business time) is older than {@code thresholdMs} relative to wall-clock time. That
+     * happens when Flink catches up on a backlog or replays after an outage; paging those to Teams would be a storm
+     * of alerts nobody can act on.
+     */
+    static final class PagingPolicyCollector implements Collector<EntityMutation> {
+        private final Collector<EntityMutation> delegate;
+        private final long alertMomentMs;
+        private final long nowMs;
+        private final long thresholdMs;
+
+        PagingPolicyCollector(Collector<EntityMutation> delegate, long alertMomentMs, long nowMs, long thresholdMs) {
+            this.delegate = delegate instanceof PagingPolicyCollector p ? p.delegate : delegate;
+            this.alertMomentMs = alertMomentMs;
+            this.nowMs = nowMs;
+            this.thresholdMs = thresholdMs;
+        }
+
+        static boolean isStale(long alertMomentMs, long nowMs, long thresholdMs) {
+            return thresholdMs != Long.MAX_VALUE && nowMs - alertMomentMs > thresholdMs;
+        }
+
+        @Override
+        public void collect(EntityMutation m) {
+            if (m != null && m.isHasJeopardyAlert() && isStale(alertMomentMs, nowMs, thresholdMs)) {
+                m.setAlertPagingSuppressed(true);
+                if (m.getAttributes() == null) {
+                    m.setAttributes(new HashMap<>());
+                }
+                m.getAttributes().put(ATTR_ALERT_PAGING_SUPPRESSED,
+                        "STALE_LATE_DETECTION:" + Math.max(0L, (nowMs - alertMomentMs) / 1000L) + "s");
+            }
+            delegate.collect(m);
+        }
+
+        @Override
+        public void close() {
+            delegate.close();
+        }
     }
 }

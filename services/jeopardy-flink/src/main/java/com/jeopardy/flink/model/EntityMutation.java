@@ -83,6 +83,11 @@ public class EntityMutation implements Serializable {
 
     // Optional Jeopardy Case (jeopardy_cases + jeopardy.alerts.out)
     private boolean hasJeopardyAlert;
+    /**
+     * True when the alert is recorded but must not be paged (detected too long after the fact, e.g. during
+     * backlog catch-up or replay). Consumers of {@code jeopardy.alerts.out} only receive unsuppressed alerts.
+     */
+    private boolean alertPagingSuppressed;
     private String caseId;
     private String alertReasonCode;
     private String alertMessage;
@@ -222,6 +227,10 @@ public class EntityMutation implements Serializable {
     public void setTotalEntityFalloutDurationMs(long totalEntityFalloutDurationMs) { this.totalEntityFalloutDurationMs = totalEntityFalloutDurationMs; }
     public boolean isHasJeopardyAlert() { return hasJeopardyAlert; }
     public void setHasJeopardyAlert(boolean hasJeopardyAlert) { this.hasJeopardyAlert = hasJeopardyAlert; }
+    public boolean isAlertPagingSuppressed() { return alertPagingSuppressed; }
+    public void setAlertPagingSuppressed(boolean alertPagingSuppressed) { this.alertPagingSuppressed = alertPagingSuppressed; }
+    /** Whether this mutation should be delivered to the paging topic ({@code jeopardy.alerts.out}). */
+    public boolean shouldPage() { return hasJeopardyAlert && !alertPagingSuppressed; }
     public String getCaseId() { return caseId; }
     public void setCaseId(String caseId) { this.caseId = caseId; }
     public String getAlertReasonCode() { return alertReasonCode; }

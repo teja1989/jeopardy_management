@@ -4,6 +4,7 @@ import com.jeopardy.flink.adapter.Stage1EventAdapterFunction;
 import com.jeopardy.flink.config.PostgresConfigPollingSource;
 import com.jeopardy.flink.correlator.PostgresProcessRegistryStore;
 import com.jeopardy.flink.correlator.ProcessRegistryStore;
+import com.jeopardy.flink.config.NonBlockingWatermarks;
 import com.jeopardy.flink.correlator.Stage2AsyncBpmnCorrelator;
 import com.jeopardy.flink.correlator.Stage2OutOfOrderBufferFunction;
 import com.jeopardy.flink.engine.Stage3MilestoneEngineFunction;
@@ -100,9 +101,24 @@ public class JeopardyFlinkJob {
         String chPassword = resolve(cli, "clickhouse-password", "CLICKHOUSE_PASSWORD", "jeopardy");
         String onnxModelDir = resolve(cli, "onnx-model-dir", "ONNX_MODEL_DIR", "/opt/flink/models");
         long checkpointMs = Long.parseLong(resolve(cli, "checkpoint-ms", "CHECKPOINT_INTERVAL_MS", "60000"));
-        String checkpointDir = resolve(cli, "checkpoint-dir", "CHECKPOINT_DIR", "file:///tmp/jeopardy-flink-checkpoints");
+        // No default: when unset, the cluster's state.checkpoints.dir (S3 in k8s, a volume in docker-compose) is used.
+        // A hardcoded default here silently overrode the cluster config and put checkpoints in a pod's /tmp.
+        String checkpointDir = resolve(cli, "checkpoint-dir", "CHECKPOINT_DIR", "");
         int explicitParallelism = Integer.parseInt(resolve(cli, "parallelism", "FLINK_PARALLELISM", "0"));
         boolean enableRocksDb = Boolean.parseBoolean(resolve(cli, "enable-rocksdb", "ENABLE_ROCKSDB", "true"));
+        // Event-time tuning. Out-of-orderness must exceed the Stage 2 15s OOO buffer + 5s async correlation timeout,
+        // otherwise a delayed completion could be overtaken by its own SLA timer.
+        long watermarkOutOfOrdernessMs = Long.parseLong(
+                resolve(cli, "watermark-out-of-orderness-ms", "WATERMARK_OUT_OF_ORDERNESS_MS", "30000"));
+        long watermarkIdlenessMs = Long.parseLong(
+                resolve(cli, "watermark-idleness-ms", "WATERMARK_IDLENESS_MS", "60000"));
+        long staleAlertThresholdMs = Long.parseLong(
+                resolve(cli, "stale-alert-threshold-ms", "STALE_ALERT_THRESHOLD_MS",
+                        String.valueOf(Stage3MilestoneEngineFunction.DEFAULT_STALE_ALERT_THRESHOLD_MS)));
+        if (watermarkOutOfOrdernessMs < 20_000L) {
+            LOG.warn("watermark-out-of-orderness-ms={} is below the Stage 2 buffer+async budget (20s); "
+                    + "delayed completions may be overtaken by false SLA alerts", watermarkOutOfOrdernessMs);
+        }
         String initialBundlePath = resolve(cli, "initial-bundle-file", "INITIAL_BUNDLE_FILE", "");
         String initialBundleJson = loadInitialBundle(initialBundlePath);
         if (initialBundleJson == null || initialBundleJson.isBlank()) {
@@ -121,13 +137,18 @@ public class JeopardyFlinkJob {
         env.getCheckpointConfig().setTolerableCheckpointFailureNumber(3);
         if (checkpointDir != null && !checkpointDir.isBlank()) {
             env.getCheckpointConfig().setCheckpointStorage(new FileSystemCheckpointStorage(checkpointDir));
+        } else {
+            LOG.info("No --checkpoint-dir given; using the cluster's state.checkpoints.dir");
         }
         if (enableRocksDb) {
+            // Fail fast: silently falling back to heap state would hold up to 75 days of per-order state
+            // and timers on the JVM heap and end in OOM under real volume.
             try {
                 env.setStateBackend(new EmbeddedRocksDBStateBackend(true));
             } catch (Throwable t) {
-                LOG.warn("Unable to initialize EmbeddedRocksDBStateBackend; using default state backend: {}",
-                        t.getMessage());
+                throw new IllegalStateException(
+                        "RocksDB state backend could not be initialized; refusing to start on heap state. "
+                                + "Fix the RocksDB setup or pass --enable-rocksdb false explicitly for local tests.", t);
             }
         }
 
@@ -142,9 +163,10 @@ public class JeopardyFlinkJob {
                 .setDeserializer(new KafkaJsonSerializationSchemas.RawKafkaMessageDeserializationSchema())
                 .build();
 
+        // Watermarks follow the Kafka record timestamp (stable across replays, unlike wall clock).
         WatermarkStrategy<RawKafkaMessage> rawWatermark = WatermarkStrategy
-                .<RawKafkaMessage>forBoundedOutOfOrderness(Duration.ofSeconds(10))
-                .withIdleness(Duration.ofSeconds(30))
+                .<RawKafkaMessage>forBoundedOutOfOrderness(Duration.ofMillis(watermarkOutOfOrdernessMs))
+                .withIdleness(Duration.ofMillis(watermarkIdlenessMs))
                 .withTimestampAssigner((msg, ts) -> msg.getIngestTimeMs() > 0 ? msg.getIngestTimeMs() : ts);
 
         DataStream<RawKafkaMessage> rawStream = env
@@ -161,6 +183,9 @@ public class JeopardyFlinkJob {
                             "Postgres-Config-Broadcast")
                     .setParallelism(1)
                     .uid("source-config-updates-pg")
+                    .assignTimestampsAndWatermarks(NonBlockingWatermarks.neverHoldBack())
+                    .setParallelism(1)
+                    .name("Config-Never-Holds-Back-Watermarks")
                     .broadcast(FlinkTags.CONFIG_BROADCAST_DESCRIPTOR);
         } else {
             LOG.info("Config Broadcast transport: KAFKA topic '{}' on internalKafka={}",
@@ -174,7 +199,8 @@ public class JeopardyFlinkJob {
                     .build();
 
             configBroadcast = env
-                    .fromSource(configSource, WatermarkStrategy.noWatermarks(), "Kafka-Config-Broadcast")
+                    // Control stream: must never hold back the event-time watermark of Stage 1 / Stage 3.
+                    .fromSource(configSource, NonBlockingWatermarks.<String>neverHoldBack(), "Kafka-Config-Broadcast")
                     .uid("source-config-updates")
                     .broadcast(FlinkTags.CONFIG_BROADCAST_DESCRIPTOR);
         }
@@ -188,8 +214,8 @@ public class JeopardyFlinkJob {
                 .build();
 
         WatermarkStrategy<CanonicalEvent> signalWatermark = WatermarkStrategy
-                .<CanonicalEvent>forBoundedOutOfOrderness(Duration.ofSeconds(5))
-                .withIdleness(Duration.ofSeconds(30))
+                .<CanonicalEvent>forBoundedOutOfOrderness(Duration.ofMillis(watermarkOutOfOrdernessMs))
+                .withIdleness(Duration.ofMillis(watermarkIdlenessMs))
                 .withTimestampAssigner((ev, ts) -> ev.getEventTimeMs() > 0 ? ev.getEventTimeMs() : ts);
 
         DataStream<CanonicalEvent> crossOrderSignalsIn = env
@@ -292,7 +318,11 @@ public class JeopardyFlinkJob {
         SingleOutputStreamOperator<EntityMutation> mutations = stage3Input
                 .keyBy(CanonicalEvent::getEntityKey)
                 .connect(configBroadcast)
-                .process(new Stage3MilestoneEngineFunction(initialBundleJson, onnxModelDir))
+                .process(new Stage3MilestoneEngineFunction(
+                        initialBundleJson,
+                        onnxModelDir,
+                        Stage3MilestoneEngineFunction.DEFAULT_POST_FALLOUT_GRACE_MS,
+                        staleAlertThresholdMs))
                 .uid("stage3-milestone-sla-engine")
                 .name("Stage3-Milestone-DAG-Timers-ONNX");
 
@@ -326,7 +356,7 @@ public class JeopardyFlinkJob {
                 .name("Sink-Kafka-jeopardy.ui.updates");
 
         mutations
-                .filter(EntityMutation::isHasJeopardyAlert)
+                .filter(EntityMutation::shouldPage)
                 .sinkTo(KafkaSink.<EntityMutation>builder()
                         .setBootstrapServers(internalKafkaBootstrap)
                         .setKafkaProducerConfig(boundedProducerConfig(2 * 1024 * 1024))

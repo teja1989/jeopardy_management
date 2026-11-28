@@ -1,0 +1,89 @@
+# =============================================================================
+# Flink engine health alerts (requires prometheus-operator CRDs).
+#
+# Why these exist:
+#   * SLA timers fire on EVENT TIME. If every upstream topic goes silent (Flowable/MSK outage,
+#     consumer stuck), the watermark stops advancing and NO SLA warning/jeopardy/breach fires.
+#     JeopardyWatermarkStalled is the safety net for that blind spot.
+#   * Sinks no longer drop failed batches; they fail the task so Flink replays. A job stuck in a
+#     restart loop (e.g. PostgreSQL down) must therefore be visible -> JeopardyFlinkRestarting.
+#   * Malformed rows are quarantined instead of crash-looping -> JeopardySinkRejectedRows.
+#
+# Metric names follow Flink's PrometheusReporter (metrics.reporter.prom.* in flink-deployment.yaml).
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: jeopardy-flink-engine
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/part-of: jeopardy-management
+spec:
+  selector:
+    matchLabels:
+      app: jeopardy-flink-engine   # label set by the Flink Kubernetes Operator on JM/TM pods
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: jeopardy-flink-engine
+  namespace: jeopardy
+  labels:
+    app.kubernetes.io/part-of: jeopardy-management
+spec:
+  groups:
+    - name: jeopardy-flink-engine
+      rules:
+        # Event-time lag of the SLA engine = wall clock - slowest Stage 3 subtask's input watermark.
+        # Normal value: ~30-60s (bounded out-of-orderness + idleness). A Long.MIN watermark (none yet)
+        # also trips this rule, which is intended.
+        - alert: JeopardyWatermarkStalled
+          expr: |
+            (time() * 1000)
+              - min by (job_name) (
+                  flink_taskmanager_job_task_operator_currentInputWatermark{operator_name=~"Stage3.*"}
+                )
+              > 10 * 60 * 1000
+          for: 5m
+          labels:
+            severity: critical
+            team: oms-jeopardy
+          annotations:
+            summary: "SLA engine event time is stalled ({{ $value | humanizeDuration }} behind)"
+            description: >-
+              Stage 3 watermark has not advanced for >10 minutes. SLA warnings/breaches are NOT firing.
+              Check upstream topics (Flowable / domain events) for silence, Kafka consumer lag, and
+              Flink backpressure. Breaches detected after recovery are recorded but not paged if older
+              than STALE_ALERT_THRESHOLD_MS (default 30m).
+
+        - alert: JeopardyFlinkRestarting
+          expr: increase(flink_jobmanager_job_numRestarts[15m]) > 3
+          for: 0m
+          labels:
+            severity: critical
+            team: oms-jeopardy
+          annotations:
+            summary: "Jeopardy Flink job restarted {{ $value }} times in 15m"
+            description: >-
+              Sinks fail the task instead of dropping data when PostgreSQL/ClickHouse writes fail after
+              retries. Repeated restarts usually mean a sink dependency is down or misconfigured
+              (check TaskManager logs for SinkWriteException).
+
+        - alert: JeopardySinkRejectedRows
+          expr: |
+            sum by (job_name) (
+              increase(flink_taskmanager_job_task_operator_rejectedRows[15m])
+              or increase(flink_taskmanager_job_task_operator_rejectedMutations[15m])
+            ) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: oms-jeopardy
+          annotations:
+            summary: "Sinks quarantined {{ $value }} malformed rows in 15m"
+            description: >-
+              PostgreSQL/ClickHouse rejected individual rows as invalid data. They were logged
+              (search TaskManager logs for 'row quarantined') and skipped; the rest of each batch was written.

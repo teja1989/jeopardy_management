@@ -119,7 +119,8 @@ kubectl apply -f deploy/k8s/namespace.yaml
 # Step 2: PostgreSQL 16 OSS Multi-AZ Cluster (CloudNativePG) & Initialize Schema
 kubectl apply -f deploy/k8s/postgres/cnpg-cluster.yaml
 kubectl -n jeopardy wait --for=condition=Ready cluster/jeopardy-pg --timeout=5m
-kubectl -n jeopardy exec -i jeopardy-pg-1 -- psql -U jeopardy -d jeopardy < db/postgres/init.sql
+# PostgreSQL schema is applied by jeopardy-api on startup via Flyway
+# (services/jeopardy-api/src/main/resources/db/migration). Deploy the API before the Flink job.
 
 # Step 3: ClickHouse Keeper 3-Node Quorum -> ClickHouse 24.8 OSS 2-Replica Cluster -> Backups
 kubectl apply -f deploy/k8s/clickhouse/clickhouse-keeper.yaml

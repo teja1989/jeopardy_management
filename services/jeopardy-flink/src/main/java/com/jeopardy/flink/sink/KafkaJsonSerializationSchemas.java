@@ -91,7 +91,7 @@ public final class KafkaJsonSerializationSchemas {
                     EntityMutation m,
                     KafkaSinkContext context,
                     Long timestamp) {
-                if (m == null || m.getEntityKey() == null || !m.isHasJeopardyAlert()) {
+                if (m == null || m.getEntityKey() == null || !m.shouldPage()) {
                     return null;
                 }
                 if (mapper == null) {

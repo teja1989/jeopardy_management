@@ -6,6 +6,10 @@ import com.jeopardy.flink.model.RelatedLink;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.apache.flink.api.common.functions.OpenContext;
+import org.apache.flink.metrics.Counter;
+import org.apache.flink.runtime.state.FunctionInitializationContext;
+import org.apache.flink.runtime.state.FunctionSnapshotContext;
+import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,32 +19,34 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Hardened micro-batched PostgreSQL 16 JDBC Upsert Sink for Stage 3 {@link EntityMutation} records.
  *
  * <ul>
- *   <li>Flushes every {@code 200ms} (background daemon scheduler) OR when batch reaches {@code 200} rows, plus final flush in {@code close()}.</li>
+ *   <li>Flushes every {@code 200ms} (background scheduler) OR when batch reaches {@code 200} rows, AND synchronously
+ *       on every checkpoint ({@link #snapshotState}) so a completed checkpoint never covers unwritten rows (at-least-once).</li>
+ *   <li>Never drops a batch: transient errors (connection loss, deadlock, serialization failure) are retried, then
+ *       fail the task so Flink replays from the last checkpoint. Data errors (SQLSTATE 22/23) are bisected so only
+ *       the offending mutation is rejected (logged + {@code rejectedMutations} metric).</li>
+ *   <li>All upserts are idempotent ({@code ON CONFLICT ... DO UPDATE} with monotonic guards), so replayed rows are safe.</li>
  *   <li>Sorts every batch deterministically by {@code (entityKey, lastEventTimeMs)} to eliminate PostgreSQL row-lock deadlocks across parallel TaskManagers.</li>
  *   <li>Enforces monotonic {@code WHERE EXCLUDED.last_event_time >= <table>.last_event_time} guards on {@code tracked_entities} and {@code entity_milestones}.</li>
- *   <li>Writes exact column schemas matching {@code db/postgres/init.sql} across {@code tracked_entities}, {@code entity_milestones}, {@code entity_relationships}, {@code entity_fallouts}, and {@code jeopardy_cases}.</li>
+ *   <li>Writes exact column schemas matching the Flyway migrations in {@code services/jeopardy-api/src/main/resources/db/migration} across {@code tracked_entities}, {@code entity_milestones}, {@code entity_relationships}, {@code entity_fallouts}, and {@code jeopardy_cases}.</li>
  * </ul>
  */
-public class BatchedPostgresSink extends RichSinkFunction<EntityMutation> {
+public class BatchedPostgresSink extends RichSinkFunction<EntityMutation> implements CheckpointedFunction {
     private static final long serialVersionUID = 1L;
     private static final Logger LOG = LoggerFactory.getLogger(BatchedPostgresSink.class);
 
     private static final int DEFAULT_BATCH_SIZE = 200;
     private static final long DEFAULT_FLUSH_INTERVAL_MS = 200L;
+    private static final long[] RETRY_BACKOFF_MS = {250L, 1_000L, 3_000L, 8_000L};
 
     private static final String SQL_UPSERT_ENTITY =
             "INSERT INTO tracked_entities ("
@@ -149,12 +155,12 @@ public class BatchedPostgresSink extends RichSinkFunction<EntityMutation> {
     private final String password;
     private final int batchSize;
     private final long flushIntervalMs;
+    private long[] retryBackoffMs = RETRY_BACKOFF_MS;
 
     private transient HikariDataSource dataSource;
     private transient ObjectMapper mapper;
-    private transient List<EntityMutation> buffer;
-    private transient Object bufferLock;
-    private transient ScheduledExecutorService scheduler;
+    private transient CheckpointedBatchFlusher<EntityMutation> flusher;
+    private transient Counter rejectedMutations;
 
     public BatchedPostgresSink(String jdbcUrl, String username, String password) {
         this(jdbcUrl, username, password, DEFAULT_BATCH_SIZE, DEFAULT_FLUSH_INTERVAL_MS);
@@ -173,11 +179,15 @@ public class BatchedPostgresSink extends RichSinkFunction<EntityMutation> {
         this.flushIntervalMs = Math.max(50L, flushIntervalMs);
     }
 
+    /** Overrides the retry backoff schedule (e.g. shorter in tests). */
+    public BatchedPostgresSink withRetryBackoffMs(long... backoffMs) {
+        this.retryBackoffMs = backoffMs != null ? backoffMs.clone() : new long[0];
+        return this;
+    }
+
     @Override
     public void open(OpenContext openContext) {
         this.mapper = new ObjectMapper();
-        this.buffer = new ArrayList<>(batchSize);
-        this.bufferLock = new Object();
 
         HikariConfig cfg = new HikariConfig();
         cfg.setJdbcUrl(jdbcUrl);
@@ -190,16 +200,19 @@ public class BatchedPostgresSink extends RichSinkFunction<EntityMutation> {
         cfg.addDataSourceProperty("reWriteBatchedInserts", "true");
         this.dataSource = new HikariDataSource(cfg);
 
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "flink-pg-sink-flusher");
-            t.setDaemon(true);
-            return t;
-        });
-        this.scheduler.scheduleAtFixedRate(
-                this::safeFlush,
-                flushIntervalMs,
-                flushIntervalMs,
-                TimeUnit.MILLISECONDS);
+        this.rejectedMutations = getRuntimeContext().getMetricGroup().counter("rejectedMutations");
+        this.flusher = new CheckpointedBatchFlusher<>(
+                "postgres",
+                batchSize,
+                this::writeBatch,
+                BatchedPostgresSink::classify,
+                (m, err) -> {
+                    rejectedMutations.inc();
+                    LOG.error("PostgreSQL rejected mutation for entity_key={} milestone={} ({}); row quarantined: {}",
+                            m.getEntityKey(), m.getMilestoneId(), m.getDeltaEventType(), err.getMessage());
+                },
+                retryBackoffMs);
+        this.flusher.startBackgroundFlush(flushIntervalMs);
     }
 
     @Override
@@ -207,54 +220,69 @@ public class BatchedPostgresSink extends RichSinkFunction<EntityMutation> {
         if (value == null || value.getEntityKey() == null || value.getEntityKey().isBlank()) {
             return;
         }
-        List<EntityMutation> toFlush = null;
-        synchronized (bufferLock) {
-            buffer.add(value);
-            if (buffer.size() >= batchSize) {
-                toFlush = swapBufferLocked();
-            }
-        }
-        if (toFlush != null) {
-            flushBatch(toFlush);
-        }
+        flusher.add(value);
+    }
+
+    @Override
+    public void initializeState(FunctionInitializationContext context) {
+        // Nothing to restore: buffered rows are always flushed before a checkpoint completes,
+        // so anything not yet written is replayed from Kafka after a restart.
+    }
+
+    @Override
+    public void snapshotState(FunctionSnapshotContext context) {
+        flusher.flushAllOrThrow();
     }
 
     @Override
     public void close() {
-        if (scheduler != null) {
-            scheduler.shutdown();
-            try {
-                scheduler.awaitTermination(5, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        try {
+            if (flusher != null) {
+                flusher.close();
+                // Best-effort final flush on graceful shutdown; failures still propagate.
+                flusher.flushAllOrThrow();
+            }
+        } finally {
+            if (dataSource != null) {
+                dataSource.close();
             }
         }
-        safeFlush();
-        if (dataSource != null) {
-            dataSource.close();
-        }
     }
 
-    private void safeFlush() {
-        List<EntityMutation> toFlush;
-        synchronized (bufferLock) {
-            if (buffer == null || buffer.isEmpty()) {
-                return;
+    /**
+     * Classifies a write failure by PostgreSQL SQLSTATE.
+     * 22xxx data exception / 23xxx integrity violation -> BAD_DATA (isolate the row);
+     * 28xxx auth / 42xxx syntax, undefined table or permission -> FATAL;
+     * everything else (08 connection, 40001/40P01 serialization/deadlock, 53 resources, 57 shutdown, unknown) -> RETRYABLE.
+     */
+    static CheckpointedBatchFlusher.Classification classify(Exception ex) {
+        String state = ex instanceof SQLException sql ? sql.getSQLState() : null;
+        if (state == null && ex.getCause() instanceof SQLException cause) {
+            state = cause.getSQLState();
+        }
+        if (state != null && state.length() >= 2) {
+            String cls = state.substring(0, 2);
+            switch (cls) {
+                case "22":
+                case "23":
+                    return CheckpointedBatchFlusher.Classification.BAD_DATA;
+                case "28":
+                case "42":
+                    return CheckpointedBatchFlusher.Classification.FATAL;
+                default:
+                    return CheckpointedBatchFlusher.Classification.RETRYABLE;
             }
-            toFlush = swapBufferLocked();
         }
-        flushBatch(toFlush);
+        return CheckpointedBatchFlusher.Classification.RETRYABLE;
     }
 
-    private List<EntityMutation> swapBufferLocked() {
-        List<EntityMutation> batch = buffer;
-        buffer = new ArrayList<>(batchSize);
-        return batch;
-    }
-
-    private void flushBatch(List<EntityMutation> batch) {
-        if (batch == null || batch.isEmpty() || dataSource == null) {
+    /** Writes one batch in a single transaction. Throws on failure (never swallows). */
+    private void writeBatch(List<EntityMutation> batch) throws SQLException {
+        if (batch == null || batch.isEmpty()) {
             return;
+        }
+        if (dataSource == null) {
+            throw new SQLException("PostgreSQL sink is not open", "08003");
         }
 
         // Deadlock prevention: sort strictly by (entityKey, lastEventTimeMs)
@@ -277,11 +305,19 @@ public class BatchedPostgresSink extends RichSinkFunction<EntityMutation> {
                 } catch (SQLException rbEx) {
                     LOG.warn("PostgreSQL rollback failed: {}", rbEx.getMessage());
                 }
-                LOG.error("Failed to flush PostgreSQL micro-batch of {} mutations: {}", batch.size(), ex.getMessage(), ex);
+                throw unwrapBatchException(ex);
             }
-        } catch (SQLException ex) {
-            LOG.error("Failed to acquire PostgreSQL connection for micro-batch flush: {}", ex.getMessage(), ex);
         }
+    }
+
+    /** JDBC batch errors carry the real SQLSTATE on getNextException(); surface it for classification. */
+    private static SQLException unwrapBatchException(SQLException ex) {
+        SQLException next = ex.getNextException();
+        if (next != null && next.getSQLState() != null) {
+            next.addSuppressed(ex);
+            return next;
+        }
+        return ex;
     }
 
     private void upsertEntities(Connection conn, List<EntityMutation> batch) throws SQLException {

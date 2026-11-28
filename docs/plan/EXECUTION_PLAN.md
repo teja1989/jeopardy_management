@@ -25,7 +25,7 @@ jeopardy_management/
 │   ├── simulation/                     # Interactive iPhone 18 + Trade-In HTML simulator
 │   └── ux/                             # 3-persona interactive UX prototype
 ├── db/
-│   ├── postgres/init.sql               # Partitioned operational tables, Fallout, BPMN registry, Config tables
+│   ├── (postgres schema moved to services/jeopardy-api/src/main/resources/db/migration — Flyway)
 │   └── clickhouse/init.sql             # raw_events, milestone_telemetry, Map dims, Exec/DevOps MVs
 ├── config/
 │   ├── taxonomy/order-families.yaml    # 60+ order types -> 6 executive families

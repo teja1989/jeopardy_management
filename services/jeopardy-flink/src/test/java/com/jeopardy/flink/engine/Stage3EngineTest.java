@@ -1,5 +1,6 @@
 package com.jeopardy.flink.engine;
 
+import com.jeopardy.flink.config.NonBlockingWatermarks;
 import com.jeopardy.flink.model.CanonicalEvent;
 import com.jeopardy.flink.model.CrossOrderSignal;
 import com.jeopardy.flink.model.EntityMutation;
@@ -11,6 +12,7 @@ import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.watermark.Watermark;
 import org.junit.jupiter.api.Test;
 
 import java.io.Serializable;
@@ -39,6 +41,8 @@ class Stage3EngineTest {
     // Shared static collection registry for MiniCluster sinks (cleaned per test via UUID)
     private static final ConcurrentHashMap<String, List<EntityMutation>> MUTATION_RESULTS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, List<CrossOrderSignal>> SIGNAL_RESULTS = new ConcurrentHashMap<>();
+    /** Run ids whose event source has finished; the config source stays alive until then, like in production. */
+    private static final java.util.Set<String> EVENTS_DONE = ConcurrentHashMap.newKeySet();
 
     // =========================================================================
     // Test 1: Full iPhone 18 Pro Upgrade Lifecycle (S1 -> S7)
@@ -142,41 +146,164 @@ class Stage3EngineTest {
     }
 
     // =========================================================================
-    // Test 3: Processing-Time SLA Warning -> Jeopardy -> Breach & O(1) Cancel
+    // Test 3: Event-Time SLA Warning -> Jeopardy -> Breach & O(1) Cancel
     // =========================================================================
 
     @Test
-    void processingTimeSlaTimersFireWarningJeopardyBreachAndCancelOnCompletion() throws Exception {
-        // Ultra-fast sub-second SLA thresholds for deterministic MiniCluster timer verification
-        String fastBundle = buildTestBundle(1, "Identity & Device Fraud Check", "120ms", "240ms", "360ms", "5m", "10m", "1h");
+    void eventTimeSlaTimersFireWarningJeopardyBreachAndCancelOnCompletion() throws Exception {
+        // Fraud SLA: warn 2m, jeopardy 4m, breach 6m (event time)
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "2m", "4m", "6m", "5m", "10m", "1h");
         long t0 = 1_760_000_200_000L;
 
         List<TimedEvent> events = Arrays.asList(
-                // ORD-SLOW starts S2 and never completes -> must fire WARNING, JEOPARDY, BREACHED
+                // ORD-SLOW starts S2 at t0+10ms and only completes at t0+11m -> must escalate before completing
                 new TimedEvent(0, domainEvent("ORD-SLOW:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0)),
                 new TimedEvent(0, domainEvent("ORD-SLOW:ITM-1", "domain.fraud.events", "FRAUD_CHECK_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 10)),
-                // ORD-FAST starts S2 and completes immediately (before 120ms warning) -> must fire ZERO alerts
+                // ORD-FAST starts S2 and completes after 30s (before the 2m warning) -> ZERO alerts
                 new TimedEvent(0, domainEvent("ORD-FAST:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0)),
                 new TimedEvent(0, domainEvent("ORD-FAST:ITM-1", "domain.fraud.events", "FRAUD_CHECK_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 10)),
-                new TimedEvent(20, domainEvent("ORD-FAST:ITM-1", "domain.fraud.events", "FRAUD_CHECK_APPROVED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 30)),
-                // Keep source alive long enough for all 3 Processing-Time timers on ORD-SLOW to fire
-                new TimedEvent(650, null)
+                new TimedEvent(0, domainEvent("ORD-FAST:ITM-1", "domain.fraud.events", "FRAUD_CHECK_APPROVED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 30_000)),
+                // Event time passes all three deadlines
+                TimedEvent.watermark(t0 + 10 * 60_000L),
+                // Only now does ORD-SLOW complete. The 1s pause lets the config stream's periodic (200ms)
+                // max-watermark reach Stage 3 first; in production the job has been running for days.
+                new TimedEvent(1_000, domainEvent("ORD-SLOW:ITM-1", "domain.fraud.events", "FRAUD_CHECK_APPROVED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 11 * 60_000L))
         );
 
-        RunResult res = runMiniCluster(fastBundle, Collections.emptyList(), events);
+        RunResult res = runMiniCluster(bundle, Collections.emptyList(), events);
 
-        List<String> slowAlerts = res.mutations.stream()
-                .filter(m -> "ORD-SLOW:ITM-1".equals(m.getEntityKey()) && m.isHasJeopardyAlert())
+        List<EntityMutation> slow = res.mutations.stream()
+                .filter(m -> "ORD-SLOW:ITM-1".equals(m.getEntityKey()) && "S2".equals(m.getMilestoneId()))
+                .collect(Collectors.toList());
+        List<String> slowAlerts = slow.stream()
+                .filter(EntityMutation::isHasJeopardyAlert)
                 .map(EntityMutation::getMilestoneStatus)
                 .collect(Collectors.toList());
-
         assertEquals(Arrays.asList("WARNING", "JEOPARDY", "BREACHED"), slowAlerts,
-                "ORD-SLOW should escalate WARNING -> JEOPARDY -> BREACHED via Processing-Time timers");
+                "ORD-SLOW should escalate WARNING -> JEOPARDY -> BREACHED once event time passes each deadline");
+        // The breach must be emitted BEFORE the late completion: proves timers fire mid-stream on the watermark
+        // (i.e. the config broadcast stream does not hold the watermark back).
+        assertEquals("COMPLETED", slow.get(slow.size() - 1).getMilestoneStatus());
+        assertEquals(Long.valueOf(t0 + 10 + 6 * 60_000L), slow.get(0).getSlaBreachAtMs(),
+                "Breach deadline must be start event time + SLA, independent of processing time");
 
         List<EntityMutation> fastAlerts = res.mutations.stream()
                 .filter(m -> "ORD-FAST:ITM-1".equals(m.getEntityKey()) && m.isHasJeopardyAlert())
                 .collect(Collectors.toList());
-        assertTrue(fastAlerts.isEmpty(), "Completed milestone must cancel obsolete SLA timers in O(1)");
+        assertTrue(fastAlerts.isEmpty(), "Completed milestone must cancel obsolete SLA timers");
+    }
+
+    @Test
+    void consumerLagDoesNotCauseFalseBreachWhenCompletionIsWithinSla() throws Exception {
+        // Fraud SLA warn 120ms / jeopardy 240ms / breach 360ms in EVENT time.
+        // Under the old processing-time timers, the 800ms real delivery delay below fired all three
+        // alerts even though the business completed the step 50ms after starting it.
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "120ms", "240ms", "360ms", "5m", "10m", "1h");
+        long t0 = 1_760_000_250_000L;
+
+        List<TimedEvent> events = Arrays.asList(
+                new TimedEvent(0, domainEvent("ORD-LAG:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0)),
+                new TimedEvent(0, domainEvent("ORD-LAG:ITM-1", "domain.fraud.events", "FRAUD_CHECK_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 10)),
+                // Simulated consumer lag: completion (event time t0+60ms) is delivered 800ms of wall clock later
+                new TimedEvent(800, domainEvent("ORD-LAG:ITM-1", "domain.fraud.events", "FRAUD_CHECK_APPROVED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 60))
+        );
+
+        RunResult res = runMiniCluster(bundle, Collections.emptyList(), events);
+
+        long alerts = res.mutations.stream()
+                .filter(m -> "ORD-LAG:ITM-1".equals(m.getEntityKey()) && m.isHasJeopardyAlert())
+                .count();
+        assertEquals(0, alerts, "A completion delayed in Kafka must not be overtaken by a false SLA alert");
+        EntityMutation done = res.mutations.stream()
+                .filter(m -> "S2".equals(m.getMilestoneId()) && "COMPLETED".equals(m.getMilestoneStatus()))
+                .findFirst().orElseThrow();
+        assertEquals(50L, done.getDurationMs());
+    }
+
+    @Test
+    void completeArrivingBeforeStartIsCorrectedWhenStartArrives() throws Exception {
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "5m", "10m", "1h", "5m", "10m", "1h");
+        long t0 = 1_760_000_260_000L;
+
+        List<TimedEvent> events = Arrays.asList(
+                new TimedEvent(0, domainEvent("ORD-OOO:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0)),
+                // Out of order: APPROVED (t0+46s) reaches the engine before STARTED (t0+1s)
+                new TimedEvent(0, domainEvent("ORD-OOO:ITM-1", "domain.fraud.events", "FRAUD_CHECK_APPROVED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 46_000)),
+                new TimedEvent(0, domainEvent("ORD-OOO:ITM-1", "domain.fraud.events", "FRAUD_CHECK_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 1_000))
+        );
+
+        RunResult res = runMiniCluster(bundle, Collections.emptyList(), events);
+
+        List<EntityMutation> s2 = res.mutations.stream()
+                .filter(m -> "ORD-OOO:ITM-1".equals(m.getEntityKey()) && "S2".equals(m.getMilestoneId()))
+                .collect(Collectors.toList());
+        EntityMutation last = s2.get(s2.size() - 1);
+        assertEquals("COMPLETED", last.getMilestoneStatus());
+        assertEquals(Long.valueOf(t0 + 1_000), last.getStartedAtMs(), "Start must be back-filled from the late start event");
+        assertEquals(45_000L, last.getDurationMs(), "Duration must be complete - start, not 0");
+        assertTrue(last.isEmitTelemetry(), "Corrected duration must be re-sent to ClickHouse telemetry");
+        assertTrue(s2.stream().noneMatch(EntityMutation::isHasJeopardyAlert));
+    }
+
+    @Test
+    void lateStartAfterFailureReanchorsSlaDeadlines() throws Exception {
+        // Fraud breach at 6m. A failure event arrives first (t0+5m), the real start (t0+1s) afterwards.
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "2m", "4m", "6m", "5m", "10m", "1h");
+        long t0 = 1_760_000_270_000L;
+
+        List<TimedEvent> events = Arrays.asList(
+                new TimedEvent(0, domainEvent("ORD-FAIL:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0)),
+                new TimedEvent(0, domainEvent("ORD-FAIL:ITM-1", "domain.fraud.events", "FRAUD_CHECK_REJECTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 5 * 60_000L)),
+                new TimedEvent(0, domainEvent("ORD-FAIL:ITM-1", "domain.fraud.events", "FRAUD_CHECK_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 1_000)),
+                TimedEvent.watermark(t0 + 7 * 60_000L)
+        );
+
+        RunResult res = runMiniCluster(bundle, Collections.emptyList(), events);
+
+        EntityMutation breach = res.mutations.stream()
+                .filter(m -> "ORD-FAIL:ITM-1".equals(m.getEntityKey())
+                        && "S2".equals(m.getMilestoneId())
+                        && "SLA_BREACHED".equals(m.getAlertReasonCode()))
+                .findFirst().orElse(null);
+        assertNotNull(breach, "Re-anchored milestone must still breach at start + 6m");
+        assertEquals(Long.valueOf(t0 + 1_000), breach.getStartedAtMs());
+        assertEquals(Long.valueOf(t0 + 1_000 + 6 * 60_000L), breach.getSlaBreachAtMs());
+    }
+
+    @Test
+    void staleAlertsDetectedDuringCatchUpAreRecordedButNotPaged() throws Exception {
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "2m", "4m", "6m", "5m", "10m", "1h");
+        long now = System.currentTimeMillis();
+        long old = now - 3 * 60 * 60_000L;   // replaying events from 3 hours ago
+        long fresh = now - 7 * 60_000L;      // live: deadlines passed only ~1 minute ago
+
+        List<TimedEvent> events = Arrays.asList(
+                new TimedEvent(0, domainEvent("ORD-OLD:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", old)),
+                new TimedEvent(0, domainEvent("ORD-OLD:ITM-1", "domain.fraud.events", "FRAUD_CHECK_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", old + 10)),
+                new TimedEvent(0, domainEvent("ORD-NEW:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", fresh)),
+                new TimedEvent(0, domainEvent("ORD-NEW:ITM-1", "domain.fraud.events", "FRAUD_CHECK_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", fresh + 10)),
+                TimedEvent.watermark(now - 30_000L)
+        );
+
+        RunResult res = runMiniCluster(bundle, Collections.emptyList(), events,
+                Stage3MilestoneEngineFunction.DEFAULT_POST_FALLOUT_GRACE_MS,
+                Stage3MilestoneEngineFunction.DEFAULT_STALE_ALERT_THRESHOLD_MS);
+
+        List<EntityMutation> oldBreaches = res.mutations.stream()
+                .filter(m -> "ORD-OLD:ITM-1".equals(m.getEntityKey()) && "SLA_BREACHED".equals(m.getAlertReasonCode()))
+                .collect(Collectors.toList());
+        assertEquals(1, oldBreaches.size(), "Late breach must still be recorded");
+        EntityMutation oldBreach = oldBreaches.get(0);
+        assertTrue(oldBreach.isHasJeopardyAlert(), "Case / status is still recorded");
+        assertTrue(oldBreach.isAlertPagingSuppressed(), "3h-old breach must not page Teams");
+        assertFalse(oldBreach.shouldPage());
+        assertTrue(oldBreach.getAttributes().get(Stage3MilestoneEngineFunction.ATTR_ALERT_PAGING_SUPPRESSED)
+                .startsWith("STALE_LATE_DETECTION"));
+
+        EntityMutation newBreach = res.mutations.stream()
+                .filter(m -> "ORD-NEW:ITM-1".equals(m.getEntityKey()) && "SLA_BREACHED".equals(m.getAlertReasonCode()))
+                .findFirst().orElseThrow();
+        assertTrue(newBreach.shouldPage(), "Breach detected ~1 minute after its deadline must page");
     }
 
     // =========================================================================
@@ -185,7 +312,8 @@ class Stage3EngineTest {
 
     @Test
     void crossOrderChangeOrderEmitsAndHonorsPauseAndResumeSlaClock() throws Exception {
-        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "5m", "10m", "1h", "200ms", "400ms", "600ms");
+        // Payment SLA (event time): warn 40s, jeopardy 50s, breach 60s
+        String bundle = buildTestBundle(1, "Identity & Device Fraud Check", "5m", "10m", "1h", "40s", "50s", "60s");
         long t0 = 1_760_000_300_000L;
 
         // Part A: CHG-10294 starts & completes -> emits PAUSE_SLA_CLOCK & RESUME_SLA_CLOCK side outputs
@@ -219,11 +347,16 @@ class Stage3EngineTest {
         List<TimedEvent> events = Arrays.asList(
                 new TimedEvent(0, domainEvent("ORD-88412:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0)),
                 new TimedEvent(0, domainEvent("ORD-88412:ITM-1", "domain.payment.events", "PAYMENT_AUTH_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 5_000)),
+                // Positive control: identical SLA, never paused -> must breach at t0+65s
+                new TimedEvent(0, domainEvent("ORD-UNPAUSED:ITM-1", "domain.order.events", "ORDER_SUBMITTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0)),
+                new TimedEvent(0, domainEvent("ORD-UNPAUSED:ITM-1", "domain.payment.events", "PAYMENT_AUTH_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 5_000)),
                 new TimedEvent(0, chgStart),
                 new TimedEvent(20, pauseSignal),
-                // Sleep past the original 200ms warning timer while PAUSED -> no alert may fire!
-                new TimedEvent(350, chgComplete),
+                // Event time passes all ORIGINAL deadlines (t0+45s/55s/65s) while PAUSED -> no alert may fire
+                TimedEvent.watermark(t0 + 69_000),
+                new TimedEvent(50, chgComplete),
                 new TimedEvent(0, resumeSignal),
+                // 5s used before pause + 25s after resume = 30s active < 40s warning -> still no alert
                 new TimedEvent(20, domainEvent("ORD-88412:ITM-1", "domain.payment.events", "PAYMENT_AUTH_CAPTURED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 95_000))
         );
 
@@ -242,6 +375,11 @@ class Stage3EngineTest {
                 .filter(m -> "ORD-88412:ITM-1".equals(m.getEntityKey()) && m.isHasJeopardyAlert())
                 .count();
         assertEquals(0, falseAlerts, "Paused milestone must NOT fire SLA alerts");
+
+        boolean controlBreached = res.mutations.stream()
+                .anyMatch(m -> "ORD-UNPAUSED:ITM-1".equals(m.getEntityKey())
+                        && "SLA_BREACHED".equals(m.getAlertReasonCode()));
+        assertTrue(controlBreached, "Unpaused control order with the same SLA must breach");
 
         // Verify pausedDurationMs == 60_000 and effective durationMs == (95_000 - 5_000 - 60_000) == 30_000
         EntityMutation completedPayment = res.mutations.stream()
@@ -334,12 +472,12 @@ class Stage3EngineTest {
                 new TimedEvent(0, domainEvent("ORD-RECOVER:ITM-1", "domain.payment.events", "PAYMENT_AUTH_STARTED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 1_000)),
                 new TimedEvent(0, falloutEvent("ORD-RECOVER:ITM-1", "FLT-REC", "FALLOUT_OPENED", "OPEN", "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS", null, t0 + 5_000)),
                 new TimedEvent(0, falloutEvent("ORD-RECOVER:ITM-1", "FLT-REC", "FALLOUT_RESOLVED", "RESOLVED", "TMPL_PAYMENT_AUTH", "PAY_TIMEOUT", "BILLING_OPS", "RETRY_ACTIVITY", t0 + 15_000)),
-                new TimedEvent(30, domainEvent("ORD-RECOVER:ITM-1", "domain.payment.events", "PAYMENT_AUTH_CAPTURED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 25_000)),
-                // Wait comfortably past 150ms watchdog grace period under MiniCluster load
-                new TimedEvent(600, null)
+                new TimedEvent(0, domainEvent("ORD-RECOVER:ITM-1", "domain.payment.events", "PAYMENT_AUTH_CAPTURED", "SALES_UPGRADE", "HANDSET_SHIP_TO_HOME", "ORDER_ITEM", t0 + 25_000)),
+                // Event time passes the 60s post-fallout grace window (resolved at t0+15s -> watchdog t0+75s)
+                TimedEvent.watermark(t0 + 2 * 60_000L)
         );
 
-        RunResult res = runMiniClusterWithGrace(bundle, Collections.emptyList(), events, 150L);
+        RunResult res = runMiniClusterWithGrace(bundle, Collections.emptyList(), events, 60_000L);
 
         // Verify null channel is preserved (no invented "WEB" default)
         EntityMutation firstStall = res.mutations.stream()
@@ -599,6 +737,16 @@ class Stage3EngineTest {
             List<TimedString> broadcastUpdates,
             List<TimedEvent> timedEvents,
             long postFalloutGraceMs) throws Exception {
+        // Historical test timestamps: disable stale-alert suppression unless a test asks for it.
+        return runMiniCluster(initialBundle, broadcastUpdates, timedEvents, postFalloutGraceMs, Long.MAX_VALUE);
+    }
+
+    private static RunResult runMiniCluster(
+            String initialBundle,
+            List<TimedString> broadcastUpdates,
+            List<TimedEvent> timedEvents,
+            long postFalloutGraceMs,
+            long staleAlertThresholdMs) throws Exception {
         String runId = UUID.randomUUID().toString();
         MUTATION_RESULTS.put(runId, new CopyOnWriteArrayList<>());
         SIGNAL_RESULTS.put(runId, new CopyOnWriteArrayList<>());
@@ -607,15 +755,18 @@ class Stage3EngineTest {
             StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
             env.setParallelism(1);
 
-            DataStream<CanonicalEvent> eventStream = env.addSource(new TimedEventSource(timedEvents));
+            DataStream<CanonicalEvent> eventStream = env.addSource(new TimedEventSource(timedEvents, runId));
+            // Same as production: the config stream must not hold back the event-time watermark.
             BroadcastStream<String> configBroadcast = env
-                    .addSource(new TimedStringSource(broadcastUpdates))
+                    .addSource(new TimedStringSource(broadcastUpdates, runId))
+                    .assignTimestampsAndWatermarks(NonBlockingWatermarks.neverHoldBack())
                     .broadcast(FlinkTags.CONFIG_BROADCAST_DESCRIPTOR);
 
             SingleOutputStreamOperator<EntityMutation> out = eventStream
                     .keyBy(CanonicalEvent::getEntityKey)
                     .connect(configBroadcast)
-                    .process(new Stage3MilestoneEngineFunction(initialBundle, null, postFalloutGraceMs));
+                    .process(new Stage3MilestoneEngineFunction(
+                            initialBundle, null, postFalloutGraceMs, staleAlertThresholdMs));
 
             out.addSink(new CollectMutationSink(runId));
             out.getSideOutput(FlinkTags.CROSS_ORDER_SIGNAL_TAG).addSink(new CollectSignalSink(runId));
@@ -628,6 +779,7 @@ class Stage3EngineTest {
         } finally {
             MUTATION_RESULTS.remove(runId);
             SIGNAL_RESULTS.remove(runId);
+            EVENTS_DONE.remove(runId);
         }
     }
 
@@ -821,10 +973,21 @@ class Stage3EngineTest {
         private static final long serialVersionUID = 1L;
         final long delayMs;
         final CanonicalEvent event;
+        final Long watermark;
 
         TimedEvent(long delayMs, CanonicalEvent event) {
+            this(delayMs, event, null);
+        }
+
+        private TimedEvent(long delayMs, CanonicalEvent event, Long watermark) {
             this.delayMs = delayMs;
             this.event = event;
+            this.watermark = watermark;
+        }
+
+        /** Advances event time: SLA timers with deadline <= ts fire. */
+        static TimedEvent watermark(long ts) {
+            return new TimedEvent(0, null, ts);
         }
     }
 
@@ -842,10 +1005,12 @@ class Stage3EngineTest {
     private static class TimedEventSource implements SourceFunction<CanonicalEvent> {
         private static final long serialVersionUID = 1L;
         private final List<TimedEvent> events;
+        private final String runId;
         private volatile boolean running = true;
 
-        TimedEventSource(List<TimedEvent> events) {
+        TimedEventSource(List<TimedEvent> events, String runId) {
             this.events = new ArrayList<>(events);
+            this.runId = runId;
         }
 
         @Override
@@ -857,12 +1022,18 @@ class Stage3EngineTest {
                 if (te.delayMs > 0) {
                     Thread.sleep(te.delayMs);
                 }
-                if (te.event != null) {
-                    synchronized (ctx.getCheckpointLock()) {
-                        ctx.collect(te.event);
+                synchronized (ctx.getCheckpointLock()) {
+                    if (te.event != null) {
+                        ctx.collectWithTimestamp(te.event, te.event.getEventTimeMs());
+                    }
+                    if (te.watermark != null) {
+                        ctx.emitWatermark(new Watermark(te.watermark));
                     }
                 }
             }
+            // Let in-flight records drain through Stage 3 before the config source ends.
+            Thread.sleep(300);
+            EVENTS_DONE.add(runId);
         }
 
         @Override
@@ -874,10 +1045,12 @@ class Stage3EngineTest {
     private static class TimedStringSource implements SourceFunction<String> {
         private static final long serialVersionUID = 1L;
         private final List<TimedString> items;
+        private final String runId;
         private volatile boolean running = true;
 
-        TimedStringSource(List<TimedString> items) {
+        TimedStringSource(List<TimedString> items, String runId) {
             this.items = new ArrayList<>(items);
+            this.runId = runId;
         }
 
         @Override
@@ -894,6 +1067,11 @@ class Stage3EngineTest {
                         ctx.collect(item.value);
                     }
                 }
+            }
+            // A real config source never ends. Stay alive until the events are done, so a config stream that
+            // held back the watermark would be caught by the timer tests (a finished source would hide it).
+            while (running && !EVENTS_DONE.contains(runId)) {
+                Thread.sleep(10);
             }
         }
 

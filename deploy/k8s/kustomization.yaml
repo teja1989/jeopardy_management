@@ -10,4 +10,5 @@ resources:
   - clickhouse/backup-cronjob.yaml
   - valkey/valkey-sentinel.yaml
   - flink/flink-deployment.yaml
+  - flink/prometheus-rules.yaml
   - ml/ml-trainer-cronjob.yaml

@@ -4,6 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jeopardy.flink.model.EntityMutation;
 import com.jeopardy.flink.model.RawAuditRecord;
 import org.apache.flink.api.common.functions.OpenContext;
+import org.apache.flink.metrics.Counter;
+import org.apache.flink.runtime.state.FunctionInitializationContext;
+import org.apache.flink.runtime.state.FunctionSnapshotContext;
+import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,31 +25,54 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.GZIPOutputStream;
 
 /**
  * Batch-only ClickHouse OSS HTTP Sink ({@code FORMAT JSONEachRow}) using Java 17 {@link HttpClient}.
  *
  * <p>Never performs single-row inserts: buffers rows in memory and flushes every {@code 2000ms}
- * OR {@code 2000} rows (plus final flush in {@code close()}).
+ * OR {@code 2000} rows, AND synchronously on every checkpoint ({@link #snapshotState}) so a completed
+ * checkpoint never covers unwritten rows (at-least-once). Failed batches are never dropped: transient
+ * errors are retried and then fail the task (Flink replays from the last checkpoint); rows ClickHouse
+ * rejects as malformed are isolated by bisection and counted in the {@code rejectedRows} metric.
+ *
+ * <p>Note: tables are plain {@code MergeTree}, so a task restart can insert a bounded number of duplicate
+ * rows (those written after the last completed checkpoint).
  */
-public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
+public class BatchedClickHouseSink<T> extends RichSinkFunction<T> implements CheckpointedFunction {
     private static final long serialVersionUID = 1L;
     private static final Logger LOG = LoggerFactory.getLogger(BatchedClickHouseSink.class);
 
     private static final int DEFAULT_BATCH_SIZE = 2_000;
     private static final long DEFAULT_FLUSH_INTERVAL_MS = 2_000L;
     private static final int GZIP_THRESHOLD_BYTES = 4_096;
-    private static final long[] RETRY_BACKOFF_MS = {250L, 750L, 2_000L};
+    private static final long[] RETRY_BACKOFF_MS = {250L, 1_000L, 3_000L, 8_000L};
+    private static final Pattern CH_ERROR_CODE = Pattern.compile("Code:\\s*(\\d+)");
+    /**
+     * ClickHouse error codes that mean "this data is bad" (parse / type / value errors).
+     * Batches failing with these are bisected so only the bad rows are rejected.
+     */
+    private static final Set<Integer> CH_BAD_DATA_CODES = Set.of(
+            6,   // CANNOT_PARSE_TEXT
+            26,  // CANNOT_PARSE_QUOTED_STRING
+            27,  // CANNOT_PARSE_INPUT_ASSERTION_FAILED
+            38,  // CANNOT_PARSE_DATE
+            41,  // CANNOT_PARSE_DATETIME
+            53,  // TYPE_MISMATCH
+            69,  // ARGUMENT_OUT_OF_BOUND
+            70,  // CANNOT_CONVERT_TYPE
+            72,  // CANNOT_PARSE_NUMBER
+            117, // INCORRECT_DATA
+            131  // TOO_LARGE_STRING_SIZE
+    );
     private static final DateTimeFormatter CH_DT64_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneOffset.UTC);
 
@@ -64,14 +91,14 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
     private final int batchSize;
     private final long flushIntervalMs;
     private final RowSerializer<T> rowSerializer;
+    private long[] retryBackoffMs = RETRY_BACKOFF_MS;
 
     private transient HttpClient httpClient;
     private transient ObjectMapper mapper;
     private transient URI insertUri;
     private transient String basicAuthHeader;
-    private transient List<String> buffer;
-    private transient Object bufferLock;
-    private transient ScheduledExecutorService scheduler;
+    private transient CheckpointedBatchFlusher<String> flusher;
+    private transient Counter rejectedRows;
 
     public BatchedClickHouseSink(
             String clickhouseHttpUrl,
@@ -97,6 +124,12 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
         this.batchSize = Math.max(1, batchSize);
         this.flushIntervalMs = Math.max(200L, flushIntervalMs);
         this.rowSerializer = rowSerializer;
+    }
+
+    /** Overrides the retry backoff schedule (e.g. shorter in tests). */
+    public BatchedClickHouseSink<T> withRetryBackoffMs(long... backoffMs) {
+        this.retryBackoffMs = backoffMs != null ? backoffMs.clone() : new long[0];
+        return this;
     }
 
     // =========================================================================
@@ -221,8 +254,6 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
     @Override
     public void open(OpenContext openContext) {
         this.mapper = new ObjectMapper();
-        this.buffer = new ArrayList<>(Math.min(batchSize, 512));
-        this.bufferLock = new Object();
 
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
@@ -241,16 +272,19 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
                     .encodeToString(creds.getBytes(StandardCharsets.UTF_8));
         }
 
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "flink-ch-sink-" + tableName);
-            t.setDaemon(true);
-            return t;
-        });
-        this.scheduler.scheduleAtFixedRate(
-                this::safeFlush,
-                flushIntervalMs,
-                flushIntervalMs,
-                TimeUnit.MILLISECONDS);
+        this.rejectedRows = getRuntimeContext().getMetricGroup().counter("rejectedRows");
+        this.flusher = new CheckpointedBatchFlusher<>(
+                "clickhouse-" + tableName,
+                batchSize,
+                this::writeLines,
+                BatchedClickHouseSink::classify,
+                (line, err) -> {
+                    rejectedRows.inc();
+                    LOG.error("ClickHouse rejected row for jeopardy.{} ({}); row quarantined: {}",
+                            tableName, err.getMessage(), truncate(line, 512));
+                },
+                retryBackoffMs);
+        this.flusher.startBackgroundFlush(flushIntervalMs);
     }
 
     @Override
@@ -266,55 +300,89 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
         try {
             jsonLine = mapper.writeValueAsString(row);
         } catch (Exception ex) {
-            LOG.warn("Failed to serialize ClickHouse row for table '{}': {}", tableName, ex.getMessage());
+            rejectedRows.inc();
+            LOG.error("Failed to serialize ClickHouse row for table '{}'; row rejected: {}", tableName, ex.getMessage());
             return;
         }
+        flusher.add(jsonLine);
+    }
 
-        List<String> toFlush = null;
-        synchronized (bufferLock) {
-            buffer.add(jsonLine);
-            if (buffer.size() >= batchSize) {
-                toFlush = swapBufferLocked();
-            }
-        }
-        if (toFlush != null) {
-            flushLines(toFlush);
-        }
+    @Override
+    public void initializeState(FunctionInitializationContext context) {
+        // Nothing to restore: buffered rows are flushed before every checkpoint completes,
+        // so anything unwritten is replayed from Kafka after a restart.
+    }
+
+    @Override
+    public void snapshotState(FunctionSnapshotContext context) {
+        flusher.flushAllOrThrow();
     }
 
     @Override
     public void close() {
-        if (scheduler != null) {
-            scheduler.shutdown();
+        if (flusher != null) {
+            flusher.close();
+            flusher.flushAllOrThrow();
+        }
+    }
+
+    /** Failure from a ClickHouse HTTP insert, carrying status and ClickHouse error code for classification. */
+    static final class ClickHouseInsertException extends IOException {
+        private static final long serialVersionUID = 1L;
+        final int httpStatus;
+        final int clickhouseCode;
+
+        ClickHouseInsertException(String message, int httpStatus, int clickhouseCode) {
+            super(message);
+            this.httpStatus = httpStatus;
+            this.clickhouseCode = clickhouseCode;
+        }
+    }
+
+    /**
+     * Network errors, 429 and 5xx -> RETRYABLE; known parse/type error codes -> BAD_DATA (bisect);
+     * 401/403/404 and other 4xx (auth, unknown table, bad query) -> FATAL.
+     */
+    static CheckpointedBatchFlusher.Classification classify(Exception ex) {
+        if (ex instanceof ClickHouseInsertException ch) {
+            if (CH_BAD_DATA_CODES.contains(ch.clickhouseCode)) {
+                return CheckpointedBatchFlusher.Classification.BAD_DATA;
+            }
+            if (ch.httpStatus == 429 || ch.httpStatus >= 500) {
+                return CheckpointedBatchFlusher.Classification.RETRYABLE;
+            }
+            if (ch.httpStatus == 400) {
+                return CheckpointedBatchFlusher.Classification.BAD_DATA;
+            }
+            return CheckpointedBatchFlusher.Classification.FATAL;
+        }
+        return CheckpointedBatchFlusher.Classification.RETRYABLE;
+    }
+
+    static int parseClickHouseCode(String headerValue, String body) {
+        if (headerValue != null && !headerValue.isBlank()) {
             try {
-                scheduler.awaitTermination(5, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+                return Integer.parseInt(headerValue.trim());
+            } catch (NumberFormatException ignored) {
+                // fall through to body parsing
             }
         }
-        safeFlush();
-    }
-
-    private void safeFlush() {
-        List<String> toFlush;
-        synchronized (bufferLock) {
-            if (buffer == null || buffer.isEmpty()) {
-                return;
+        if (body != null) {
+            Matcher m = CH_ERROR_CODE.matcher(body);
+            if (m.find()) {
+                return Integer.parseInt(m.group(1));
             }
-            toFlush = swapBufferLocked();
         }
-        flushLines(toFlush);
+        return -1;
     }
 
-    private List<String> swapBufferLocked() {
-        List<String> out = buffer;
-        buffer = new ArrayList<>(Math.min(batchSize, 512));
-        return out;
-    }
-
-    private void flushLines(List<String> lines) {
-        if (lines == null || lines.isEmpty() || httpClient == null) {
+    /** Sends one batch. Throws on any failure (never swallows); retries are handled by the flusher. */
+    private void writeLines(List<String> lines) throws IOException, InterruptedException {
+        if (lines == null || lines.isEmpty()) {
             return;
+        }
+        if (httpClient == null) {
+            throw new IOException("ClickHouse sink is not open");
         }
         StringBuilder ndjson = new StringBuilder(lines.size() * 256);
         for (String line : lines) {
@@ -349,58 +417,28 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
         }
         HttpRequest request = reqBuilder.build();
 
-        int maxRetries = RETRY_BACKOFF_MS.length;
-        for (int attempt = 0; attempt <= maxRetries; attempt++) {
-            try {
-                HttpResponse<String> resp = httpClient.send(
-                        request,
-                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-                int status = resp.statusCode();
-                if (status >= 200 && status < 300) {
-                    return;
-                }
-
-                boolean retryableStatus = status == 429 || status >= 500;
-                if (!retryableStatus) {
-                    // Do not retry non-429 4xx validation/auth errors
-                    LOG.error("ClickHouse batch insert into jeopardy.{} rejected with non-retryable HTTP {} (rows={}): {}",
-                            tableName, status, lines.size(), resp.body());
-                    return;
-                }
-
-                if (attempt < maxRetries) {
-                    long backoffMs = RETRY_BACKOFF_MS[attempt];
-                    LOG.warn("Transient ClickHouse HTTP {} inserting {} rows into jeopardy.{} (attempt {}/{}); retrying in {}ms",
-                            status, lines.size(), tableName, attempt + 1, maxRetries + 1, backoffMs);
-                    if (!sleepBackoff(backoffMs)) {
-                        return;
-                    }
-                } else {
-                    LOG.error("ClickHouse batch insert into jeopardy.{} failed after {} attempts (HTTP {}, rows={}): {}",
-                            tableName, maxRetries + 1, status, lines.size(), resp.body());
-                }
-            } catch (IOException ex) {
-                if (attempt < maxRetries) {
-                    long backoffMs = RETRY_BACKOFF_MS[attempt];
-                    LOG.warn("Transient ClickHouse IO error inserting {} rows into jeopardy.{} (attempt {}/{}): {}; retrying in {}ms",
-                            lines.size(), tableName, attempt + 1, maxRetries + 1, ex.getMessage(), backoffMs);
-                    if (!sleepBackoff(backoffMs)) {
-                        return;
-                    }
-                } else {
-                    LOG.error("ClickHouse batch insert into jeopardy.{} failed after {} attempts (rows={}): {}",
-                            tableName, maxRetries + 1, lines.size(), ex.getMessage());
-                }
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-                LOG.warn("ClickHouse batch insert into jeopardy.{} interrupted (rows={})", tableName, lines.size());
-                return;
-            } catch (Exception ex) {
-                LOG.error("ClickHouse batch insert into jeopardy.{} threw unexpected exception (rows={}): {}",
-                        tableName, lines.size(), ex.getMessage());
-                return;
-            }
+        HttpResponse<String> resp = httpClient.send(
+                request,
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        int status = resp.statusCode();
+        if (status >= 200 && status < 300) {
+            return;
         }
+        int chCode = parseClickHouseCode(
+                resp.headers().firstValue("X-ClickHouse-Exception-Code").orElse(null),
+                resp.body());
+        throw new ClickHouseInsertException(
+                "ClickHouse insert into jeopardy." + tableName + " failed: HTTP " + status
+                        + " code=" + chCode + " rows=" + lines.size() + ": " + truncate(resp.body(), 400),
+                status,
+                chCode);
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) {
+            return "";
+        }
+        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
     private static byte[] gzipCompress(byte[] rawBytes) throws IOException {
@@ -409,16 +447,6 @@ public class BatchedClickHouseSink<T> extends RichSinkFunction<T> {
             gzip.write(rawBytes);
         }
         return baos.toByteArray();
-    }
-
-    private static boolean sleepBackoff(long backoffMs) {
-        try {
-            Thread.sleep(backoffMs);
-            return true;
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
     }
 
     public static String formatChTimestamp(long epochMs) {

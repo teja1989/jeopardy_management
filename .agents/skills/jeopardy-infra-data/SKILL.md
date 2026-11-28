@@ -32,7 +32,9 @@ Bootstrap these topics via `infra/kafka/create-topics.sh`:
   - `jeopardy.alerts.out` (6 partitions)
   - `jeopardy.dlq.parse-errors` & `jeopardy.dlq.uncorrelated` (3 partitions each)
 
-## Hardened PostgreSQL 16 Schema Requirements (`db/postgres/init.sql`)
+## Hardened PostgreSQL 16 Schema Requirements (Flyway: `services/jeopardy-api/src/main/resources/db/migration/`)
+
+> Schema changes are new Flyway files (`V2__...sql`, `V3__...sql`). Never edit an applied migration (checksum mismatch blocks API startup).
 
 - **Monthly Range Partitioning** (`PARTITION BY RANGE (created_at)`) with initial current + next 2 month partitions + default partition on:
   `tracked_entities`, `entity_milestones`, `entity_fallouts`, `jeopardy_cases`.

@@ -116,7 +116,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jeopardy}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./db/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      # Schema is applied by the db-migrate service (Flyway), not by docker-entrypoint-initdb.d.
     networks:
       - jeopardy-net
     healthcheck:
@@ -125,6 +125,33 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # One-shot PostgreSQL schema migration (Flyway). Same migrations the API runs on
+  # startup (services/jeopardy-api/src/main/resources/db/migration), so Flink can start
+  # before the API. Idempotent: re-running with no new V<n>__*.sql files is a no-op.
+  # ---------------------------------------------------------------------------
+  db-migrate:
+    image: flyway/flyway:10.10.0-alpine
+    container_name: jeopardy-db-migrate
+    restart: "no"
+    mem_limit: 256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >-
+      -url=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-jeopardy}
+      -user=${POSTGRES_USER:-jeopardy}
+      -password=${POSTGRES_PASSWORD:-jeopardy}
+      -locations=filesystem:/flyway/sql
+      -baselineOnMigrate=true
+      -baselineVersion=1
+      -connectRetries=10
+      migrate
+    volumes:
+      - ./services/jeopardy-api/src/main/resources/db/migration:/flyway/sql:ro
+    networks:
+      - jeopardy-net
 
   # ---------------------------------------------------------------------------
   # ClickHouse 24.8 OSS — Raw Event Audit, Milestone Telemetry & Real-Time MVs
@@ -169,6 +196,9 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     command: jobmanager
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
     ports:
       - "${FLINK_UI_PORT:-8081}:8081"
     environment:
