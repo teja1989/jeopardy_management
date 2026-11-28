@@ -693,7 +693,16 @@ export const JourneyLinksPanel: React.FC<JourneyLinksPanelProps> = ({
         )}
       </section>
 
-      {/* PART B: Attached Line Items & Companion Journeys */}
+      {/* PART B: Attached Line Items & Companion Journeys (shown once workflow is saved) */}
+      {draft.isNew ? (
+        <section className="rounded-[22px] border border-dashed border-[#DDE3EA] dark:border-[#333639] bg-[#F8FAFD]/60 dark:bg-[#131314]/40 px-5 py-4 text-xs text-[#5F6368] dark:text-[#9AA0A6]">
+          Save this workflow first to attach child line items or companion workflows under{' '}
+          <code className="font-mono font-semibold text-[#1F1F1F] dark:text-[#E3E3E3]">
+            {draft.orderType || 'this order type'}
+          </code>
+          .
+        </section>
+      ) : (
       <section className="rounded-[22px] border border-[#E0E6F0]/80 dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314]/60 p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-start gap-3">
@@ -814,6 +823,7 @@ export const JourneyLinksPanel: React.FC<JourneyLinksPanelProps> = ({
           </div>
         )}
       </section>
+      )}
     </div>
   );
 };

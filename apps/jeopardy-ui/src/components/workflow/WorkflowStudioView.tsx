@@ -156,8 +156,9 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
   // Dry-run modal
   const [dryRunOpen, setDryRunOpen] = useState(false);
 
-  // Save & publish status
-  const [saving, setSaving] = useState(false);
+  // Save & publish status (distinct so clicking Save never labels Publish Live as "Publishing...")
+  const [saveAction, setSaveAction] = useState<'idle' | 'saving' | 'publishing'>('idle');
+  const isBusySaving = saveAction !== 'idle';
   const [toast, setToast] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
 
   const loadAllConfigs = useCallback(async () => {
@@ -883,7 +884,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
 
   const handleSaveWorkflow = async (andPublish: boolean) => {
     if (!draft) return;
-    setSaving(true);
+    setSaveAction(andPublish ? 'publishing' : 'saving');
     setToast(null);
     try {
       const normalizedLevel = normalizeEntityLevel(draft.entityLevel);
@@ -1164,7 +1165,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
         text: err instanceof Error ? err.message : 'Failed to save workflow',
       });
     } finally {
-      setSaving(false);
+      setSaveAction('idle');
     }
   };
 
@@ -1198,7 +1199,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
       id: 'links',
       label: 'Parent & Links',
       icon: <Link2 className="w-3.5 h-3.5" />,
-      badge: journeyFamily.totalRelated,
+      badge: !draft?.isNew && journeyFamily.totalRelated > 0 ? journeyFamily.totalRelated : undefined,
     },
     {
       id: 'publish',
@@ -1628,7 +1629,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                 <>
                   <button
                     type="button"
-                    disabled={saving || mutatingBlueprintId === draft.blueprintId}
+                    disabled={isBusySaving || mutatingBlueprintId === draft.blueprintId}
                     onClick={() =>
                       void handleToggleBlueprintStatus(
                         draft.blueprintId,
@@ -1653,7 +1654,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                   </button>
                   <button
                     type="button"
-                    disabled={saving || mutatingBlueprintId === draft.blueprintId}
+                    disabled={isBusySaving || mutatingBlueprintId === draft.blueprintId}
                     onClick={() =>
                       setDeleteTarget({
                         blueprintId: draft.blueprintId,
@@ -1670,22 +1671,30 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
 
               <button
                 type="button"
-                disabled={saving}
+                disabled={isBusySaving}
                 onClick={() => void handleSaveWorkflow(false)}
                 className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-3.5 py-1.5 text-xs font-medium text-[#1F1F1F] dark:text-[#E3E3E3] transition disabled:opacity-50"
               >
-                <Save className="w-3.5 h-3.5" />
-                Save
+                {saveAction === 'saving' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Save className="w-3.5 h-3.5" />
+                )}
+                {saveAction === 'saving' ? 'Saving...' : 'Save'}
               </button>
 
               <button
                 type="button"
-                disabled={saving}
+                disabled={isBusySaving}
                 onClick={() => void handleSaveWorkflow(true)}
                 className="inline-flex items-center gap-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-4 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-50"
               >
-                <Rocket className="w-3.5 h-3.5" />
-                {saving ? 'Publishing...' : 'Publish Live'}
+                {saveAction === 'publishing' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Rocket className="w-3.5 h-3.5" />
+                )}
+                {saveAction === 'publishing' ? 'Publishing...' : 'Publish Live'}
               </button>
             </div>
           </div>
@@ -1732,60 +1741,62 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                 })}
               </div>
 
-              {/* JOURNEY FAMILY Switcher */}
-              <div className="pt-3 border-t border-[#DDE3EA]/80 dark:border-[#333639] flex-1 flex flex-col min-h-0">
-                <div className="px-2.5 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
-                  Journey Family
-                </div>
-
-                <div className="space-y-1 overflow-y-auto pr-0.5">
-                  {/* Parents */}
-                  {journeyFamily.parents.map((bp) => renderFamilyItem(bp, 'Parent'))}
-
-                  {/* Active Current Workflow */}
-                  <div className="rounded-2xl bg-white dark:bg-[#282A2C] border border-[#A8C7FA] dark:border-[#004A77] px-2.5 py-2 shadow-sm">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-[#1A73E8] dark:bg-[#8AB4F8] shrink-0" />
-                      <span className="text-[11px] font-semibold text-[#041E49] dark:text-[#C2E7FF] truncate">
-                        {draft.displayName || draft.orderType}
-                      </span>
-                    </div>
-                    <div className="text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6] pl-3.5 truncate">
-                      Editing · {draft.itemType || draft.orderType}
-                    </div>
+              {/* JOURNEY FAMILY Switcher (only shown once workflow is saved — keeps new workflow creation distraction-free) */}
+              {!draft.isNew && (
+                <div className="pt-3 border-t border-[#DDE3EA]/80 dark:border-[#333639] flex-1 flex flex-col min-h-0">
+                  <div className="px-2.5 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-[#5F6368] dark:text-[#9AA0A6]">
+                    Journey Family
                   </div>
 
-                  {/* Sibling / Child Line Items */}
-                  {journeyFamily.siblings.map((bp) =>
-                    renderFamilyItem(
-                      bp,
-                      normalizeEntityLevel(draft.entityLevel) === 'ORDER'
-                        ? 'Line Item'
-                        : 'Sibling',
-                    ),
-                  )}
+                  <div className="space-y-1 overflow-y-auto pr-0.5">
+                    {/* Parents */}
+                    {journeyFamily.parents.map((bp) => renderFamilyItem(bp, 'Parent'))}
 
-                  {/* Attached Companions */}
-                  {journeyFamily.companions.map((bp) => renderFamilyItem(bp, 'Companion'))}
-
-                  {journeyFamily.totalRelated === 0 && (
-                    <div className="px-2.5 py-1.5 text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
-                      No sibling items or companions linked yet.
+                    {/* Active Current Workflow */}
+                    <div className="rounded-2xl bg-white dark:bg-[#282A2C] border border-[#A8C7FA] dark:border-[#004A77] px-2.5 py-2 shadow-sm">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-[#1A73E8] dark:bg-[#8AB4F8] shrink-0" />
+                        <span className="text-[11px] font-semibold text-[#041E49] dark:text-[#C2E7FF] truncate">
+                          {draft.displayName || draft.orderType}
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-[#5F6368] dark:text-[#9AA0A6] pl-3.5 truncate">
+                        Editing · {draft.itemType || draft.orderType}
+                      </div>
                     </div>
-                  )}
-                </div>
 
-                <div className="mt-auto pt-3 border-t border-[#DDE3EA]/70 dark:border-[#333639]">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenNewWorkflowModal(draft.orderType)}
-                    className="w-full inline-flex items-center justify-center gap-1.5 rounded-full bg-[#C2E7FF] hover:bg-[#A8D8FF] dark:bg-[#004A77] dark:hover:bg-[#005B91] text-[#041E49] dark:text-[#C2E7FF] px-3 py-2 text-xs font-semibold transition"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    New Companion
-                  </button>
+                    {/* Sibling / Child Line Items */}
+                    {journeyFamily.siblings.map((bp) =>
+                      renderFamilyItem(
+                        bp,
+                        normalizeEntityLevel(draft.entityLevel) === 'ORDER'
+                          ? 'Line Item'
+                          : 'Sibling',
+                      ),
+                    )}
+
+                    {/* Attached Companions */}
+                    {journeyFamily.companions.map((bp) => renderFamilyItem(bp, 'Companion'))}
+
+                    {journeyFamily.totalRelated === 0 && (
+                      <div className="px-2.5 py-1.5 text-[11px] text-[#5F6368] dark:text-[#9AA0A6]">
+                        No sibling items or companions linked yet.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-auto pt-3 border-t border-[#DDE3EA]/70 dark:border-[#333639]">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenNewWorkflowModal(draft.orderType)}
+                      className="w-full inline-flex items-center justify-center gap-1.5 rounded-full bg-[#C2E7FF] hover:bg-[#A8D8FF] dark:bg-[#004A77] dark:hover:bg-[#005B91] text-[#041E49] dark:text-[#C2E7FF] px-3 py-2 text-xs font-semibold transition"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      New Companion
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </aside>
 
             {/* 2. Right Active Section Surface */}
@@ -2115,21 +2126,31 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                   <div className="pt-2 flex flex-wrap items-center justify-end gap-2.5">
                     <button
                       type="button"
-                      disabled={saving}
+                      disabled={isBusySaving}
                       onClick={() => void handleSaveWorkflow(false)}
                       className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-5 py-2.5 text-xs font-semibold text-[#1F1F1F] dark:text-[#E3E3E3] transition disabled:opacity-50"
                     >
-                      <Save className="w-3.5 h-3.5" />
-                      Save Draft
+                      {saveAction === 'saving' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Save className="w-3.5 h-3.5" />
+                      )}
+                      {saveAction === 'saving' ? 'Saving Draft...' : 'Save Draft'}
                     </button>
                     <button
                       type="button"
-                      disabled={saving}
+                      disabled={isBusySaving}
                       onClick={() => void handleSaveWorkflow(true)}
                       className="inline-flex items-center gap-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-6 py-2.5 text-xs font-semibold shadow-sm transition disabled:opacity-50"
                     >
-                      <Rocket className="w-3.5 h-3.5" />
-                      {saving ? 'Publishing...' : 'Publish Live to Apache Flink'}
+                      {saveAction === 'publishing' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Rocket className="w-3.5 h-3.5" />
+                      )}
+                      {saveAction === 'publishing'
+                        ? 'Publishing...'
+                        : 'Publish Live to Apache Flink'}
                     </button>
                   </div>
                 </div>
