@@ -17,6 +17,21 @@ blueprints:
     itemType: "DEVICE_TRADE_IN"
     entityLevel: "TRADE_IN"
     stateTtlDays: 75
+    # Journey coupling (read by the tracker's /journeys API): how this companion affects the
+    # customer's journey. slaBehavior: BLOCK_PARENT_COMPLETION | PAUSE_PARENT_SLA | INDEPENDENT_PARALLEL
+    linkedOrderConfig:
+      workflowRole: "LINKED_COMPANION"
+      parentOrderTypes: ["SALES_UPGRADE", "SALES"]
+      relationshipType: "BUNDLED_FEATURE"
+      slaBehavior: "INDEPENDENT_PARALLEL"   # 60-day mail-back must not hold the customer's order journey
+      visibility: "CUSTOMER_AND_INTERNAL"
+      customerFacingLabel: "Device Trade-In"
+      internalOwningTeam: "Trade-In Ops"
+      bpmnProcessKey: "tradeInMainBpmn"
+      sourceTopic: "flowable.activity.events"
+      entityKeyPath: "$.variables.tradeInOrderId"
+      parentOrderIdPath: "$.variables.orderId"
+      autoWireAdapterRule: false
     overallSla:
       warning: "45d"
       jeopardy: "55d"

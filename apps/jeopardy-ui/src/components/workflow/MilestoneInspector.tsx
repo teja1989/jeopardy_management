@@ -527,6 +527,18 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
                 <div className="bg-rose-600 w-[10%]" title="Hard Max / Breach" />
               </div>
 
+              {node.sla.usesPctThresholds && (
+                <p
+                  id="sla-pct-note"
+                  className="rounded-lg border border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/40 px-2.5 py-2 text-xs text-blue-900 dark:text-blue-200"
+                >
+                  Warning and jeopardy are set as a percentage of the predicted ETA (warning at{' '}
+                  {String(node.sla.extra?.warningPct ?? '—')}%, jeopardy at{' '}
+                  {String(node.sla.extra?.jeopardyPct ?? '—')}%). Typing a fixed time below replaces the percentages
+                  for this step.
+                </p>
+              )}
+
               <div className="grid grid-cols-2 gap-2.5">
                 <div>
                   <label className="block text-[10px] font-medium text-slate-500 mb-1">
@@ -567,9 +579,18 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
                   </label>
                   <input
                     type="text"
-                    value={node.sla.warning ?? ''}
+                    value={node.sla.usesPctThresholds ? '' : (node.sla.warning ?? '')}
+                    placeholder={
+                      node.sla.usesPctThresholds
+                        ? `${String(node.sla.extra?.warningPct ?? '—')}% of predicted ETA`
+                        : undefined
+                    }
+                    aria-describedby={node.sla.usesPctThresholds ? 'sla-pct-note' : undefined}
                     onChange={(e) =>
-                      onChange({ ...node, sla: { ...node.sla, warning: e.target.value } })
+                      onChange({
+                        ...node,
+                        sla: { ...node.sla, warning: e.target.value, usesPctThresholds: false },
+                      })
                     }
                     className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-mono"
                   />
@@ -580,9 +601,18 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
                   </label>
                   <input
                     type="text"
-                    value={node.sla.jeopardy ?? ''}
+                    value={node.sla.usesPctThresholds ? '' : (node.sla.jeopardy ?? '')}
+                    placeholder={
+                      node.sla.usesPctThresholds
+                        ? `${String(node.sla.extra?.jeopardyPct ?? '—')}% of predicted ETA`
+                        : undefined
+                    }
+                    aria-describedby={node.sla.usesPctThresholds ? 'sla-pct-note' : undefined}
                     onChange={(e) =>
-                      onChange({ ...node, sla: { ...node.sla, jeopardy: e.target.value } })
+                      onChange({
+                        ...node,
+                        sla: { ...node.sla, jeopardy: e.target.value, usesPctThresholds: false },
+                      })
                     }
                     className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-mono"
                   />

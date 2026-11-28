@@ -61,6 +61,8 @@ import {
   formatElapsedBetween,
   formatShortTime,
   formatTimestamp,
+  formatDayTime,
+  companionParentOrderId,
 } from '../utils/format';
 import type { DashboardDrilldownTarget } from './DashboardsView';
 import {
@@ -69,6 +71,7 @@ import {
   type TimeRangeValue,
 } from './DateRangePicker';
 import { RefreshingOverlay } from './RefreshingOverlay';
+import { CustomerJourneyPanel } from './journey/CustomerJourneyPanel';
 
 interface TrackerViewProps {
   initialFilter: DashboardDrilldownTarget | null;
@@ -2004,10 +2007,11 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                         ? primaryEntity.entityKey.split(':')[1]
                         : null;
                     const etaDisplay = primaryEntity.closedAt
-                      ? formatShortTime(primaryEntity.closedAt)
+                      ? formatDayTime(primaryEntity.closedAt)
                       : primaryEntity.predictedP50At
-                        ? formatShortTime(primaryEntity.predictedP50At)
+                        ? formatDayTime(primaryEntity.predictedP50At)
                         : '—';
+                    const companionOf = companionParentOrderId(primaryEntity.entityKey, primaryEntity.journeyId);
 
                     return (
                       <React.Fragment key={grp.orderId}>
@@ -2057,6 +2061,19 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                                 </span>
                               )}
                             </div>
+                            {companionOf && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openOrder(companionOf, grp.customerId);
+                                }}
+                                className="mt-1 ml-[22px] inline-flex items-center gap-1 text-xs text-[#1967D2] dark:text-[#8AB4F8] hover:underline"
+                                title={`This is a companion order created for ${companionOf}. Open the customer journey.`}
+                              >
+                                ↳ Companion of <span className="font-mono">{companionOf}</span>
+                              </button>
+                            )}
                           </td>
 
                           <td className="py-3.5 px-4">
@@ -2085,6 +2102,10 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                                 <User className="w-3 h-3 opacity-80" />
                                 {grp.customerId}
                               </button>
+                            ) : companionOf ? (
+                              <span className="text-xs text-[#5F6368] dark:text-[#9AA0A6]" title="Companion orders often carry no customer id; the customer is on the parent order.">
+                                via <span className="font-mono">{companionOf}</span>
+                              </span>
                             ) : (
                               <span className="text-[#5F6368] dark:text-[#9AA0A6]">—</span>
                             )}
@@ -2100,7 +2121,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
                           </td>
 
                           <td className="py-3.5 px-4 whitespace-nowrap font-mono text-[11px] tabular-nums text-[#5F6368] dark:text-[#9AA0A6]">
-                            {primaryEntity.createdAt ? formatShortTime(primaryEntity.createdAt) : '—'}
+                            {primaryEntity.createdAt ? formatDayTime(primaryEntity.createdAt) : '—'}
                           </td>
 
                           <td className="py-3.5 px-4 whitespace-nowrap font-mono text-[11px] tabular-nums text-[#444746] dark:text-[#C4C7C5]">
@@ -2684,6 +2705,13 @@ export const TrackerView: React.FC<TrackerViewProps> = ({
             {/* TAB 1: PROGRESS (Default) */}
             {detailTab === 'progress' && (
               <div className="p-6 space-y-6">
+                {/* Customer journey: order + items + companion orders, journey SLA vs own SLAs */}
+                {selectedEntityKey && (
+                  <CustomerJourneyPanel
+                    entityKey={selectedEntityKey}
+                    onOpenEntity={(key) => openOrder(key)}
+                  />
+                )}
                 {/* Compact Order Items Switcher Bar (when viewing a specific Line Item) */}
                 {isLineItemView && childItemOverviews.length > 0 && (
                   <div className="rounded-2xl bg-[#F8FAFD] dark:bg-[#131314] border border-[#E0E6F0] dark:border-[#333639] p-4 space-y-3">

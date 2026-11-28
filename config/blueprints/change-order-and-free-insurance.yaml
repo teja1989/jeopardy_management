@@ -21,6 +21,21 @@ blueprints:
     itemType: "CHANGE_ORDER"
     entityLevel: "CHANGE_ORDER"
     stateTtlDays: 7
+    # Journey coupling (read by the tracker's /journeys API): how this companion affects the
+    # customer's journey. slaBehavior: BLOCK_PARENT_COMPLETION | PAUSE_PARENT_SLA | INDEPENDENT_PARALLEL
+    linkedOrderConfig:
+      workflowRole: "CHANGE_SUPPLEMENTAL"
+      parentOrderTypes: ["SALES_UPGRADE", "SALES"]
+      relationshipType: "CHANGE_ORDER_OF"
+      slaBehavior: "PAUSE_PARENT_SLA"   # customer-initiated: pauses the parent's payment step clock
+      visibility: "CUSTOMER_AND_INTERNAL"
+      customerFacingLabel: "Payment Update"
+      internalOwningTeam: "Billing Ops"
+      bpmnProcessKey: ""
+      sourceTopic: "domain.order.events"
+      entityKeyPath: "$.order.orderId"
+      parentOrderIdPath: "$.order.parentOrderId"
+      autoWireAdapterRule: false
     overallSla:
       warning: "10m"
       jeopardy: "20m"
@@ -78,6 +93,21 @@ blueprints:
     itemType: "FREE_DEVICE_INSURANCE"
     entityLevel: "INTERNAL_PROMO"
     stateTtlDays: 14
+    # Journey coupling (read by the tracker's /journeys API): how this companion affects the
+    # customer's journey. slaBehavior: BLOCK_PARENT_COMPLETION | PAUSE_PARENT_SLA | INDEPENDENT_PARALLEL
+    linkedOrderConfig:
+      workflowRole: "LINKED_COMPANION"
+      parentOrderTypes: ["SALES_UPGRADE", "SALES"]
+      relationshipType: "TRIGGERED_BY_ORDER"
+      slaBehavior: "BLOCK_PARENT_COMPLETION"   # promised at sale: journey is not done until coverage is active
+      visibility: "CUSTOMER_AND_INTERNAL"
+      customerFacingLabel: "Free Device Protection"
+      internalOwningTeam: "Partner Ops"
+      bpmnProcessKey: "internalPromoBpmn"
+      sourceTopic: "flowable.activity.events"
+      entityKeyPath: "$.variables.companionOrderId"
+      parentOrderIdPath: "$.variables.salesOrderId"
+      autoWireAdapterRule: false
     overallSla:
       warning: "20m"
       jeopardy: "45m"

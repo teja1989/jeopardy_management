@@ -12,6 +12,7 @@ import type {
   ClusterScanSummary,
   CustomerJourneyResponse,
   CustomerOrdersResponse,
+  JourneyResponse,
   DevOpsBottlenecksResponse,
   DryRunRequest,
   DryRunResponse,
@@ -443,6 +444,11 @@ export function getCustomerJourneys(customerId: string): Promise<CustomerJourney
   return fetchJson<CustomerJourneyResponse>(
     `${API_BASE}/customers/${encodeURIComponent(customerId)}/journeys`,
   );
+}
+
+/** Customer journey for any member key (order, line item, or companion such as INS-77301). */
+export function getJourney(entityKey: string): Promise<JourneyResponse> {
+  return fetchJson<JourneyResponse>(`${API_BASE}/journeys/${encodeURIComponent(entityKey)}`);
 }
 
 export function getCustomerOrders(customerId: string): Promise<CustomerOrdersResponse> {

@@ -77,6 +77,26 @@ export function formatShortTime(iso: string | null | undefined): string {
   });
 }
 
+/** Month, day and time without seconds (e.g. "Nov 26, 08:00"): unambiguous across multi-day ranges. */
+export function formatDayTime(iso: string | null | undefined): string {
+  if (!iso) {
+    return '—';
+  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    return iso;
+  }
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/** Parent order of a companion, derived from the engine's journey id (JRN-<parent order>). */
+export function companionParentOrderId(entityKey: string, journeyId: string | null | undefined): string | null {
+  if (!journeyId) return null;
+  const parent = (journeyId.startsWith('JRN-') ? journeyId.slice(4) : journeyId).split(':')[0];
+  const ownRoot = entityKey.split(':')[0];
+  return parent && parent !== ownRoot ? parent : null;
+}
+
 export function formatPct(value: number | null | undefined, digits = 1): string {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return '—';

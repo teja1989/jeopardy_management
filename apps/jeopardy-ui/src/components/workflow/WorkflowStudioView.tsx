@@ -59,6 +59,7 @@ import {
   type WorkflowValidationErrors,
 } from './WorkflowOverviewPanel';
 import {
+  serializeSla,
   blueprintToDraft,
   buildAvailableTopics,
   buildNodeFromTemplate,
@@ -992,7 +993,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
               startTriggers: step.startTriggers,
               completeTriggers: step.completeTriggers,
               failTriggers: step.failTriggers,
-              defaultSla: step.sla,
+              defaultSla: serializeSla(step.sla),
             },
           });
           savedTemplateIds.add(step.templateId);
@@ -1042,7 +1043,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
           useTemplate: s.templateId,
           displayName: s.displayName,
           dependsOn: s.dependsOn,
-          slaOverride: s.sla,
+          slaOverride: serializeSla(s.sla),
         })),
       };
 

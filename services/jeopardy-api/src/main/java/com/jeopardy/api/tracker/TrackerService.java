@@ -898,13 +898,10 @@ public class TrackerService {
         Map<String, Set<String>> companionIdsByParentOrder = new LinkedHashMap<>();
         Set<String> companionOrderIds = new LinkedHashSet<>();
         for (EntityRelationshipDto r : rels) {
-            String rt = r.relationType() != null ? r.relationType().toUpperCase() : "";
-            if ("TRIGGERED_BY_ORDER".equals(rt)
-                    || "TRIGGERED_BY_ITEM".equals(rt)
-                    || "BUNDLED_FEATURE".equals(rt)
-                    || "BUNDLED_LINE_ITEM".equals(rt)
-                    || "CHANGE_ORDER_OF".equals(rt)
-                    || "CHILD_WORK_ORDER".equals(rt)) {
+            // Accept both adapter link names (TRIGGERED_BY_ORDER, CHANGE_ORDER_OF, ...) and the normalized DB
+            // values the Flink sink stores (INTERNAL_TRIGGERED, CHANGE_ORDER, ...). Previously only BUNDLED_FEATURE
+            // matched stored rows, so insurance/change-order companions were never counted.
+            if (JourneyRelations.isCompanionLink(r.relationType())) {
                 String srcOrder = extractRootOrderId(r.sourceEntityKey());
                 String tgtOrder = extractRootOrderId(r.targetEntityKey());
                 if (!srcOrder.equals(tgtOrder)) {

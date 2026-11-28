@@ -500,6 +500,10 @@ export interface SlaOverrideConfig {
   jeopardyPct?: number;
   rightCensoredSurvival?: boolean;
   segmentSlaFallbacks?: SegmentSlaRuleConfig[];
+  /** UI-only: SLA keys this editor does not model, preserved verbatim on save. */
+  extra?: Record<string, unknown>;
+  /** UI-only: thresholds are % of the predicted ETA (warningPct/jeopardyPct) rather than fixed durations. */
+  usesPctThresholds?: boolean;
 }
 
 export interface BlueprintStepDefinition {
@@ -759,4 +763,76 @@ export interface AlertDeliveryDto {
   errorMessage: string | null;
   payloadPreview: Record<string, unknown>;
   sentAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Customer Journey (GET /api/v1/journeys/{entityKey})
+// One customer order (anchor) + its line items + companion orders created for it.
+// Each member is measured on its own SLA; the journey has its own customer-facing SLA.
+// ---------------------------------------------------------------------------
+export type JourneyCoupling = 'BLOCKING' | 'PAUSES_PARENT' | 'INDEPENDENT';
+export type JourneySlaState = 'ON_TRACK' | 'WARNING' | 'JEOPARDY' | 'BREACHED' | 'MET' | 'MISSED' | 'PAUSED' | 'NO_SLA';
+
+export interface JourneyHold {
+  entityKey: string;
+  title: string;
+  reason: string;
+  owningTeam: string | null;
+}
+
+export interface JourneyMember {
+  entityKey: string;
+  role: 'ANCHOR' | 'ITEM' | 'COMPANION' | 'COMPANION_ITEM';
+  relationType: string | null;
+  coupling: JourneyCoupling | null;
+  couplingSource: 'WORKFLOW_CONFIG' | 'LINK' | 'DEFAULT' | null;
+  inJourneyScope: boolean;
+  holdingJourney: boolean;
+  title: string;
+  blueprintId: string | null;
+  orderType: string | null;
+  itemType: string | null;
+  status: string;
+  jeopardySeverity: string | null;
+  currentStep: string | null;
+  stepsDone: number;
+  stepsTotal: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  ownSla: { state: JourneySlaState; dueAt: string | null; remainingMs: number | null; basis: string };
+  owningTeam: string | null;
+  visibility: string | null;
+  activeFalloutCode: string | null;
+  activeFalloutQueue: string | null;
+  countsAsCustomerOrder: boolean;
+}
+
+export interface JourneyResponse {
+  journeyId: string;
+  anchorOrderId: string;
+  customerId: string | null;
+  journey: {
+    status: string;
+    startedAt: string | null;
+    dueAt: string | null;
+    warningAt: string | null;
+    jeopardyAt: string | null;
+    completedAt: string | null;
+    elapsedMs: number;
+    remainingMs: number | null;
+    customerPauseMs: number;
+    slaState: JourneySlaState;
+    heldBy: JourneyHold[];
+    criticalPathEntityKey: string | null;
+    summary: string;
+  };
+  members: JourneyMember[];
+  counts: {
+    customerOrders: number;
+    lineItems: number;
+    companions: number;
+    blockingCompanions: number;
+    independentCompanions: number;
+    membersNeedingAttention: number;
+  };
 }

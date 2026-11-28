@@ -423,6 +423,38 @@ function parseTriggersFromRaw(raw: unknown): TriggerRuleConfig[] {
     });
 }
 
+const MANAGED_SLA_KEYS = new Set([
+  'mode',
+  'modelId',
+  'hardMin',
+  'expected',
+  'fallbackExpected',
+  'warning',
+  'jeopardy',
+  'hardMax',
+  'segmentSlaFallbacks',
+]);
+
+/**
+ * Converts the editor's SLA model back to the stored blueprint shape. Preserves unmodelled keys and keeps
+ * percentage-based thresholds unless the admin replaced them with fixed warning/jeopardy durations.
+ */
+export function serializeSla(sla: SlaOverrideConfig): Record<string, unknown> {
+  const { extra, usesPctThresholds, ...managed } = sla;
+  const out: Record<string, unknown> = { ...(extra ?? {}), ...managed };
+  if (usesPctThresholds) {
+    delete out.warning;
+    delete out.jeopardy;
+  } else {
+    delete out.warningPct;
+    delete out.jeopardyPct;
+  }
+  for (const k of Object.keys(out)) {
+    if (out[k] === undefined) delete out[k];
+  }
+  return out;
+}
+
 function parseSlaFromRaw(raw: unknown, fallback?: unknown): SlaOverrideConfig {
   const baseObj = (fallback && typeof fallback === 'object' ? fallback : {}) as Record<string, unknown>;
   const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
@@ -439,7 +471,22 @@ function parseSlaFromRaw(raw: unknown, fallback?: unknown): SlaOverrideConfig {
       ? baseObj.segmentSlaFallbacks
       : [];
 
+  // Keep every key this editor does not model (warningPct, jeopardyPct, rightCensoredSurvival, future fields)
+  // so opening and saving a workflow never silently changes its SLA semantics.
+  const extra: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (!MANAGED_SLA_KEYS.has(k)) {
+      extra[k] = v;
+    }
+  }
+  const usesPctThresholds =
+    (typeof obj.warningPct === 'number' || typeof obj.jeopardyPct === 'number') &&
+    typeof obj.warning !== 'string' &&
+    typeof obj.jeopardy !== 'string';
+
   return {
+    extra,
+    usesPctThresholds,
     mode: pickStr('mode', 'STATIC'),
     modelId: pickStr('modelId', ''),
     hardMin: pickStr('hardMin', '5s'),

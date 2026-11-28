@@ -18,14 +18,26 @@ public class TrackerController {
     private final TrackerService trackerService;
     private final AdminConfigService adminConfigService;
     private final AnalyticsQueryBuilder analyticsQueryBuilder;
+    private final JourneyService journeyService;
 
     public TrackerController(
             TrackerService trackerService,
             AdminConfigService adminConfigService,
-            AnalyticsQueryBuilder analyticsQueryBuilder) {
+            AnalyticsQueryBuilder analyticsQueryBuilder,
+            JourneyService journeyService) {
         this.trackerService = trackerService;
         this.adminConfigService = adminConfigService;
         this.analyticsQueryBuilder = analyticsQueryBuilder;
+        this.journeyService = journeyService;
+    }
+
+    /**
+     * Customer journey for any member key (order, line item or companion such as INS-77301): the anchor order,
+     * its items and companions, each measured on its own SLA, plus the journey-level SLA and what is holding it.
+     */
+    @GetMapping("/journeys/{entityKey}")
+    public JourneyResponse getJourney(@PathVariable String entityKey) {
+        return journeyService.getJourney(entityKey);
     }
 
     /**
