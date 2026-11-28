@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertCircle,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -14,7 +15,7 @@ import {
   Tag,
   X,
 } from 'lucide-react';
-import type { MilestoneTemplateRecord } from '../../api/types';
+import type { JourneyBlueprintRecord, MilestoneTemplateRecord } from '../../api/types';
 import {
   ORDER_FAMILY_OPTIONS,
   createStarterWorkflowDraft,
@@ -31,6 +32,7 @@ import {
 interface OnboardTrackerWizardModalProps {
   open: boolean;
   templates: MilestoneTemplateRecord[];
+  existingBlueprints?: JourneyBlueprintRecord[];
   existingOrderTypes: string[];
   reportingGroups?: ReportingGroupOption[];
   availableTopics?: string[];
@@ -258,6 +260,7 @@ const CORE_DOMAIN_TOPICS = [
 export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps> = ({
   open,
   templates,
+  existingBlueprints = [],
   existingOrderTypes,
   reportingGroups,
   availableTopics = [],
@@ -360,12 +363,27 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
           QUICK_STARTERS.find((s) => s.key === 'insurance') ?? QUICK_STARTERS[0];
         applyStarter(companionStarter, parentClean);
       } else {
-        const defaultStarter =
-          QUICK_STARTERS.find((s) => s.key === 'ship') ?? QUICK_STARTERS[0];
+        const shipStarter = QUICK_STARTERS.find((s) => s.key === 'ship');
+        const shipAlreadyExists =
+          shipStarter != null &&
+          existingBlueprints.some((bp) => {
+            const def = (bp.definition ?? {}) as Record<string, unknown>;
+            const bpName = String(def.displayName ?? bp.blueprintId).trim().toLowerCase();
+            if (bpName === shipStarter.displayName.trim().toLowerCase()) return true;
+            return (
+              bp.active &&
+              bp.orderType.trim().toUpperCase() === shipStarter.orderType &&
+              (bp.itemType ?? '').trim().toUpperCase() === shipStarter.itemType &&
+              normalizeEntityLevel(bp.entityLevel) === normalizeEntityLevel(shipStarter.entityLevel)
+            );
+          });
+        const defaultStarter = shipAlreadyExists
+          ? (QUICK_STARTERS.find((s) => s.key === 'blank') ?? QUICK_STARTERS[0])
+          : (shipStarter ?? QUICK_STARTERS[0]);
         applyStarter(defaultStarter, null);
       }
     }
-  }, [open, initialParentOrderType]);
+  }, [open, initialParentOrderType, existingBlueprints]);
 
   const effectiveReportingGroups = useMemo<ReportingGroupOption[]>(() => {
     const map = new Map<string, ReportingGroupOption>();
@@ -445,9 +463,44 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
     );
   };
 
+  const nameConflict = useMemo(() => {
+    const clean = displayName.trim().toLowerCase();
+    if (!clean) return null;
+    const match = existingBlueprints.find((bp) => {
+      const def = (bp.definition ?? {}) as Record<string, unknown>;
+      const otherName = String(def.displayName ?? bp.blueprintId).trim().toLowerCase();
+      return otherName === clean;
+    });
+    if (!match) return null;
+    return `A workflow named "${displayName.trim()}" already exists (${match.blueprintId}). Choose a unique name.`;
+  }, [displayName, existingBlueprints]);
+
+  const routingConflict = useMemo(() => {
+    const cleanOt = orderType.trim().toUpperCase();
+    if (!cleanOt) return null;
+    const cleanIt = itemType.trim().toUpperCase();
+    const cleanLvl = normalizeEntityLevel(entityLevel);
+    const match = existingBlueprints.find(
+      (bp) =>
+        bp.active &&
+        bp.orderType.trim().toUpperCase() === cleanOt &&
+        (bp.itemType ?? '').trim().toUpperCase() === cleanIt &&
+        normalizeEntityLevel(bp.entityLevel) === cleanLvl,
+    );
+    if (!match) return null;
+    const def = (match.definition ?? {}) as Record<string, unknown>;
+    const otherName = String(def.displayName ?? match.blueprintId);
+    const scope = cleanIt ? `${cleanOt} · ${cleanIt}` : `${cleanOt} (Order-level)`;
+    return `Active workflow "${otherName}" already tracks ${scope}. Choose a distinct Item Type or edit the existing workflow.`;
+  }, [orderType, itemType, entityLevel, existingBlueprints]);
+
   if (!open) return null;
 
-  const canSubmit = orderType.trim().length > 0 && displayName.trim().length > 0;
+  const canSubmit =
+    orderType.trim().length > 0 &&
+    displayName.trim().length > 0 &&
+    !nameConflict &&
+    !routingConflict;
 
   const handleCreate = () => {
     if (!canSubmit) return;
@@ -460,38 +513,38 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
 
     const linkedConfig: LinkedOrderConfig = linksToParent
       ? {
-          workflowRole,
-          parentOrderTypes: parentOrderTypes.length > 0 ? parentOrderTypes : ['SALES'],
-          relationshipType,
-          bpmnProcessKey: cleanedBpmnKey,
-          sourceTopic: cleanedBpmnKey ? 'flowable.activity.events' : 'domain.order.events',
-          entityKeyPath: entityKeyPath.trim() || '$.variables.orderId',
-          parentOrderIdPath: parentOrderIdPath.trim() || '$.variables.parentOrderId',
-          parentLineItemIdPath: parentLineItemIdPath.trim() || undefined,
-          visibility,
-          customerFacingLabel: customerFacingLabel.trim() || displayName.trim(),
-          internalOwningTeam: internalOwningTeam.trim() || 'Internal Order Ops',
-          slaBehavior,
-          autoWireAdapterRule: Boolean(
-            cleanedBpmnKey || additionalAdapterTopics.length > 0,
-          ),
-          additionalAdapterTopics: [...additionalAdapterTopics],
-        }
+        workflowRole,
+        parentOrderTypes: parentOrderTypes.length > 0 ? parentOrderTypes : ['SALES'],
+        relationshipType,
+        bpmnProcessKey: cleanedBpmnKey,
+        sourceTopic: cleanedBpmnKey ? 'flowable.activity.events' : 'domain.order.events',
+        entityKeyPath: entityKeyPath.trim() || '$.variables.orderId',
+        parentOrderIdPath: parentOrderIdPath.trim() || '$.variables.parentOrderId',
+        parentLineItemIdPath: parentLineItemIdPath.trim() || undefined,
+        visibility,
+        customerFacingLabel: customerFacingLabel.trim() || displayName.trim(),
+        internalOwningTeam: internalOwningTeam.trim() || 'Internal Order Ops',
+        slaBehavior,
+        autoWireAdapterRule: Boolean(
+          cleanedBpmnKey || additionalAdapterTopics.length > 0,
+        ),
+        additionalAdapterTopics: [...additionalAdapterTopics],
+      }
       : {
-          workflowRole: 'PRIMARY_CUSTOMER',
-          parentOrderTypes: [],
-          relationshipType: 'TRIGGERED_BY_ORDER',
-          bpmnProcessKey: '',
-          sourceTopic: 'domain.order.events',
-          entityKeyPath: '$.order.orderId',
-          parentOrderIdPath: '',
-          visibility,
-          customerFacingLabel: customerFacingLabel.trim() || displayName.trim(),
-          internalOwningTeam: internalOwningTeam.trim() || 'Order Operations',
-          slaBehavior: 'INDEPENDENT_PARALLEL',
-          autoWireAdapterRule: false,
-          additionalAdapterTopics: [],
-        };
+        workflowRole: 'PRIMARY_CUSTOMER',
+        parentOrderTypes: [],
+        relationshipType: 'TRIGGERED_BY_ORDER',
+        bpmnProcessKey: '',
+        sourceTopic: 'domain.order.events',
+        entityKeyPath: '$.order.orderId',
+        parentOrderIdPath: '',
+        visibility,
+        customerFacingLabel: customerFacingLabel.trim() || displayName.trim(),
+        internalOwningTeam: internalOwningTeam.trim() || 'Order Operations',
+        slaBehavior: 'INDEPENDENT_PARALLEL',
+        autoWireAdapterRule: false,
+        additionalAdapterTopics: [],
+      };
 
     const draft = createStarterWorkflowDraft({
       orderType: orderType.trim().toUpperCase(),
@@ -503,6 +556,19 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
       templates,
       linkedOrderConfig: linkedConfig,
     });
+
+    // Guarantee a brand-new workflow never collides with an existing blueprintId
+    const existingIds = new Set(
+      existingBlueprints.map((bp) => bp.blueprintId.trim().toLowerCase()),
+    );
+    const baseId = draft.blueprintId;
+    let uniqueId = baseId;
+    let suffix = 2;
+    while (existingIds.has(uniqueId.toLowerCase())) {
+      uniqueId = `${baseId}-${suffix}`;
+      suffix += 1;
+    }
+    draft.blueprintId = uniqueId;
 
     onCreateDraft(draft);
     onClose();
@@ -557,11 +623,10 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                         starter.linksToParent ? initialParentOrderType : null,
                       )
                     }
-                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition ${
-                      active
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition ${active
                         ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold shadow-sm'
                         : 'bg-[#F0F4F9] dark:bg-[#282A2C] text-[#444746] dark:text-[#C4C7C5] hover:bg-[#E8EEF7] dark:hover:bg-[#333639] font-medium'
-                    }`}
+                      }`}
                   >
                     {active && <Check className="w-3 h-3 shrink-0" />}
                     {starter.linksToParent && !active && (
@@ -585,8 +650,18 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="e.g. Device Ship-to-Home"
-                className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:border-[#1A73E8] focus:ring-2 focus:ring-[#1A73E8]/15"
+                className={`w-full rounded-xl border bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:ring-2 ${
+                  nameConflict
+                    ? 'border-[#C5221F] dark:border-[#F28B82] focus:border-[#C5221F] focus:ring-[#C5221F]/15'
+                    : 'border-[#DDE3EA] dark:border-[#3C4043] focus:border-[#1A73E8] focus:ring-[#1A73E8]/15'
+                }`}
               />
+              {nameConflict && (
+                <p className="mt-1 flex items-start gap-1 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82]">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{nameConflict}</span>
+                </p>
+              )}
             </div>
 
             <div>
@@ -611,7 +686,11 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                 value={orderType}
                 onChange={(e) => setOrderType(e.target.value.toUpperCase())}
                 placeholder="e.g. SALES, DEVICE_TRADE_IN"
-                className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:border-[#1A73E8]"
+                className={`w-full rounded-xl border bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none ${
+                  routingConflict
+                    ? 'border-[#C5221F] dark:border-[#F28B82] focus:border-[#C5221F]'
+                    : 'border-[#DDE3EA] dark:border-[#3C4043] focus:border-[#1A73E8]'
+                }`}
               />
             </div>
 
@@ -624,9 +703,20 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                 value={itemType}
                 onChange={(e) => setItemType(e.target.value.toUpperCase())}
                 placeholder="e.g. SALES_HANDSET_SHIP"
-                className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:border-[#1A73E8]"
+                className={`w-full rounded-xl border bg-[#F8FAFD] dark:bg-[#131314] px-3.5 py-2 text-xs font-mono text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none ${
+                  routingConflict
+                    ? 'border-[#C5221F] dark:border-[#F28B82] focus:border-[#C5221F]'
+                    : 'border-[#DDE3EA] dark:border-[#3C4043] focus:border-[#1A73E8]'
+                }`}
               />
             </div>
+
+            {routingConflict && (
+              <div className="sm:col-span-2 rounded-2xl border border-[#FAD2CF] dark:border-[#5C2020] bg-[#FCE8E6] dark:bg-[#3C1919] px-3.5 py-2 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82] flex items-start gap-2">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>{routingConflict}</span>
+              </div>
+            )}
 
             {/* Reporting Group + inline "+ New Group" */}
             <div>
@@ -674,11 +764,10 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                       key={opt.id}
                       type="button"
                       onClick={() => setEntityLevel(opt.id)}
-                      className={`rounded-full py-1.5 text-xs font-semibold transition ${
-                        active
+                      className={`rounded-full py-1.5 text-xs font-semibold transition ${active
                           ? 'bg-white dark:bg-[#1E1F20] text-[#041E49] dark:text-[#C2E7FF] shadow-sm'
                           : 'text-[#5F6368] dark:text-[#9AA0A6] hover:text-[#1F1F1F] dark:hover:text-white'
-                      }`}
+                        }`}
                     >
                       {opt.label}
                     </button>
@@ -782,20 +871,18 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
 
           {/* BOTTOM: Clean Toggle Card — "Links to a Parent Order?" */}
           <div
-            className={`rounded-[22px] border p-4 transition-all space-y-4 ${
-              linksToParent
+            className={`rounded-[22px] border p-4 transition-all space-y-4 ${linksToParent
                 ? 'border-[#A8C7FA] dark:border-[#004A77] bg-[#F4F8FF] dark:bg-[#002844]/30'
                 : 'border-[#E0E6F0] dark:border-[#333639] bg-[#F8FAFD] dark:bg-[#131314]/60'
-            }`}
+              }`}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-2.5">
                 <div
-                  className={`w-8 h-8 rounded-2xl flex items-center justify-center shrink-0 ${
-                    linksToParent
+                  className={`w-8 h-8 rounded-2xl flex items-center justify-center shrink-0 ${linksToParent
                       ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#1967D2] dark:text-[#C2E7FF]'
                       : 'bg-[#E8EEF7] dark:bg-[#282A2C] text-[#5F6368] dark:text-[#9AA0A6]'
-                  }`}
+                    }`}
                 >
                   <Link2 className="w-4 h-4" />
                 </div>
@@ -819,16 +906,14 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                 role="switch"
                 aria-checked={linksToParent}
                 onClick={() => setLinksToParent((v) => !v)}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
-                  linksToParent
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${linksToParent
                     ? 'bg-[#1A73E8]'
                     : 'bg-[#D0D7E2] dark:bg-[#3C4043]'
-                }`}
+                  }`}
               >
                 <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition mt-0.5 ${
-                    linksToParent ? 'translate-x-5' : 'translate-x-0.5'
-                  }`}
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition mt-0.5 ${linksToParent ? 'translate-x-5' : 'translate-x-0.5'
+                    }`}
                 />
               </button>
             </div>
@@ -848,11 +933,10 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                           key={ot}
                           type="button"
                           onClick={() => toggleParentType(ot)}
-                          className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-mono transition ${
-                            active
+                          className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-mono transition ${active
                               ? 'bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] font-semibold'
                               : 'bg-white dark:bg-[#1E1F20] border border-[#DDE3EA] dark:border-[#3C4043] text-[#444746] dark:text-[#C4C7C5]'
-                          }`}
+                            }`}
                         >
                           {active && <Check className="w-3 h-3" />}
                           {ot}
@@ -953,11 +1037,10 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                         key={opt.id}
                         type="button"
                         onClick={() => setSlaBehavior(opt.id)}
-                        className={`rounded-2xl border p-2.5 text-left transition ${
-                          slaBehavior === opt.id
+                        className={`rounded-2xl border p-2.5 text-left transition ${slaBehavior === opt.id
                             ? 'border-[#1A73E8] bg-white dark:bg-[#004A77]/50 ring-1 ring-[#1A73E8]/25'
                             : 'border-[#E0E6F0] dark:border-[#333639] bg-white/75 dark:bg-[#1E1F20]'
-                        }`}
+                          }`}
                       >
                         <div className="text-[11px] font-semibold text-[#1F1F1F] dark:text-white">
                           {opt.title}
@@ -1079,11 +1162,10 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                             <button
                               type="button"
                               onClick={() => setVisibility('CUSTOMER_AND_INTERNAL')}
-                              className={`inline-flex items-center justify-center gap-1.5 rounded-xl border py-1.5 px-3 text-xs font-medium transition ${
-                                visibility === 'CUSTOMER_AND_INTERNAL'
+                              className={`inline-flex items-center justify-center gap-1.5 rounded-xl border py-1.5 px-3 text-xs font-medium transition ${visibility === 'CUSTOMER_AND_INTERNAL'
                                   ? 'border-[#1A73E8] bg-[#E8F0FE] dark:bg-[#004A77]/50 text-[#1967D2] dark:text-[#C2E7FF]'
                                   : 'border-[#DDE3EA] dark:border-[#3C4043] text-[#5F6368] dark:text-[#9AA0A6]'
-                              }`}
+                                }`}
                             >
                               <Eye className="w-3.5 h-3.5" />
                               Customer &amp; Internal
@@ -1091,11 +1173,10 @@ export const OnboardTrackerWizardModal: React.FC<OnboardTrackerWizardModalProps>
                             <button
                               type="button"
                               onClick={() => setVisibility('INTERNAL_ONLY')}
-                              className={`inline-flex items-center justify-center gap-1.5 rounded-xl border py-1.5 px-3 text-xs font-medium transition ${
-                                visibility === 'INTERNAL_ONLY'
+                              className={`inline-flex items-center justify-center gap-1.5 rounded-xl border py-1.5 px-3 text-xs font-medium transition ${visibility === 'INTERNAL_ONLY'
                                   ? 'border-[#1A73E8] bg-[#E8F0FE] dark:bg-[#004A77]/50 text-[#1967D2] dark:text-[#C2E7FF]'
                                   : 'border-[#DDE3EA] dark:border-[#3C4043] text-[#5F6368] dark:text-[#9AA0A6]'
-                              }`}
+                                }`}
                             >
                               <EyeOff className="w-3.5 h-3.5" />
                               Internal Only

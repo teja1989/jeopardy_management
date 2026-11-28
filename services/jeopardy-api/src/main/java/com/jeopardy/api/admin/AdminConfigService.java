@@ -12,6 +12,7 @@ import com.jeopardy.api.admin.dto.MilestoneTemplateRecord;
 import com.jeopardy.api.admin.dto.MilestoneTemplateRequest;
 import com.jeopardy.api.admin.dto.OrderFamilyRecord;
 import com.jeopardy.api.admin.dto.PublishResponse;
+import com.jeopardy.api.common.ConflictException;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -146,7 +147,98 @@ public class AdminConfigService {
     }
 
     public JourneyBlueprintRecord createBlueprintVersion(JourneyBlueprintRequest req) {
+        validateBlueprintUniqueness(req);
         return repository.createNewBlueprintVersion(req);
+    }
+
+    private void validateBlueprintUniqueness(JourneyBlueprintRequest req) {
+        if (req == null) {
+            throw new IllegalArgumentException("Blueprint request is required");
+        }
+        String reqId = req.blueprintId() == null ? "" : req.blueprintId().trim();
+        if (reqId.isBlank()) {
+            throw new IllegalArgumentException("blueprintId is required");
+        }
+        String reqOrderType = req.orderType() == null ? "" : req.orderType().trim().toUpperCase(Locale.ROOT);
+        if (reqOrderType.isBlank()) {
+            throw new IllegalArgumentException("orderType is required");
+        }
+        String reqItemType = (req.itemType() == null || req.itemType().isBlank())
+                ? ""
+                : req.itemType().trim().toUpperCase(Locale.ROOT);
+        String reqLevel = normalizeEntityLevel(req.normalizedEntityLevel());
+
+        JsonNode def = req.definition();
+        JsonNode nameNode = def != null ? def.get("displayName") : null;
+        String rawDisplayName = (nameNode != null && !nameNode.isNull())
+                ? nameNode.asText("").trim()
+                : "";
+        if (def != null && def.has("displayName") && rawDisplayName.isBlank()) {
+            throw new IllegalArgumentException("Workflow name cannot be blank");
+        }
+        JsonNode activeNode = def != null ? def.get("active") : null;
+        boolean reqActive = activeNode == null || activeNode.isNull() || activeNode.asBoolean(true);
+
+        List<JourneyBlueprintRecord> existing = repository.findAllLatestBlueprints();
+        if (existing == null || existing.isEmpty()) {
+            return;
+        }
+        for (JourneyBlueprintRecord other : existing) {
+            if (other == null || other.blueprintId() == null) {
+                continue;
+            }
+            if (other.blueprintId().trim().equalsIgnoreCase(reqId)) {
+                continue;
+            }
+            String otherName = extractDisplayName(other);
+            if (!rawDisplayName.isBlank() && !otherName.isBlank()
+                    && rawDisplayName.equalsIgnoreCase(otherName)) {
+                throw new ConflictException(
+                        "A workflow named '" + rawDisplayName + "' already exists ("
+                                + other.blueprintId() + "). Please choose a unique workflow name.");
+            }
+            if (reqActive && other.active()) {
+                String otherOrderType = other.orderType() == null ? "" : other.orderType().trim().toUpperCase(Locale.ROOT);
+                String otherItemType = (other.itemType() == null || other.itemType().isBlank())
+                        ? ""
+                        : other.itemType().trim().toUpperCase(Locale.ROOT);
+                String otherLevel = normalizeEntityLevel(other.entityLevel());
+                if (reqOrderType.equals(otherOrderType)
+                        && reqItemType.equals(otherItemType)
+                        && reqLevel.equals(otherLevel)) {
+                    String scope = reqItemType.isBlank()
+                            ? reqOrderType + " (" + reqLevel + ")"
+                            : reqOrderType + " · " + reqItemType + " (" + reqLevel + ")";
+                    throw new ConflictException(
+                            "Active workflow '" + otherName + "' already tracks " + scope
+                                    + ". Edit that workflow, disable it first, or choose a distinct Item Type.");
+                }
+            }
+        }
+    }
+
+    private static String normalizeEntityLevel(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "ORDER";
+        }
+        String upper = raw.trim().toUpperCase(Locale.ROOT);
+        if ("ITEM".equals(upper)) {
+            return "ORDER_ITEM";
+        }
+        return upper;
+    }
+
+    private static String extractDisplayName(JourneyBlueprintRecord bp) {
+        if (bp.definition() != null) {
+            JsonNode nameNode = bp.definition().get("displayName");
+            if (nameNode != null && !nameNode.isNull()) {
+                String s = nameNode.asText("").trim();
+                if (!s.isBlank()) {
+                    return s;
+                }
+            }
+        }
+        return bp.blueprintId() == null ? "" : bp.blueprintId().trim();
     }
 
     public record BlueprintMutationResponse(
@@ -161,6 +253,42 @@ public class AdminConfigService {
 
     public BlueprintMutationResponse setBlueprintActive(
             String blueprintId, boolean active, boolean publish, String actor) {
+        if (active && blueprintId != null && !blueprintId.isBlank()) {
+            String targetId = blueprintId.trim();
+            List<JourneyBlueprintRecord> all = repository.findAllLatestBlueprints();
+            if (all != null) {
+                JourneyBlueprintRecord target = all.stream()
+                        .filter(b -> b != null && b.blueprintId() != null
+                                && b.blueprintId().trim().equalsIgnoreCase(targetId))
+                        .findFirst()
+                        .orElse(null);
+                if (target != null) {
+                    String tOrder = target.orderType() == null ? "" : target.orderType().trim().toUpperCase(Locale.ROOT);
+                    String tItem = (target.itemType() == null || target.itemType().isBlank())
+                            ? ""
+                            : target.itemType().trim().toUpperCase(Locale.ROOT);
+                    String tLevel = normalizeEntityLevel(target.entityLevel());
+                    for (JourneyBlueprintRecord other : all) {
+                        if (other == null || other.blueprintId() == null
+                                || other.blueprintId().trim().equalsIgnoreCase(targetId)
+                                || !other.active()) {
+                            continue;
+                        }
+                        String oOrder = other.orderType() == null ? "" : other.orderType().trim().toUpperCase(Locale.ROOT);
+                        String oItem = (other.itemType() == null || other.itemType().isBlank())
+                                ? ""
+                                : other.itemType().trim().toUpperCase(Locale.ROOT);
+                        String oLevel = normalizeEntityLevel(other.entityLevel());
+                        if (tOrder.equals(oOrder) && tItem.equals(oItem) && tLevel.equals(oLevel)) {
+                            throw new ConflictException(
+                                    "Cannot enable: active workflow '" + extractDisplayName(other)
+                                            + "' already tracks " + tOrder
+                                            + (tItem.isBlank() ? "" : " · " + tItem) + " (" + tLevel + ").");
+                        }
+                    }
+                }
+            }
+        }
         JourneyBlueprintRecord updated = repository.setBlueprintActive(blueprintId, active);
         Integer bundleVersion = null;
         if (publish) {

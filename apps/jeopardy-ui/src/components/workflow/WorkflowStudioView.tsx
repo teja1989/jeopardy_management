@@ -54,7 +54,10 @@ import { JsonEventPickerModal } from './JsonEventPickerModal';
 import { MilestoneInspector } from './MilestoneInspector';
 import { OnboardTrackerWizardModal } from './OnboardTrackerWizardModal';
 import { ReportingGroupsModal } from './ReportingGroupsModal';
-import { WorkflowOverviewPanel } from './WorkflowOverviewPanel';
+import {
+  WorkflowOverviewPanel,
+  type WorkflowValidationErrors,
+} from './WorkflowOverviewPanel';
 import {
   blueprintToDraft,
   buildAvailableTopics,
@@ -272,6 +275,73 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
     () => draft?.steps.find((s) => s.stepId === selectedStepId) ?? draft?.steps[0] ?? null,
     [draft, selectedStepId],
   );
+
+  // Real-time workflow uniqueness & identity validation (mirrors backend ConflictException rules)
+  const draftValidation = useMemo<WorkflowValidationErrors>(() => {
+    if (!draft) return {};
+    const errors: WorkflowValidationErrors = {};
+    const draftId = draft.blueprintId.trim().toLowerCase();
+    const draftName = draft.displayName.trim();
+    const draftOrderType = draft.orderType.trim().toUpperCase();
+    const draftItemType = draft.itemType.trim().toUpperCase();
+    const draftLevel = normalizeEntityLevel(draft.entityLevel);
+    const draftIsActive = draft.active !== false;
+
+    if (!draftName) {
+      errors.nameError = 'Workflow name is required.';
+    } else {
+      const dupNameBp = blueprints.find((bp) => {
+        if (!draft.isNew && bp.blueprintId.trim().toLowerCase() === draftId) return false;
+        const def = (bp.definition ?? {}) as Record<string, unknown>;
+        const otherName = String(def.displayName ?? bp.blueprintId).trim();
+        return otherName.toLowerCase() === draftName.toLowerCase();
+      });
+      if (dupNameBp) {
+        errors.nameError = `A workflow named "${draftName}" already exists (${dupNameBp.blueprintId}). Choose a unique name.`;
+      }
+    }
+
+    if (!draftId) {
+      errors.blueprintIdError = 'Blueprint ID is required.';
+    } else if (draft.isNew) {
+      const dupIdBp = blueprints.find((bp) => bp.blueprintId.trim().toLowerCase() === draftId);
+      if (dupIdBp) {
+        errors.blueprintIdError = `Blueprint ID "${draft.blueprintId.trim()}" already exists. Choose a unique ID.`;
+      }
+    }
+
+    if (!draftOrderType) {
+      errors.orderTypeError = 'Order Type code is required.';
+    } else if (draftIsActive) {
+      const dupRoutingBp = blueprints.find((bp) => {
+        if (!bp.active) return false;
+        if (!draft.isNew && bp.blueprintId.trim().toLowerCase() === draftId) return false;
+        return (
+          bp.orderType.trim().toUpperCase() === draftOrderType &&
+          (bp.itemType ?? '').trim().toUpperCase() === draftItemType &&
+          normalizeEntityLevel(bp.entityLevel) === draftLevel
+        );
+      });
+      if (dupRoutingBp) {
+        const def = (dupRoutingBp.definition ?? {}) as Record<string, unknown>;
+        const otherName = String(def.displayName ?? dupRoutingBp.blueprintId);
+        const scope = draftItemType
+          ? `${draftOrderType} · ${draftItemType}`
+          : `${draftOrderType} (${draftLevel})`;
+        errors.routingError = `Active workflow "${otherName}" already tracks ${scope}. Edit it, disable it first, or use a distinct Item Type.`;
+      }
+    }
+
+    return errors;
+  }, [draft, blueprints]);
+
+  const firstValidationError =
+    draftValidation.nameError ??
+    draftValidation.blueprintIdError ??
+    draftValidation.orderTypeError ??
+    draftValidation.routingError ??
+    null;
+  const hasValidationErrors = firstValidationError !== null;
 
   // Map templateId -> count of distinct blueprints referencing it
   const templateUsageCounts = useMemo(() => {
@@ -884,6 +954,10 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
 
   const handleSaveWorkflow = async (andPublish: boolean) => {
     if (!draft) return;
+    if (firstValidationError) {
+      setToast({ tone: 'err', text: firstValidationError });
+      return;
+    }
     setSaveAction(andPublish ? 'publishing' : 'saving');
     setToast(null);
     try {
@@ -1588,11 +1662,33 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                   onChange={(e) =>
                     updateDraft((p) => ({ ...p, displayName: e.target.value }))
                   }
-                  className="min-w-[180px] max-w-sm font-display text-base font-bold tracking-[-0.02em] text-[#1F1F1F] dark:text-white bg-transparent border-b border-transparent hover:border-[#DDE3EA] dark:hover:border-[#3C4043] focus:border-[#1A73E8] focus:outline-none py-0.5"
+                  className={`min-w-[180px] max-w-sm font-display text-base font-bold tracking-[-0.02em] bg-transparent border-b focus:outline-none py-0.5 ${
+                    draftValidation.nameError
+                      ? 'text-[#C5221F] dark:text-[#F28B82] border-[#C5221F] dark:border-[#F28B82]'
+                      : 'text-[#1F1F1F] dark:text-white border-transparent hover:border-[#DDE3EA] dark:hover:border-[#3C4043] focus:border-[#1A73E8]'
+                  }`}
                   aria-label="Workflow Display Name"
+                  aria-invalid={Boolean(draftValidation.nameError)}
                 />
 
                 <div className="flex flex-wrap items-center gap-1.5">
+                  {firstValidationError && (
+                    <button
+                      type="button"
+                      onClick={() => setEditorTab('overview')}
+                      title={firstValidationError}
+                      className="inline-flex items-center gap-1 rounded-full bg-[#FCE8E6] dark:bg-[#3C1919] border border-[#FAD2CF] dark:border-[#5C2020] px-2.5 py-0.5 text-[10px] font-semibold text-[#C5221F] dark:text-[#F28B82] max-w-[260px]"
+                    >
+                      <AlertTriangle className="w-3 h-3 shrink-0" />
+                      <span className="truncate">
+                        {draftValidation.nameError
+                          ? 'Duplicate workflow name'
+                          : draftValidation.blueprintIdError
+                            ? 'Duplicate blueprint ID'
+                            : 'Conflict in Overview'}
+                      </span>
+                    </button>
+                  )}
                   <span className="inline-flex items-center rounded-full bg-[#E8F0FE] dark:bg-[#004A77]/60 px-2 py-0.5 text-[10px] font-mono font-semibold text-[#1967D2] dark:text-[#C2E7FF]">
                     {draft.orderType}
                   </span>
@@ -1671,9 +1767,10 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
 
               <button
                 type="button"
-                disabled={isBusySaving}
+                disabled={isBusySaving || hasValidationErrors}
+                title={firstValidationError ?? undefined}
                 onClick={() => void handleSaveWorkflow(false)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-3.5 py-1.5 text-xs font-medium text-[#1F1F1F] dark:text-[#E3E3E3] transition disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-3.5 py-1.5 text-xs font-medium text-[#1F1F1F] dark:text-[#E3E3E3] transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {saveAction === 'saving' ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1685,9 +1782,10 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
 
               <button
                 type="button"
-                disabled={isBusySaving}
+                disabled={isBusySaving || hasValidationErrors}
+                title={firstValidationError ?? undefined}
                 onClick={() => void handleSaveWorkflow(true)}
-                className="inline-flex items-center gap-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-4 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-4 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {saveAction === 'publishing' ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1806,6 +1904,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                 <WorkflowOverviewPanel
                   draft={draft}
                   reportingGroups={reportingGroups}
+                  validationErrors={draftValidation}
                   onUpdateDraft={updateDraft}
                   onCreateReportingGroup={handleCreateReportingGroup}
                 />
@@ -2122,13 +2221,31 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                     </button>
                   </div>
 
+                  {/* Validation Blocker Notice */}
+                  {firstValidationError && (
+                    <div className="rounded-[22px] border border-[#FAD2CF] dark:border-[#5C2020] bg-[#FCE8E6] dark:bg-[#3C1919] px-4 py-3 text-xs text-[#C5221F] dark:text-[#F28B82] flex items-center justify-between gap-3">
+                      <span className="inline-flex items-center gap-2 font-medium">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        {firstValidationError}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setEditorTab('overview')}
+                        className="rounded-full bg-white/80 dark:bg-[#1E1F20] px-3 py-1 text-[11px] font-semibold text-[#C5221F] dark:text-[#F28B82] shrink-0 hover:bg-white transition"
+                      >
+                        Fix in Overview
+                      </button>
+                    </div>
+                  )}
+
                   {/* Save Draft + Publish Live Actions */}
                   <div className="pt-2 flex flex-wrap items-center justify-end gap-2.5">
                     <button
                       type="button"
-                      disabled={isBusySaving}
+                      disabled={isBusySaving || hasValidationErrors}
+                      title={firstValidationError ?? undefined}
                       onClick={() => void handleSaveWorkflow(false)}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-5 py-2.5 text-xs font-semibold text-[#1F1F1F] dark:text-[#E3E3E3] transition disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C] px-5 py-2.5 text-xs font-semibold text-[#1F1F1F] dark:text-[#E3E3E3] transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {saveAction === 'saving' ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -2139,9 +2256,10 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
                     </button>
                     <button
                       type="button"
-                      disabled={isBusySaving}
+                      disabled={isBusySaving || hasValidationErrors}
+                      title={firstValidationError ?? undefined}
                       onClick={() => void handleSaveWorkflow(true)}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-6 py-2.5 text-xs font-semibold shadow-sm transition disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white px-6 py-2.5 text-xs font-semibold shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {saveAction === 'publishing' ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -2164,6 +2282,7 @@ export const WorkflowStudioView: React.FC<WorkflowStudioViewProps> = ({
       <OnboardTrackerWizardModal
         open={onboardOpen}
         templates={templates}
+        existingBlueprints={blueprints}
         existingOrderTypes={existingOrderTypes}
         reportingGroups={reportingGroups}
         availableTopics={availableTopics}

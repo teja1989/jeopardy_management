@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  AlertCircle,
   Clock,
   Database,
   Eye,
@@ -20,9 +21,17 @@ import {
   type TrackerAudienceVisibility,
 } from './workflowModels';
 
+export interface WorkflowValidationErrors {
+  nameError?: string | null;
+  blueprintIdError?: string | null;
+  orderTypeError?: string | null;
+  routingError?: string | null;
+}
+
 interface WorkflowOverviewPanelProps {
   draft: EditableWorkflowDraft;
   reportingGroups: ReportingGroupOption[];
+  validationErrors?: WorkflowValidationErrors;
   onUpdateDraft: (updater: (prev: EditableWorkflowDraft) => EditableWorkflowDraft) => void;
   onCreateReportingGroup: (groupCode: string, displayLabel: string) => void;
 }
@@ -51,6 +60,7 @@ function ensureLinkedMeta(prev: EditableWorkflowDraft): LinkedOrderConfig {
 export const WorkflowOverviewPanel: React.FC<WorkflowOverviewPanelProps> = ({
   draft,
   reportingGroups,
+  validationErrors,
   onUpdateDraft,
   onCreateReportingGroup,
 }) => {
@@ -128,8 +138,18 @@ export const WorkflowOverviewPanel: React.FC<WorkflowOverviewPanelProps> = ({
                 onUpdateDraft((p) => ({ ...p, displayName: e.target.value }))
               }
               placeholder="e.g. Device Ship-to-Home Order"
-              className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] px-3.5 py-2 text-xs text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:border-[#1A73E8] focus:ring-2 focus:ring-[#1A73E8]/15 transition"
+              className={`w-full rounded-xl border bg-white dark:bg-[#1E1F20] px-3.5 py-2 text-xs text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:ring-2 transition ${
+                validationErrors?.nameError
+                  ? 'border-[#C5221F] dark:border-[#F28B82] focus:border-[#C5221F] focus:ring-[#C5221F]/15'
+                  : 'border-[#DDE3EA] dark:border-[#3C4043] focus:border-[#1A73E8] focus:ring-[#1A73E8]/15'
+              }`}
             />
+            {validationErrors?.nameError && (
+              <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82]">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{validationErrors.nameError}</span>
+              </p>
+            )}
           </div>
 
           {/* Blueprint ID */}
@@ -150,11 +170,19 @@ export const WorkflowOverviewPanel: React.FC<WorkflowOverviewPanelProps> = ({
                 }))
               }
               className={`w-full rounded-xl border px-3.5 py-2 text-xs font-mono focus:outline-none ${
-                draft.isNew
-                  ? 'border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] text-[#1F1F1F] dark:text-[#E3E3E3] focus:border-[#1A73E8]'
-                  : 'border-[#E0E6F0] dark:border-[#333639] bg-[#F0F4F9] dark:bg-[#282A2C]/60 text-[#5F6368] dark:text-[#9AA0A6] cursor-default'
+                validationErrors?.blueprintIdError
+                  ? 'border-[#C5221F] dark:border-[#F28B82] bg-white dark:bg-[#1E1F20] text-[#1F1F1F] dark:text-[#E3E3E3] focus:border-[#C5221F]'
+                  : draft.isNew
+                    ? 'border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] text-[#1F1F1F] dark:text-[#E3E3E3] focus:border-[#1A73E8]'
+                    : 'border-[#E0E6F0] dark:border-[#333639] bg-[#F0F4F9] dark:bg-[#282A2C]/60 text-[#5F6368] dark:text-[#9AA0A6] cursor-default'
               }`}
             />
+            {validationErrors?.blueprintIdError && (
+              <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82]">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{validationErrors.blueprintIdError}</span>
+              </p>
+            )}
           </div>
 
           {/* Order Type */}
@@ -169,8 +197,18 @@ export const WorkflowOverviewPanel: React.FC<WorkflowOverviewPanelProps> = ({
                 onUpdateDraft((p) => ({ ...p, orderType: e.target.value.toUpperCase() }))
               }
               placeholder="e.g. SALES, CHANGE, DEVICE_TRADE_IN"
-              className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] px-3.5 py-2 text-xs font-mono text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:border-[#1A73E8]"
+              className={`w-full rounded-xl border bg-white dark:bg-[#1E1F20] px-3.5 py-2 text-xs font-mono text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none ${
+                validationErrors?.orderTypeError || validationErrors?.routingError
+                  ? 'border-[#C5221F] dark:border-[#F28B82] focus:border-[#C5221F]'
+                  : 'border-[#DDE3EA] dark:border-[#3C4043] focus:border-[#1A73E8]'
+              }`}
             />
+            {validationErrors?.orderTypeError && (
+              <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82]">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{validationErrors.orderTypeError}</span>
+              </p>
+            )}
           </div>
 
           {/* Item Type */}
@@ -185,9 +223,20 @@ export const WorkflowOverviewPanel: React.FC<WorkflowOverviewPanelProps> = ({
                 onUpdateDraft((p) => ({ ...p, itemType: e.target.value.toUpperCase() }))
               }
               placeholder="e.g. SALES_HANDSET_SHIP (blank for Order-level)"
-              className="w-full rounded-xl border border-[#DDE3EA] dark:border-[#3C4043] bg-white dark:bg-[#1E1F20] px-3.5 py-2 text-xs font-mono text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none focus:border-[#1A73E8]"
+              className={`w-full rounded-xl border bg-white dark:bg-[#1E1F20] px-3.5 py-2 text-xs font-mono text-[#1F1F1F] dark:text-[#E3E3E3] focus:outline-none ${
+                validationErrors?.routingError
+                  ? 'border-[#C5221F] dark:border-[#F28B82] focus:border-[#C5221F]'
+                  : 'border-[#DDE3EA] dark:border-[#3C4043] focus:border-[#1A73E8]'
+              }`}
             />
           </div>
+
+          {validationErrors?.routingError && (
+            <div className="md:col-span-2 rounded-2xl border border-[#FAD2CF] dark:border-[#5C2020] bg-[#FCE8E6] dark:bg-[#3C1919] px-3.5 py-2.5 text-[11px] font-medium text-[#C5221F] dark:text-[#F28B82] flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{validationErrors.routingError}</span>
+            </div>
+          )}
 
           {/* Tracking Level Segmented Toggle */}
           <div>

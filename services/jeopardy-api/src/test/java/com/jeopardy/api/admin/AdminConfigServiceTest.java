@@ -16,6 +16,8 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jeopardy.api.admin.dto.JourneyBlueprintRecord;
+import com.jeopardy.api.admin.dto.JourneyBlueprintRequest;
+import com.jeopardy.api.common.ConflictException;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -138,16 +140,143 @@ class AdminConfigServiceTest {
         verify(repository).findAllLatestBlueprints();
     }
 
+    @Test
+    void createBlueprintVersionRejectsDuplicateDisplayNameCaseInsensitive() {
+        JourneyBlueprintRecord existing = blueprint(
+                "bp-existing", 1, "ORDER", "SALES", null, true, "Teja");
+        when(repository.findAllLatestBlueprints()).thenReturn(List.of(existing));
+
+        JourneyBlueprintRequest duplicateReq = new JourneyBlueprintRequest(
+                "bp-second",
+                "ORDER",
+                "CHANGE",
+                null,
+                defNode("  teja  ", true),
+                "admin");
+
+        assertThatThrownBy(() -> service.createBlueprintVersion(duplicateReq))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("already exists")
+                .hasMessageContaining("bp-existing");
+
+        verify(repository, never()).createNewBlueprintVersion(any());
+    }
+
+    @Test
+    void createBlueprintVersionAllowsUpdatingSameBlueprintWithOwnName() {
+        JourneyBlueprintRecord existing = blueprint(
+                "bp-teja", 1, "ORDER", "SALES", null, true, "Teja");
+        JourneyBlueprintRecord updated = blueprint(
+                "bp-teja", 2, "ORDER", "SALES", null, true, "Teja");
+        when(repository.findAllLatestBlueprints()).thenReturn(List.of(existing));
+        when(repository.createNewBlueprintVersion(any())).thenReturn(updated);
+
+        JourneyBlueprintRequest selfUpdate = new JourneyBlueprintRequest(
+                "bp-teja",
+                "ORDER",
+                "SALES",
+                null,
+                defNode("Teja", true),
+                "admin");
+
+        JourneyBlueprintRecord saved = service.createBlueprintVersion(selfUpdate);
+
+        assertThat(saved.version()).isEqualTo(2);
+        verify(repository).createNewBlueprintVersion(selfUpdate);
+    }
+
+    @Test
+    void createBlueprintVersionRejectsDuplicateActiveRoutingKeyButAllowsDisabledSibling() {
+        JourneyBlueprintRecord activeSibling = blueprint(
+                "bp-sales-ship", 1, "ORDER_ITEM", "SALES", "SALES_HANDSET_SHIP", true, "Device Ship");
+        when(repository.findAllLatestBlueprints()).thenReturn(List.of(activeSibling));
+
+        JourneyBlueprintRequest conflicting = new JourneyBlueprintRequest(
+                "bp-sales-ship-v2",
+                "ORDER_ITEM",
+                "SALES",
+                "SALES_HANDSET_SHIP",
+                defNode("Device Ship Alt", true),
+                "admin");
+
+        assertThatThrownBy(() -> service.createBlueprintVersion(conflicting))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("already tracks")
+                .hasMessageContaining("SALES_HANDSET_SHIP");
+
+        JourneyBlueprintRecord disabledSibling = blueprint(
+                "bp-sales-ship", 1, "ORDER_ITEM", "SALES", "SALES_HANDSET_SHIP", false, "Device Ship");
+        JourneyBlueprintRecord created = blueprint(
+                "bp-sales-ship-v2", 1, "ORDER_ITEM", "SALES", "SALES_HANDSET_SHIP", true, "Device Ship Alt");
+        when(repository.findAllLatestBlueprints()).thenReturn(List.of(disabledSibling));
+        when(repository.createNewBlueprintVersion(conflicting)).thenReturn(created);
+
+        JourneyBlueprintRecord saved = service.createBlueprintVersion(conflicting);
+        assertThat(saved.blueprintId()).isEqualTo("bp-sales-ship-v2");
+    }
+
+    @Test
+    void createBlueprintVersionRejectsBlankDisplayName() {
+        JourneyBlueprintRequest blankName = new JourneyBlueprintRequest(
+                "bp-blank",
+                "ORDER",
+                "SALES",
+                null,
+                defNode("   ", true),
+                "admin");
+
+        assertThatThrownBy(() -> service.createBlueprintVersion(blankName))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("blank");
+
+        verify(repository, never()).createNewBlueprintVersion(any());
+    }
+
+    @Test
+    void setBlueprintActiveRejectsReenablingWhenActiveRoutingConflictExists() {
+        JourneyBlueprintRecord disabledBp = blueprint(
+                "bp-legacy-ship", 1, "ORDER_ITEM", "SALES", "SALES_HANDSET_SHIP", false, "Legacy Ship");
+        JourneyBlueprintRecord activeBp = blueprint(
+                "bp-current-ship", 2, "ORDER_ITEM", "SALES", "SALES_HANDSET_SHIP", true, "Current Ship");
+        when(repository.findAllLatestBlueprints()).thenReturn(List.of(disabledBp, activeBp));
+
+        assertThatThrownBy(() -> service.setBlueprintActive("bp-legacy-ship", true, false, "admin"))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("Cannot enable")
+                .hasMessageContaining("Current Ship");
+
+        verify(repository, never()).setBlueprintActive(anyString(), eq(true));
+    }
+
+    private ObjectNode defNode(String displayName, boolean active) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("displayName", displayName);
+        node.put("active", active);
+        return node;
+    }
+
     private JourneyBlueprintRecord blueprint(String id, int version, boolean active) {
+        return blueprint(id, version, "ORDER", "SALES_UPGRADE", null, active, id);
+    }
+
+    private JourneyBlueprintRecord blueprint(
+            String id,
+            int version,
+            String entityLevel,
+            String orderType,
+            String itemType,
+            boolean active,
+            String displayName) {
         ObjectNode def = objectMapper.createObjectNode();
         def.put("blueprintId", id);
+        def.put("displayName", displayName);
         def.put("active", active);
         return new JourneyBlueprintRecord(
                 id,
                 version,
-                "ORDER",
-                "SALES_UPGRADE",
-                null,
+                entityLevel,
+                orderType,
+                itemType,
                 active,
                 def,
                 "admin",
