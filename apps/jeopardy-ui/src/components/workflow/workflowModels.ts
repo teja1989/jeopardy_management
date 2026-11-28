@@ -1,6 +1,7 @@
 import type {
   BlueprintStepDefinition,
   CrossOrderPolicyConfig,
+  EventAdapterRecord,
   JourneyBlueprintRecord,
   MilestoneTemplateRecord,
   OrderFamilyRecord,
@@ -19,6 +20,29 @@ export const KAFKA_SOURCE_TOPICS = [
   'domain.provisioning.events',
   'domain.billing.events',
 ] as const;
+
+export function normalizeEntityLevel(raw?: string): 'ORDER' | 'ORDER_ITEM' {
+  return (raw || '').trim().toUpperCase() === 'ORDER_ITEM' ? 'ORDER_ITEM' : 'ORDER';
+}
+
+export function buildAvailableTopics(adapters: EventAdapterRecord[]): string[] {
+  const seen = new Set<string>();
+  const topics: string[] = [];
+  const register = (raw?: string | null) => {
+    const trimmed = (raw ?? '').trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    topics.push(trimmed);
+  };
+
+  for (const adapter of adapters) {
+    register(adapter.sourceTopic);
+  }
+  for (const topic of KAFKA_SOURCE_TOPICS) {
+    register(topic);
+  }
+  return topics;
+}
 
 export const DOMAINS = [
   'ORDER',
@@ -135,6 +159,7 @@ export interface LinkedOrderConfig {
     | string;
   bpmnProcessKey: string;
   sourceTopic: string;
+  additionalAdapterTopics?: string[];
   entityKeyPath: string;
   parentOrderIdPath: string;
   parentLineItemIdPath?: string;
@@ -154,7 +179,7 @@ export interface EditableWorkflowDraft {
   orderFamily: string;
   orderType: string;
   itemType: string;
-  entityLevel: 'ORDER_ITEM' | 'ORDER' | 'TRADE_IN' | 'CHANGE_ORDER' | 'INTERNAL_PROMO' | string;
+  entityLevel: 'ORDER' | 'ORDER_ITEM';
   stateTtlDays: number;
   overallWarning: string;
   overallJeopardy: string;
@@ -504,7 +529,7 @@ export function blueprintToDraft(
     orderFamily: typeof def.orderFamily === 'string' ? def.orderFamily : 'CHANGE_CANCEL',
     orderType: bp.orderType,
     itemType: bp.itemType ?? '',
-    entityLevel: bp.entityLevel || 'ORDER_ITEM',
+    entityLevel: normalizeEntityLevel(bp.entityLevel),
     stateTtlDays: typeof def.stateTtlDays === 'number' ? def.stateTtlDays : 30,
     overallWarning: typeof overall.warning === 'string' ? overall.warning : '15m',
     overallJeopardy: typeof overall.jeopardy === 'string' ? overall.jeopardy : '30m',
@@ -658,7 +683,7 @@ export function createStarterWorkflowDraft(params: {
     orderFamily: params.orderFamily,
     orderType: params.orderType.trim().toUpperCase(),
     itemType: params.itemType.trim().toUpperCase(),
-    entityLevel: params.entityLevel,
+    entityLevel: normalizeEntityLevel(params.entityLevel),
     stateTtlDays: ttlDays,
     overallWarning: params.preset === 'trade_in' ? '14d' : params.preset === 'ship' ? '48h' : '15m',
     overallJeopardy: params.preset === 'trade_in' ? '25d' : params.preset === 'ship' ? '72h' : '30m',

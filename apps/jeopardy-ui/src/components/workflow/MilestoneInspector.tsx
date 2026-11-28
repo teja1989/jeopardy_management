@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Brain,
   Clock,
+  Copy,
   Plus,
   Settings2,
   Sparkles,
@@ -19,11 +21,14 @@ import {
 import { InfoTooltip } from '../InfoTooltip';
 import { JsonEventPickerModal, type TriggerBindPhase } from './JsonEventPickerModal';
 
-interface MilestoneInspectorProps {
+export interface MilestoneInspectorProps {
   node: EditableMilestoneNode;
   allSteps: EditableMilestoneNode[];
   onChange: (updated: EditableMilestoneNode) => void;
   onDelete: () => void;
+  availableTopics?: string[];
+  sharedByWorkflowCount?: number;
+  onCloneTemplateForWorkflow?: () => void;
 }
 
 const OPERATORS = ['EQ', 'IN', 'CONTAINS', 'EXISTS'] as const;
@@ -33,11 +38,33 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
   allSteps,
   onChange,
   onDelete,
+  availableTopics,
+  sharedByWorkflowCount,
+  onCloneTemplateForWorkflow,
 }) => {
   const [tab, setTab] = useState<'events' | 'sla' | 'settings'>('events');
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const accent = domainAccentClasses(node.domain);
+
+  const topicOptions = useMemo(() => {
+    const source =
+      availableTopics && availableTopics.length > 0 ? availableTopics : [...KAFKA_SOURCE_TOPICS];
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const raw of source) {
+      const trimmed = raw.trim();
+      if (trimmed && !seen.has(trimmed)) {
+        seen.add(trimmed);
+        list.push(trimmed);
+      }
+    }
+    return list;
+  }, [availableTopics]);
+
+  const defaultTopic = topicOptions.includes('domain.order.events')
+    ? 'domain.order.events'
+    : (topicOptions[0] ?? 'domain.order.events');
 
   const updateTriggers = (
     phase: TriggerBindPhase,
@@ -60,7 +87,7 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
     updateTriggers(phase, (list) => [
       ...list,
       {
-        sourceTopic: 'domain.order.events',
+        sourceTopic: defaultTopic,
         predicate: { path: '$.eventType', op: 'EQ', value: '' },
       },
     ]);
@@ -112,6 +139,11 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
                 ? pred.values.join(', ')
                 : pred.value ?? '';
 
+            const selectTopics =
+              tr.sourceTopic && !topicOptions.includes(tr.sourceTopic)
+                ? [tr.sourceTopic, ...topicOptions]
+                : topicOptions;
+
             return (
               <div
                 key={`${phase}-${idx}`}
@@ -129,7 +161,7 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
                     }
                     className="flex-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-[11px] font-mono"
                   >
-                    {KAFKA_SOURCE_TOPICS.map((t) => (
+                    {selectTopics.map((t) => (
                       <option key={t} value={t}>
                         {t}
                       </option>
@@ -233,9 +265,9 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
   };
 
   return (
-    <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] flex flex-col h-full overflow-hidden">
+    <div className="rounded-[24px] border border-[#E0E6F0] dark:border-[#333639] bg-white dark:bg-[#1E1F20] shadow-[0_1px_2px_rgba(16,24,40,0.04)] flex flex-col h-full min-h-0 overflow-hidden">
       {/* Inspector Header */}
-      <div className="px-5 py-4 border-b border-[#E0E6F0] dark:border-[#333639]">
+      <div className="shrink-0 px-5 py-4 border-b border-[#E0E6F0] dark:border-[#333639]">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -306,9 +338,34 @@ export const MilestoneInspector: React.FC<MilestoneInspectorProps> = ({
       </div>
 
       {/* Inspector Body */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-5">
+      <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-5">
         {tab === 'events' && (
           <>
+            {(sharedByWorkflowCount ?? 0) > 1 && (
+              <div className="rounded-2xl border border-[#F6D58E] dark:border-[#6B4F0E] bg-[#FEF7E0] dark:bg-[#332609] px-3.5 py-3 text-xs text-[#6B3B00] dark:text-[#FDD663] space-y-2">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-[#B06000] dark:text-[#FDD663]" />
+                  <p className="leading-relaxed">
+                    Shared milestone template used by{' '}
+                    <strong>{sharedByWorkflowCount} workflows</strong> — editing event rules updates
+                    all of them.
+                  </p>
+                </div>
+                {onCloneTemplateForWorkflow && (
+                  <div className="pl-6">
+                    <button
+                      type="button"
+                      onClick={onCloneTemplateForWorkflow}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-[#B06000] hover:bg-[#8F4D00] dark:bg-[#FDD663] dark:hover:bg-[#FDE293] text-white dark:text-[#241A00] px-3 py-1 text-[11px] font-semibold transition shadow-sm"
+                    >
+                      <Copy className="w-3 h-3" />
+                      Clone for this workflow only
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Prominent Pick From JSON Callout */}
             <button
               type="button"

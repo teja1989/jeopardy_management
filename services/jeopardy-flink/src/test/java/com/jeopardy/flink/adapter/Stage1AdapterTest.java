@@ -714,6 +714,179 @@ class Stage1AdapterTest {
         assertEquals(1, COLLECTED_AUDITS.size());
     }
 
+    @Test
+    void testExtraLinksWhenAllPathsExistMultiFieldCompanionLinking() {
+        String bundleJson = """
+            {
+              "bundleVersion": 8,
+              "adapters": [
+                {
+                  "adapterId": "adapter-flowable-bpmn",
+                  "sourceTopic": "flowable.activity.events",
+                  "active": true,
+                  "definition": {
+                    "adapterId": "adapter-flowable-bpmn",
+                    "sourceTopic": "flowable.activity.events",
+                    "domain": "BPMN",
+                    "includeFilter": {
+                      "eventTypePath": "$.eventType",
+                      "allowedValues": ["PROCESS_STARTED", "ACTIVITY_COMPLETED"]
+                    },
+                    "commonFields": {
+                      "eventIdPath": "$.eventId",
+                      "eventTimePath": "$.eventTime",
+                      "eventTypePath": "$.eventType",
+                      "processInstanceIdPath": "$.processInstanceId",
+                      "processDefinitionKeyPath": "$.processDefinitionKey",
+                      "activityIdPath": "$.activityId",
+                      "activityTypePath": "$.activityType"
+                    },
+                    "processDefinitionRules": [
+                      {
+                        "processDefinitionKey": "companionInsuranceBpmn",
+                        "entityLevel": "INTERNAL_PROMO",
+                        "entityKeyTemplate": "{$.variables.companionOrderId}",
+                        "orderTypeLiteral": "INTERNAL_PROMO_PROVISIONING",
+                        "itemTypeLiteral": "FREE_DEVICE_INSURANCE",
+                        "registerInBpmnRegistry": true,
+                        "walkParentProcessInstanceId": false,
+                        "extraLinks": [
+                          {
+                            "whenPathExists": "$.variables.salesOrderId",
+                            "targetEntityKeyTemplate": "{$.variables.salesOrderId}",
+                            "relationshipType": "TRIGGERED_BY_ORDER"
+                          },
+                          {
+                            "whenAllPathsExist": ["$.variables.salesOrderId", "$.variables.salesLineItemId"],
+                            "targetEntityKeyTemplate": "{$.variables.salesOrderId}:{$.variables.salesLineItemId}",
+                            "relationshipType": "TRIGGERED_BY_ITEM"
+                          },
+                          {
+                            "whenAllPathsExist": ["$.variables.salesOrderId", "$.variables.salesLineItemId", "$.variables.partnerApprovalId"],
+                            "targetEntityKeyTemplate": "{$.variables.salesOrderId}",
+                            "relationshipType": "PARTNER_VERIFIED_ORDER"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+            """;
+
+        CompiledAdapterRegistry registry = CompiledAdapterRegistry.fromBundleJson(bundleJson);
+
+        // 1. Both salesOrderId and salesLineItemId present (partnerApprovalId absent) -> emits TRIGGERED_BY_ORDER and TRIGGERED_BY_ITEM only
+        String bothFieldsJson = """
+            {
+              "eventId": "flw-comp-1",
+              "eventTime": "2026-11-28T09:00:00Z",
+              "eventType": "PROCESS_STARTED",
+              "processInstanceId": "P-COMP-1",
+              "processDefinitionKey": "companionInsuranceBpmn",
+              "activityId": "task_enroll_insurance",
+              "activityType": "serviceTask",
+              "variables": {
+                "companionOrderId": "INS-90125",
+                "salesOrderId": "ORD-90125",
+                "salesLineItemId": "ITM-1"
+              }
+            }
+            """;
+        AdapterEvaluationResult bothRes = registry.evaluate(
+                new RawKafkaMessage("flowable.activity.events", bothFieldsJson, BASE_INGEST_MS, 0, 200L));
+        assertFalse(bothRes.hasParseError());
+        assertFalse(bothRes.isNoise());
+        assertEquals(1, bothRes.getCanonicalEvents().size());
+        CanonicalEvent bothEv = bothRes.getCanonicalEvents().get(0);
+        assertEquals("INS-90125", bothEv.getEntityKey());
+        assertEquals(2, bothEv.getRelatedLinks().size());
+        Map<String, String> bothLinks = bothEv.getRelatedLinks().stream()
+                .collect(Collectors.toMap(RelatedLink::getRelationshipType, RelatedLink::getTargetEntityKey));
+        assertEquals("ORD-90125", bothLinks.get("TRIGGERED_BY_ORDER"));
+        assertEquals("ORD-90125:ITM-1", bothLinks.get("TRIGGERED_BY_ITEM"));
+        assertFalse(bothLinks.containsKey("PARTNER_VERIFIED_ORDER"));
+
+        // 2. salesLineItemId absent -> emits ONLY TRIGGERED_BY_ORDER and skips TRIGGERED_BY_ITEM
+        String missingItemJson = """
+            {
+              "eventId": "flw-comp-2",
+              "eventTime": "2026-11-28T09:01:00Z",
+              "eventType": "PROCESS_STARTED",
+              "processInstanceId": "P-COMP-2",
+              "processDefinitionKey": "companionInsuranceBpmn",
+              "activityId": "task_enroll_insurance",
+              "activityType": "serviceTask",
+              "variables": {
+                "companionOrderId": "INS-90126",
+                "salesOrderId": "ORD-90125"
+              }
+            }
+            """;
+        AdapterEvaluationResult missingRes = registry.evaluate(
+                new RawKafkaMessage("flowable.activity.events", missingItemJson, BASE_INGEST_MS, 0, 201L));
+        assertEquals(1, missingRes.getCanonicalEvents().size());
+        CanonicalEvent missingEv = missingRes.getCanonicalEvents().get(0);
+        assertEquals(1, missingEv.getRelatedLinks().size());
+        assertEquals("TRIGGERED_BY_ORDER", missingEv.getRelatedLinks().get(0).getRelationshipType());
+        assertEquals("ORD-90125", missingEv.getRelatedLinks().get(0).getTargetEntityKey());
+
+        // 3. salesLineItemId blank -> emits ONLY TRIGGERED_BY_ORDER and skips TRIGGERED_BY_ITEM
+        String blankItemJson = """
+            {
+              "eventId": "flw-comp-3",
+              "eventTime": "2026-11-28T09:02:00Z",
+              "eventType": "PROCESS_STARTED",
+              "processInstanceId": "P-COMP-3",
+              "processDefinitionKey": "companionInsuranceBpmn",
+              "activityId": "task_enroll_insurance",
+              "activityType": "serviceTask",
+              "variables": {
+                "companionOrderId": "INS-90127",
+                "salesOrderId": "ORD-90125",
+                "salesLineItemId": "   "
+              }
+            }
+            """;
+        AdapterEvaluationResult blankRes = registry.evaluate(
+                new RawKafkaMessage("flowable.activity.events", blankItemJson, BASE_INGEST_MS, 0, 202L));
+        assertEquals(1, blankRes.getCanonicalEvents().size());
+        CanonicalEvent blankEv = blankRes.getCanonicalEvents().get(0);
+        assertEquals(1, blankEv.getRelatedLinks().size());
+        assertEquals("TRIGGERED_BY_ORDER", blankEv.getRelatedLinks().get(0).getRelationshipType());
+        assertEquals("ORD-90125", blankEv.getRelatedLinks().get(0).getTargetEntityKey());
+
+        // 4. All three paths present -> emits all 3 links including PARTNER_VERIFIED_ORDER
+        String allThreeJson = """
+            {
+              "eventId": "flw-comp-4",
+              "eventTime": "2026-11-28T09:03:00Z",
+              "eventType": "PROCESS_STARTED",
+              "processInstanceId": "P-COMP-4",
+              "processDefinitionKey": "companionInsuranceBpmn",
+              "activityId": "task_enroll_insurance",
+              "activityType": "serviceTask",
+              "variables": {
+                "companionOrderId": "INS-90128",
+                "salesOrderId": "ORD-90125",
+                "salesLineItemId": "ITM-1",
+                "partnerApprovalId": "APR-551"
+              }
+            }
+            """;
+        AdapterEvaluationResult allThreeRes = registry.evaluate(
+                new RawKafkaMessage("flowable.activity.events", allThreeJson, BASE_INGEST_MS, 0, 203L));
+        assertEquals(1, allThreeRes.getCanonicalEvents().size());
+        CanonicalEvent allThreeEv = allThreeRes.getCanonicalEvents().get(0);
+        assertEquals(3, allThreeEv.getRelatedLinks().size());
+        Map<String, String> allThreeLinks = allThreeEv.getRelatedLinks().stream()
+                .collect(Collectors.toMap(RelatedLink::getRelationshipType, RelatedLink::getTargetEntityKey));
+        assertEquals("ORD-90125", allThreeLinks.get("TRIGGERED_BY_ORDER"));
+        assertEquals("ORD-90125:ITM-1", allThreeLinks.get("TRIGGERED_BY_ITEM"));
+        assertEquals("ORD-90125", allThreeLinks.get("PARTNER_VERIFIED_ORDER"));
+    }
+
     private static final Queue<CanonicalEvent> COLLECTED_EVENTS = new ConcurrentLinkedQueue<>();
     private static final Queue<RawAuditRecord> COLLECTED_AUDITS = new ConcurrentLinkedQueue<>();
     private static final Queue<DlqMessage> COLLECTED_DLQS = new ConcurrentLinkedQueue<>();

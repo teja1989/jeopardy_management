@@ -308,6 +308,9 @@ public final class CompiledAdapterRegistry {
                         continue;
                     }
                 }
+                if (!allPathsExist(rule.whenAllPathsExist, rootDoc, item)) {
+                    continue;
+                }
 
                 String entityKey = null;
                 String rawLevel = rule.entityLevel;
@@ -703,6 +706,9 @@ public final class CompiledAdapterRegistry {
                     continue;
                 }
             }
+            if (!allPathsExist(lr.whenAllPathsExist, rootDoc, item)) {
+                continue;
+            }
             String target = lr.targetTemplate.resolve(rootDoc, item);
             if (isNotBlank(target)) {
                 links.add(new RelatedLink(target, lr.relationshipType, lr.slaCoupling));
@@ -835,6 +841,18 @@ public final class CompiledAdapterRegistry {
         }
         if (val instanceof String) {
             return !((String) val).isBlank();
+        }
+        return true;
+    }
+
+    private static boolean allPathsExist(List<CompiledPath> paths, Object rootDoc, Object item) {
+        if (paths == null || paths.isEmpty()) {
+            return true;
+        }
+        for (CompiledPath p : paths) {
+            if (!isTruthyPresence(p.read(rootDoc, item))) {
+                return false;
+            }
         }
         return true;
     }
@@ -1292,16 +1310,19 @@ public final class CompiledAdapterRegistry {
 
     private static final class CompiledLink {
         final CompiledPath whenPathExists;
+        final List<CompiledPath> whenAllPathsExist;
         final CompiledTemplate targetTemplate;
         final String relationshipType;
         final String slaCoupling;
 
         private CompiledLink(
                 CompiledPath whenPathExists,
+                List<CompiledPath> whenAllPathsExist,
                 CompiledTemplate targetTemplate,
                 String relationshipType,
                 String slaCoupling) {
             this.whenPathExists = whenPathExists;
+            this.whenAllPathsExist = whenAllPathsExist != null ? whenAllPathsExist : List.of();
             this.targetTemplate = targetTemplate;
             this.relationshipType = relationshipType;
             this.slaCoupling = slaCoupling;
@@ -1326,9 +1347,10 @@ public final class CompiledAdapterRegistry {
                 CompiledPath guard = node.hasNonNull("whenPathExists")
                         ? CompiledPath.compile(node.get("whenPathExists").asText())
                         : null;
+                List<CompiledPath> allGuards = compilePathList(node.get("whenAllPathsExist"));
                 String relType = node.path("relationshipType").asText("RELATED_TO");
                 String coupling = node.path("slaCoupling").asText("INDEPENDENT");
-                out.add(new CompiledLink(guard, tpl, relType, coupling));
+                out.add(new CompiledLink(guard, allGuards, tpl, relType, coupling));
             }
         }
     }
@@ -1336,6 +1358,7 @@ public final class CompiledAdapterRegistry {
     private static final class CompiledEmitRule {
         final CompiledPath forEachPath;
         final CompiledPath whenPathExists;
+        final List<CompiledPath> whenAllPathsExist;
         final String entityLevel;
         final CompiledTemplate entityKeyTemplate;
         final List<CompiledFallback> entityKeyFallbacks;
@@ -1352,6 +1375,7 @@ public final class CompiledAdapterRegistry {
         private CompiledEmitRule(JsonNode rule) {
             this.forEachPath = CompiledPath.compile(rule.path("forEach").asText(null));
             this.whenPathExists = CompiledPath.compile(rule.path("whenPathExists").asText(null));
+            this.whenAllPathsExist = compilePathList(rule.get("whenAllPathsExist"));
             this.entityLevel = rule.path("entityLevel").asText("ORDER");
             this.entityKeyTemplate = CompiledTemplate.compile(rule.path("entityKeyTemplate").asText(null));
             this.entityKeyFallbacks = CompiledFallback.compileList(rule.get("entityKeyFallbacks"));
@@ -1556,6 +1580,22 @@ public final class CompiledAdapterRegistry {
                     isFallout,
                     falloutCfg);
         }
+    }
+
+    private static List<CompiledPath> compilePathList(JsonNode arrayNode) {
+        if (arrayNode == null || !arrayNode.isArray()) {
+            return List.of();
+        }
+        List<CompiledPath> paths = new ArrayList<>();
+        for (JsonNode p : arrayNode) {
+            if (p != null && p.isTextual()) {
+                CompiledPath cp = CompiledPath.compile(p.asText());
+                if (cp != null) {
+                    paths.add(cp);
+                }
+            }
+        }
+        return paths.isEmpty() ? List.of() : Collections.unmodifiableList(paths);
     }
 
     private static Set<String> readStringSet(JsonNode arrayNode) {

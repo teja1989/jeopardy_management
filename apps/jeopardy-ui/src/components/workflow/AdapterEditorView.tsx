@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle2,
   Database,
+  Info,
   Plus,
   Rocket,
   Save,
@@ -11,7 +12,7 @@ import {
 } from 'lucide-react';
 import { createAdapterVersion, publishConfigs } from '../../api/client';
 import type { EventAdapterRecord, JsonSearchMatch } from '../../api/types';
-import { DOMAINS, KAFKA_SOURCE_TOPICS } from './workflowModels';
+import { DOMAINS, buildAvailableTopics } from './workflowModels';
 import { InfoTooltip } from '../InfoTooltip';
 import { JsonEventPickerModal } from './JsonEventPickerModal';
 
@@ -20,8 +21,37 @@ interface AdapterEditorViewProps {
   onReload: () => Promise<void>;
 }
 
+const PRESERVED_RULE_KEYS = [
+  'whenPathExists',
+  'entityKeyFallbacks',
+  'relatedLinks',
+  'extraLinks',
+  'orderTypeLiteral',
+  'itemTypeLiteral',
+  'statusPath',
+  'errorCodePath',
+] as const;
+
+function cloneRecord(obj: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(obj)) as Record<string, unknown>;
+}
+
+function getRuleLabel(rule: Record<string, unknown>, index: number): string {
+  if (typeof rule.ruleId === 'string' && rule.ruleId.trim()) {
+    return rule.ruleId.trim();
+  }
+  if (typeof rule.entityLevel === 'string' && rule.entityLevel.trim()) {
+    return rule.entityLevel.trim();
+  }
+  return `rule-${index + 1}`;
+}
+
 export const AdapterEditorView: React.FC<AdapterEditorViewProps> = ({ adapters, onReload }) => {
   const [selectedId, setSelectedId] = useState<string>(adapters[0]?.adapterId ?? '');
+  const [loadedDefinition, setLoadedDefinition] = useState<Record<string, unknown> | null>(null);
+  const [emitRulesList, setEmitRulesList] = useState<Array<Record<string, unknown>>>([]);
+  const [selectedRuleIndex, setSelectedRuleIndex] = useState<number>(0);
+
   const [adapterId, setAdapterId] = useState<string>(adapters[0]?.adapterId ?? 'adapter-custom-domain');
   const [sourceTopic, setSourceTopic] = useState<string>(
     adapters[0]?.sourceTopic ?? 'domain.order.events',
@@ -48,51 +78,180 @@ export const AdapterEditorView: React.FC<AdapterEditorViewProps> = ({ adapters, 
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const loadAdapterIntoEditor = (ad: EventAdapterRecord) => {
-    setSelectedId(ad.adapterId);
-    setAdapterId(ad.adapterId);
-    setSourceTopic(ad.sourceTopic);
-    const def = (ad.definition ?? {}) as Record<string, unknown>;
-    setDomain(typeof def.domain === 'string' ? def.domain : 'ORDER');
-    const inc = def.includeFilter as Record<string, unknown> | undefined;
-    const allowed = Array.isArray(inc?.allowedValues) ? inc.allowedValues.map(String) : [];
-    setAllowedEventTypes(allowed.join(', '));
-    setRedactPaths(Array.isArray(def.redactPaths) ? def.redactPaths.map(String) : []);
+  const availableTopics = useMemo(() => buildAvailableTopics(adapters), [adapters]);
 
-    const rules = Array.isArray(def.emitRules) ? (def.emitRules as Array<Record<string, unknown>>) : [];
-    const primary = rules.find((r) => typeof r.forEach === 'string') || rules[0];
-    if (primary) {
-      setForEachPath(typeof primary.forEach === 'string' ? primary.forEach : '');
-      setEntityKeyTemplate(
-        typeof primary.entityKeyTemplate === 'string' ? primary.entityKeyTemplate : '',
-      );
-      setOrderTypePath(typeof primary.orderTypePath === 'string' ? primary.orderTypePath : '');
-      setItemTypePath(typeof primary.itemTypePath === 'string' ? primary.itemTypePath : '');
-      const dimsObj = primary.dimensions as Record<string, unknown> | undefined;
-      if (dimsObj && typeof dimsObj === 'object') {
-        setDimensions(Object.entries(dimsObj).map(([k, v]) => ({ key: k, path: String(v) })));
-      } else {
-        setDimensions([]);
+  const applyRuleFieldsToForm = (rule: Record<string, unknown> | undefined) => {
+    if (!rule) {
+      setForEachPath('');
+      setEntityKeyTemplate('');
+      setOrderTypePath('');
+      setItemTypePath('');
+      setDimensions([]);
+      return;
+    }
+    setForEachPath(typeof rule.forEach === 'string' ? rule.forEach : '');
+    setEntityKeyTemplate(
+      typeof rule.entityKeyTemplate === 'string' ? rule.entityKeyTemplate : '',
+    );
+    setOrderTypePath(typeof rule.orderTypePath === 'string' ? rule.orderTypePath : '');
+    setItemTypePath(typeof rule.itemTypePath === 'string' ? rule.itemTypePath : '');
+    const dimsObj = rule.dimensions as Record<string, unknown> | undefined;
+    if (dimsObj && typeof dimsObj === 'object' && !Array.isArray(dimsObj)) {
+      setDimensions(Object.entries(dimsObj).map(([k, v]) => ({ key: k, path: String(v) })));
+    } else {
+      setDimensions([]);
+    }
+  };
+
+  const mergeCurrentFormIntoRule = (
+    baseRule: Record<string, unknown>,
+    ruleIndex: number,
+  ): Record<string, unknown> => {
+    const dimsRecord: Record<string, string> = {};
+    for (const d of dimensions) {
+      if (d.key.trim() && d.path.trim()) {
+        dimsRecord[d.key.trim()] = d.path.trim();
       }
     }
+
+    const updated: Record<string, unknown> = {
+      ...baseRule,
+    };
+
+    if (typeof updated.ruleId !== 'string' || !updated.ruleId.trim()) {
+      updated.ruleId = ruleIndex === 0 ? 'emit-primary' : `emit-rule-${ruleIndex + 1}`;
+    }
+
+    const trimmedForEach = forEachPath.trim();
+    if (trimmedForEach) {
+      updated.forEach = trimmedForEach;
+    } else {
+      delete updated.forEach;
+    }
+
+    if (typeof updated.entityLevel !== 'string' || !updated.entityLevel.trim()) {
+      updated.entityLevel = trimmedForEach ? 'ORDER_ITEM' : 'ORDER';
+    }
+
+    updated.entityKeyTemplate = entityKeyTemplate.trim();
+
+    const trimmedOrderTypePath = orderTypePath.trim();
+    if (trimmedOrderTypePath) {
+      updated.orderTypePath = trimmedOrderTypePath;
+    } else {
+      delete updated.orderTypePath;
+    }
+
+    const trimmedItemTypePath = itemTypePath.trim();
+    if (trimmedItemTypePath) {
+      updated.itemTypePath = trimmedItemTypePath;
+    } else {
+      delete updated.itemTypePath;
+    }
+
+    if (Object.keys(dimsRecord).length > 0 || 'dimensions' in updated) {
+      updated.dimensions = dimsRecord;
+    }
+
+    return updated;
+  };
+
+  const loadAdapterIntoEditor = (ad: EventAdapterRecord) => {
+    const defClone = cloneRecord((ad.definition ?? {}) as Record<string, unknown>);
+    setSelectedId(ad.adapterId);
+    setLoadedDefinition(defClone);
+    setAdapterId(ad.adapterId);
+    setSourceTopic(ad.sourceTopic);
+    setDomain(typeof defClone.domain === 'string' ? defClone.domain : 'ORDER');
+    const inc = defClone.includeFilter as Record<string, unknown> | undefined;
+    const allowed = Array.isArray(inc?.allowedValues) ? inc.allowedValues.map(String) : [];
+    setAllowedEventTypes(allowed.join(', '));
+    setRedactPaths(Array.isArray(defClone.redactPaths) ? defClone.redactPaths.map(String) : []);
+
+    const rules = Array.isArray(defClone.emitRules)
+      ? (defClone.emitRules as Array<Record<string, unknown>>).map((r) => cloneRecord(r))
+      : [];
+    setEmitRulesList(rules);
+    setSelectedRuleIndex(0);
+    applyRuleFieldsToForm(rules[0]);
     setStatusMsg(null);
     setErrorMsg(null);
   };
 
+  useEffect(() => {
+    if (adapters.length === 0 || selectedId === '__new__' || loadedDefinition !== null) return;
+    const target = adapters.find((a) => a.adapterId === selectedId) ?? adapters[0];
+    if (target) {
+      loadAdapterIntoEditor(target);
+    }
+  }, [adapters, selectedId, loadedDefinition]);
+
   const handleNewAdapter = () => {
+    const starterRule: Record<string, unknown> = {
+      ruleId: 'emit-primary',
+      forEach: '$.order.lineItems[*]',
+      entityLevel: 'ORDER_ITEM',
+      entityKeyTemplate: '{$.order.orderId}:{$.item.lineItemId}',
+      orderTypePath: '$.order.orderType',
+      itemTypePath: '$.item.itemType',
+      dimensions: { channel: '$.order.channel' },
+    };
     setSelectedId('__new__');
+    setLoadedDefinition(null);
     setAdapterId('adapter-custom-events');
     setSourceTopic('domain.order.events');
     setDomain('ORDER');
-    setForEachPath('$.order.lineItems[*]');
-    setEntityKeyTemplate('{$.order.orderId}:{$.item.lineItemId}');
-    setOrderTypePath('$.order.orderType');
-    setItemTypePath('$.item.itemType');
     setAllowedEventTypes('ORDER_SUBMITTED, CHANGE_ORDER_CREATED');
     setRedactPaths(['$.order.customer.ssn']);
-    setDimensions([{ key: 'channel', path: '$.order.channel' }]);
+    setEmitRulesList([starterRule]);
+    setSelectedRuleIndex(0);
+    applyRuleFieldsToForm(starterRule);
     setStatusMsg(null);
     setErrorMsg(null);
+  };
+
+  const handleSelectRule = (nextIndex: number) => {
+    if (nextIndex === selectedRuleIndex || nextIndex < 0 || nextIndex >= emitRulesList.length) {
+      return;
+    }
+    const nextList = emitRulesList.map((rule, idx) =>
+      idx === selectedRuleIndex ? mergeCurrentFormIntoRule(rule, idx) : rule,
+    );
+    setEmitRulesList(nextList);
+    setSelectedRuleIndex(nextIndex);
+    applyRuleFieldsToForm(nextList[nextIndex]);
+  };
+
+  const handleAddEmitRule = () => {
+    const syncedList = emitRulesList.map((rule, idx) =>
+      idx === selectedRuleIndex ? mergeCurrentFormIntoRule(rule, idx) : rule,
+    );
+    const nextIndex = syncedList.length;
+    const newRule: Record<string, unknown> = {
+      ruleId: nextIndex === 0 ? 'emit-primary' : `emit-rule-${nextIndex + 1}`,
+      entityLevel: 'ORDER',
+      entityKeyTemplate: '',
+      dimensions: {},
+    };
+    const nextList = [...syncedList, newRule];
+    setEmitRulesList(nextList);
+    setSelectedRuleIndex(nextIndex);
+    applyRuleFieldsToForm(newRule);
+  };
+
+  const handleRemoveEmitRule = (removeIndex: number) => {
+    if (emitRulesList.length <= 1) return;
+    const syncedList = emitRulesList.map((rule, idx) =>
+      idx === selectedRuleIndex ? mergeCurrentFormIntoRule(rule, idx) : rule,
+    );
+    const filtered = syncedList.filter((_, idx) => idx !== removeIndex);
+    const nextIndex = Math.min(
+      removeIndex < selectedRuleIndex ? selectedRuleIndex - 1 : selectedRuleIndex,
+      filtered.length - 1,
+    );
+    setEmitRulesList(filtered);
+    setSelectedRuleIndex(nextIndex);
+    applyRuleFieldsToForm(filtered[nextIndex]);
   };
 
   const handleBindAdapterField = (
@@ -114,44 +273,80 @@ export const AdapterEditorView: React.FC<AdapterEditorViewProps> = ({ adapters, 
     }
   };
 
+  const processDefRules = Array.isArray(loadedDefinition?.processDefinitionRules)
+    ? (loadedDefinition.processDefinitionRules as Array<Record<string, unknown>>)
+    : [];
+  const hasFalloutConfig = Boolean(
+    loadedDefinition?.falloutConfig && typeof loadedDefinition.falloutConfig === 'object',
+  );
+  const isFlowableOrFalloutAdapter =
+    emitRulesList.length === 0 && (processDefRules.length > 0 || hasFalloutConfig);
+  const preservedOverlayRuleCount = processDefRules.length + (hasFalloutConfig ? 1 : 0);
+
+  const activeRule = emitRulesList[selectedRuleIndex];
+  const preservedRuleFieldNames = useMemo(() => {
+    if (!activeRule) return [];
+    return PRESERVED_RULE_KEYS.filter((k) => {
+      const v = activeRule[k];
+      if (v === undefined || v === null) return false;
+      if (Array.isArray(v)) return v.length > 0;
+      if (typeof v === 'string') return v.trim().length > 0;
+      return true;
+    });
+  }, [activeRule]);
+
   const handleSave = async (andPublish: boolean) => {
     setSaving(true);
     setStatusMsg(null);
     setErrorMsg(null);
     try {
-      const dimsRecord: Record<string, string> = {};
-      for (const d of dimensions) {
-        if (d.key.trim() && d.path.trim()) {
-          dimsRecord[d.key.trim()] = d.path.trim();
-        }
-      }
+      const baseDef: Record<string, unknown> = loadedDefinition
+        ? cloneRecord(loadedDefinition)
+        : {
+            schemaVersion: '1.0',
+            configType: 'EVENT_ADAPTER',
+            enabled: true,
+          };
+
+      const existingIncludeFilter =
+        baseDef.includeFilter && typeof baseDef.includeFilter === 'object'
+          ? (baseDef.includeFilter as Record<string, unknown>)
+          : null;
+
+      const allowedValues = allowedEventTypes
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
       const definition: Record<string, unknown> = {
-        schemaVersion: '1.0',
-        configType: 'EVENT_ADAPTER',
+        ...baseDef,
+        schemaVersion: typeof baseDef.schemaVersion === 'string' ? baseDef.schemaVersion : '1.0',
+        configType: typeof baseDef.configType === 'string' ? baseDef.configType : 'EVENT_ADAPTER',
         adapterId: adapterId.trim(),
-        enabled: true,
+        enabled: typeof baseDef.enabled === 'boolean' ? baseDef.enabled : true,
         sourceTopic: sourceTopic.trim(),
         domain,
-        includeFilter: {
-          eventTypePath: '$.eventType',
-          allowedValues: allowedEventTypes
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean),
-        },
-        redactPaths,
-        emitRules: [
-          {
-            ruleId: 'emit-primary',
-            forEach: forEachPath.trim() || undefined,
-            entityLevel: forEachPath.trim() ? 'ORDER_ITEM' : 'ORDER',
-            entityKeyTemplate: entityKeyTemplate.trim(),
-            orderTypePath: orderTypePath.trim() || undefined,
-            itemTypePath: itemTypePath.trim() || undefined,
-            dimensions: dimsRecord,
-          },
-        ],
+        redactPaths: redactPaths.map((p) => p.trim()).filter(Boolean),
       };
+
+      if (existingIncludeFilter || allowedValues.length > 0) {
+        definition.includeFilter = {
+          ...(existingIncludeFilter ?? {}),
+          eventTypePath:
+            typeof existingIncludeFilter?.eventTypePath === 'string'
+              ? existingIncludeFilter.eventTypePath
+              : '$.eventType',
+          allowedValues,
+        };
+      }
+
+      let nextEmitRules = emitRulesList;
+      if (emitRulesList.length > 0) {
+        nextEmitRules = emitRulesList.map((rule, idx) =>
+          idx === selectedRuleIndex ? mergeCurrentFormIntoRule(rule, idx) : rule,
+        );
+        definition.emitRules = nextEmitRules;
+      }
 
       const saved = await createAdapterVersion({
         adapterId: adapterId.trim(),
@@ -159,6 +354,10 @@ export const AdapterEditorView: React.FC<AdapterEditorViewProps> = ({ adapters, 
         definition,
         createdBy: 'workflow-studio-ui',
       });
+
+      setSelectedId(saved.adapterId);
+      setLoadedDefinition(cloneRecord(definition));
+      setEmitRulesList(nextEmitRules);
 
       if (andPublish) {
         const pub = await publishConfigs('workflow-studio-ui');
@@ -277,7 +476,7 @@ export const AdapterEditorView: React.FC<AdapterEditorViewProps> = ({ adapters, 
               className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
             />
             <datalist id="kafka-topic-list">
-              {KAFKA_SOURCE_TOPICS.map((t) => (
+              {availableTopics.map((t) => (
                 <option key={t} value={t} />
               ))}
             </datalist>
@@ -298,68 +497,155 @@ export const AdapterEditorView: React.FC<AdapterEditorViewProps> = ({ adapters, 
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="inline-flex items-center text-[11px] font-medium text-slate-500 mb-1">
-              1-to-N Fan-Out Array Path (Optional)
-              <InfoTooltip
-                title="1-to-N Fan-Out Array Path"
-                definition="When one Kafka Order event contains an array of line items (e.g. $.order.lineItems[*]), Flink splits it into separate tracked entities — one per line item."
-                impact="Allows each item (e.g., iPhone Ship vs. Trade-In vs. CHANGE_ESIM) to run its own independent progress bar and SLA timers in the Order Tracker."
-                align="left"
-              />
-            </label>
-            <input
-              type="text"
-              value={forEachPath}
-              onChange={(e) => setForEachPath(e.target.value)}
-              placeholder="$.order.lineItems[*]"
-              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
-            />
+        {isFlowableOrFalloutAdapter ? (
+          <div className="rounded-2xl border border-[#D3E3FD] dark:border-[#004A77] bg-[#E8F0FE] dark:bg-[#004A77]/30 px-4 py-3 text-xs text-[#041E49] dark:text-[#C2E7FF] flex items-start gap-2.5">
+            <Info className="w-4 h-4 shrink-0 mt-0.5 text-[#1A73E8] dark:text-[#8AB4F8]" />
+            <div className="leading-relaxed">
+              This adapter uses Flowable BPMN / Fallout Overlay rules (
+              <strong>
+                {preservedOverlayRuleCount}{' '}
+                {preservedOverlayRuleCount === 1 ? 'rule' : 'rules'} preserved intact on save
+              </strong>
+              ). You can safely edit allowed event types and PII redaction paths here.
+            </div>
           </div>
-          <div>
-            <label className="inline-flex items-center text-[11px] font-medium text-slate-500 mb-1">
-              Entity Key Template
-              <InfoTooltip
-                title="Entity Key Template"
-                definition="Unique tracking key built from JSON fields (for example {$.order.orderId}:{$.item.lineItemId}). All downstream events resolving to the same key merge onto one timeline."
-                impact="Unifies events from Order, Fraud, Payment, Fulfillment, Provisioning, and Billing into a single customer Order Tracker view."
-                align="right"
-              />
-            </label>
-            <input
-              type="text"
-              value={entityKeyTemplate}
-              onChange={(e) => setEntityKeyTemplate(e.target.value)}
-              placeholder="{$.order.orderId}:{$.item.lineItemId}"
-              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-medium text-slate-500 mb-1">
-              Order Type Path
-            </label>
-            <input
-              type="text"
-              value={orderTypePath}
-              onChange={(e) => setOrderTypePath(e.target.value)}
-              placeholder="$.order.orderType"
-              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-medium text-slate-500 mb-1">
-              Order Item Type Path
-            </label>
-            <input
-              type="text"
-              value={itemTypePath}
-              onChange={(e) => setItemTypePath(e.target.value)}
-              placeholder="$.item.itemType"
-              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
-            />
-          </div>
-        </div>
+        ) : (
+          <>
+            {emitRulesList.length > 0 ? (
+              <div className="space-y-2">
+                <div className="rounded-2xl bg-[#F0F4F9] dark:bg-[#282A2C] p-2 flex flex-wrap items-center gap-1.5">
+                  {emitRulesList.map((rule, idx) => {
+                    const isSelected = idx === selectedRuleIndex;
+                    return (
+                      <div
+                        key={`rule-tab-${idx}`}
+                        className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs transition ${
+                          isSelected
+                            ? 'bg-[#D3E3FD] text-[#041E49] dark:bg-[#004A77] dark:text-[#C2E7FF] font-semibold shadow-sm'
+                            : 'bg-white/80 dark:bg-[#1E1F20] text-[#5F6368] dark:text-[#9AA0A6] hover:bg-white dark:hover:bg-[#333639]'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleSelectRule(idx)}
+                          className="inline-flex items-center gap-1 text-left"
+                        >
+                          <span>
+                            Rule {idx + 1}: {getRuleLabel(rule, idx)}
+                          </span>
+                        </button>
+                        {emitRulesList.length > 1 && isSelected && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveEmitRule(idx)}
+                            className="ml-0.5 text-[#041E49]/70 hover:text-rose-600 dark:text-[#C2E7FF]/70 dark:hover:text-rose-300 transition"
+                            title="Remove this emit rule"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={handleAddEmitRule}
+                    className="inline-flex items-center gap-1 rounded-full border border-dashed border-[#1A73E8]/40 dark:border-[#8AB4F8]/40 px-3 py-1 text-xs font-medium text-[#1A73E8] dark:text-[#8AB4F8] hover:bg-[#D3E3FD]/50 dark:hover:bg-[#004A77]/40 transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add Emit Rule
+                  </button>
+                </div>
+
+                {preservedRuleFieldNames.length > 0 && (
+                  <div className="text-[11px] text-[#5F6368] dark:text-[#9AA0A6] px-1">
+                    Advanced fields preserved intact on save:{' '}
+                    <span className="font-mono text-slate-700 dark:text-slate-300">
+                      {preservedRuleFieldNames.join(', ')}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 bg-[#F8FAFD] dark:bg-[#131314] px-4 py-3 flex items-center justify-between gap-3">
+                <span className="text-xs text-slate-500">
+                  No emit rules configured on this adapter yet.
+                </span>
+                <button
+                  type="button"
+                  onClick={handleAddEmitRule}
+                  className="inline-flex items-center gap-1 rounded-full bg-[#D3E3FD] dark:bg-[#004A77] text-[#041E49] dark:text-[#C2E7FF] px-3 py-1 text-xs font-semibold transition"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add Emit Rule
+                </button>
+              </div>
+            )}
+
+            {emitRulesList.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="inline-flex items-center text-[11px] font-medium text-slate-500 mb-1">
+                    1-to-N Fan-Out Array Path (Optional)
+                    <InfoTooltip
+                      title="1-to-N Fan-Out Array Path"
+                      definition="When one Kafka Order event contains an array of line items (e.g. $.order.lineItems[*]), Flink splits it into separate tracked entities — one per line item."
+                      impact="Allows each item (e.g., iPhone Ship vs. Trade-In vs. CHANGE_ESIM) to run its own independent progress bar and SLA timers in the Order Tracker."
+                      align="left"
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    value={forEachPath}
+                    onChange={(e) => setForEachPath(e.target.value)}
+                    placeholder="$.order.lineItems[*]"
+                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="inline-flex items-center text-[11px] font-medium text-slate-500 mb-1">
+                    Entity Key Template
+                    <InfoTooltip
+                      title="Entity Key Template"
+                      definition="Unique tracking key built from JSON fields (for example {$.order.orderId}:{$.item.lineItemId}). All downstream events resolving to the same key merge onto one timeline."
+                      impact="Unifies events from Order, Fraud, Payment, Fulfillment, Provisioning, and Billing into a single customer Order Tracker view."
+                      align="right"
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    value={entityKeyTemplate}
+                    onChange={(e) => setEntityKeyTemplate(e.target.value)}
+                    placeholder="{$.order.orderId}:{$.item.lineItemId}"
+                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    Order Type Path
+                  </label>
+                  <input
+                    type="text"
+                    value={orderTypePath}
+                    onChange={(e) => setOrderTypePath(e.target.value)}
+                    placeholder="$.order.orderType"
+                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    Order Item Type Path
+                  </label>
+                  <input
+                    type="text"
+                    value={itemTypePath}
+                    onChange={(e) => setItemTypePath(e.target.value)}
+                    placeholder="$.item.itemType"
+                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-mono"
+                  />
+                </div>
+              </div>
+            )}
+          </>
+        )}
 
         <div>
           <label className="inline-flex items-center text-[11px] font-medium text-slate-500 mb-1">
@@ -380,54 +666,58 @@ export const AdapterEditorView: React.FC<AdapterEditorViewProps> = ({ adapters, 
         </div>
 
         {/* Dimensions & PII Redaction */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-900 dark:text-white">
-                Extracted Analytics Dimensions
-              </span>
-              <button
-                type="button"
-                onClick={() => setDimensions((prev) => [...prev, { key: '', path: '' }])}
-                className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline"
-              >
-                <Plus className="w-3 h-3" /> Add
-              </button>
-            </div>
-            {dimensions.map((d, idx) => (
-              <div key={idx} className="flex items-center gap-1.5">
-                <input
-                  type="text"
-                  value={d.key}
-                  onChange={(e) =>
-                    setDimensions((prev) =>
-                      prev.map((item, i) => (i === idx ? { ...item, key: e.target.value } : item)),
-                    )
-                  }
-                  placeholder="dim_key"
-                  className="w-2/5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px] font-mono"
-                />
-                <input
-                  type="text"
-                  value={d.path}
-                  onChange={(e) =>
-                    setDimensions((prev) =>
-                      prev.map((item, i) => (i === idx ? { ...item, path: e.target.value } : item)),
-                    )
-                  }
-                  placeholder="$.path"
-                  className="flex-1 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px] font-mono"
-                />
+        <div
+          className={`grid grid-cols-1 ${emitRulesList.length > 0 ? 'md:grid-cols-2' : ''} gap-4`}
+        >
+          {emitRulesList.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-900 dark:text-white">
+                  Extracted Analytics Dimensions
+                </span>
                 <button
                   type="button"
-                  onClick={() => setDimensions((prev) => prev.filter((_, i) => i !== idx))}
-                  className="text-slate-400 hover:text-rose-500 p-1"
+                  onClick={() => setDimensions((prev) => [...prev, { key: '', path: '' }])}
+                  className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Plus className="w-3 h-3" /> Add
                 </button>
               </div>
-            ))}
-          </div>
+              {dimensions.map((d, idx) => (
+                <div key={idx} className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={d.key}
+                    onChange={(e) =>
+                      setDimensions((prev) =>
+                        prev.map((item, i) => (i === idx ? { ...item, key: e.target.value } : item)),
+                      )
+                    }
+                    placeholder="dim_key"
+                    className="w-2/5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px] font-mono"
+                  />
+                  <input
+                    type="text"
+                    value={d.path}
+                    onChange={(e) =>
+                      setDimensions((prev) =>
+                        prev.map((item, i) => (i === idx ? { ...item, path: e.target.value } : item)),
+                      )
+                    }
+                    placeholder="$.path"
+                    className="flex-1 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px] font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setDimensions((prev) => prev.filter((_, i) => i !== idx))}
+                    className="text-slate-400 hover:text-rose-500 p-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
